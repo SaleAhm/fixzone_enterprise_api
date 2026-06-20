@@ -14,7 +14,12 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:rules:static": "node test/security-rules.static-test.cjs",
+    "test:rules": "firebase emulators:exec --only firestore \"node test/security-rules.behavior-test.cjs\"",
+    "seed": "prisma db seed",
+    "seed:firebase-provider": "ts-node scripts/seed-firebase-provider.ts",
+    "seed:reset": "prisma migrate reset --force"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.17",
@@ -28,6 +33,7 @@
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "firebase-admin": "^13.9.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.20.0",
@@ -61,5 +67,8 @@
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   }
 }

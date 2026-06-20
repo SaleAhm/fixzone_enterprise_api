@@ -1,0 +1,81 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ORG_ADMIN
+  DISPATCH_OFFICER
+  PROVIDER
+  CITIZEN
+}
+
+enum ReportStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED_BY_PROVIDER
+  CLOSED
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users   User[]
+  reports Report[]
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String?  @unique
+  phone          String?  @unique
+  firebaseUid    String?  @unique
+  passwordHash   String?
+  fullName       String
+  role           UserRole
+  organizationId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  citizenReports  Report[] @relation("CitizenReports")
+  assignedReports Report[] @relation("AssignedProviderReports")
+
+  @@index([organizationId])
+}
+
+model Report {
+  id                 String       @id @default(cuid())
+  title              String
+  description        String
+  category           String
+  location           String
+  latitude           Float?
+  longitude          Float?
+  status             ReportStatus @default(PENDING)
+  organizationId     String
+  citizenId          String
+  assignedProviderId String?
+  completionNote     String?
+  completionImageUrl String?
+  completionImagePath String?
+  completedByProviderAt DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  citizen          User         @relation("CitizenReports", fields: [citizenId], references: [id])
+  assignedProvider User?        @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
+
+  @@index([organizationId])
+  @@index([citizenId])
+  @@index([assignedProviderId])
+  @@index([status])
+}

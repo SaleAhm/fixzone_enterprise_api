@@ -5,13 +5,22 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { UserRole } from '@prisma/client';
+import { User, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
+type AuthUser = Pick<
+  User,
+  'id' | 'email' | 'phone' | 'fullName' | 'role' | 'organizationId'
+>;
+
 @Injectable()
 export class AuthService {
+  private readonly defaultOrganizationName =
+    process.env.DEFAULT_ORGANIZATION_NAME || 'FixZone Demo LGA';
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
@@ -23,31 +32,67 @@ export class AuthService {
     }
 
     const orFilters = [
-      dto.email ? { email: dto.email } : null,
-      dto.phone ? { phone: dto.phone } : null,
-    ].filter((v): v is { email: string } | { phone: string } => v !== null);
+      dto.email ? { email: dto.email.toLowerCase().trim() } : null,
+      dto.phone ? { phone: dto.phone.trim() } : null,
+    ].filter(
+      (value): value is { email: string } | { phone: string } => value !== null,
+    );
 
-    const existing = await this.prisma.user.findFirst({
+    const existingUser = await this.prisma.user.findFirst({
       where: {
         OR: orFilters,
       },
     });
 
-    if (existing) {
+    if (existingUser) {
       throw new BadRequestException('User already exists');
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const prismaRole = this.mapApiRoleToPrismaRole(dto.role);
 
+    let organizationId: string | null = dto.organizationId?.trim() || null;
+
+    if (prismaRole === UserRole.ORG_ADMIN) {
+      if (organizationId && dto.organizationName?.trim()) {
+        throw new BadRequestException(
+          'Provide either organizationId or organizationName, not both',
+        );
+      }
+
+      if (!organizationId && !dto.organizationName?.trim()) {
+        throw new BadRequestException(
+          'organizationName or organizationId is required for ORG_ADMIN',
+        );
+      }
+
+      if (!organizationId && dto.organizationName?.trim()) {
+        const organization = await this.prisma.organization.create({
+          data: {
+            name: dto.organizationName.trim(),
+          },
+        });
+
+        organizationId = organization.id;
+      }
+    }
+
     const user = await this.prisma.user.create({
       data: {
-        fullName: dto.fullName,
-        email: dto.email ?? null,
-        phone: dto.phone ?? null,
+        fullName: dto.fullName.trim(),
+        email: dto.email ? dto.email.toLowerCase().trim() : null,
+        phone: dto.phone ? dto.phone.trim() : null,
         passwordHash,
         role: prismaRole,
-        organizationId: dto.organizationId ?? null,
+        organizationId,
+      },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        fullName: true,
+        role: true,
+        organizationId: true,
       },
     });
 
@@ -55,10 +100,16 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
+    if (!dto.email && !dto.phone) {
+      throw new BadRequestException('Email or phone is required');
+    }
+
     const orFilters = [
-      dto.email ? { email: dto.email } : null,
-      dto.phone ? { phone: dto.phone } : null,
-    ].filter((v): v is { email: string } | { phone: string } => v !== null);
+      dto.email ? { email: dto.email.toLowerCase().trim() } : null,
+      dto.phone ? { phone: dto.phone.trim() } : null,
+    ].filter(
+      (value): value is { email: string } | { phone: string } => value !== null,
+    );
 
     const user = await this.prisma.user.findFirst({
       where: {
@@ -70,66 +121,182 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const ok = await bcrypt.compare(dto.password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
 
-    if (!ok) {
+    if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }
+
+    return this.issueTokens({
+      id: user.id,
+      email: user.email,
+      phone: user.phone,
+      fullName: user.fullName,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
+  }
+
+  async firebaseLogin(dto: FirebaseLoginDto) {
+    const role = this.mapApiRoleToPrismaRole(dto.role);
+
+    if (role !== UserRole.CITIZEN) {
+      throw new BadRequestException(
+        'Firebase citizen login only supports CITIZEN role',
+      );
+    }
+
+    const firebaseUid = dto.firebaseUid.trim();
+    const phone = dto.phone?.trim() || null;
+    const email = dto.email?.toLowerCase().trim() || null;
+    const fullName = dto.fullName?.trim() || 'Citizen User';
+    const organizationId = await this.getDefaultCitizenOrganizationId();
+
+    const existingByFirebaseUid = await this.prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+
+    const existingByPhone = phone
+      ? await this.prisma.user.findUnique({
+          where: { phone },
+        })
+      : null;
+
+    if (
+      existingByFirebaseUid &&
+      existingByPhone &&
+      existingByFirebaseUid.id !== existingByPhone.id
+    ) {
+      throw new BadRequestException(
+        'Firebase UID and phone belong to different users',
+      );
+    }
+
+    const existingUser = existingByFirebaseUid ?? existingByPhone;
+
+    if (existingUser && existingUser.role !== UserRole.CITIZEN) {
+      throw new BadRequestException(
+        'Firebase citizen login cannot be used for provider or admin users',
+      );
+    }
+
+    const user = existingUser
+      ? await this.prisma.user.update({
+          where: { id: existingUser.id },
+          data: {
+            firebaseUid: existingUser.firebaseUid ?? firebaseUid,
+            phone: existingUser.phone ?? phone,
+            email: existingUser.email ?? email,
+            fullName: existingUser.fullName || fullName,
+            role: UserRole.CITIZEN,
+            organizationId: existingUser.organizationId ?? organizationId,
+          },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            fullName: true,
+            role: true,
+            organizationId: true,
+          },
+        })
+      : await this.prisma.user.create({
+          data: {
+            firebaseUid,
+            phone,
+            email,
+            fullName,
+            role: UserRole.CITIZEN,
+            organizationId,
+          },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            fullName: true,
+            role: true,
+            organizationId: true,
+          },
+        });
 
     return this.issueTokens(user);
   }
 
-  private mapApiRoleToPrismaRole(role: string): UserRole {
-    switch (role.toLowerCase()) {
-      case 'admin':
+  private mapApiRoleToPrismaRole(role?: string): UserRole {
+    const normalizedRole = String(role ?? '').trim().toUpperCase();
+
+    switch (normalizedRole) {
+      case 'SUPER_ADMIN':
+        return UserRole.SUPER_ADMIN;
+      case 'ORG_ADMIN':
+      case 'ADMIN':
         return UserRole.ORG_ADMIN;
-      case 'provider':
+      case 'DISPATCH_OFFICER':
+        return UserRole.DISPATCH_OFFICER;
+      case 'PROVIDER':
         return UserRole.PROVIDER;
-      case 'citizen':
+      case 'CITIZEN':
         return UserRole.CITIZEN;
       default:
         throw new BadRequestException(`Unsupported role: ${role}`);
     }
   }
 
-  private mapPrismaRoleToApiRole(role: UserRole | string): string {
-    switch (role) {
-      case UserRole.SUPER_ADMIN:
-      case UserRole.ORG_ADMIN:
-      case UserRole.DISPATCH_OFFICER:
-        return 'admin';
-      case UserRole.PROVIDER:
-        return 'provider';
-      case UserRole.CITIZEN:
-        return 'citizen';
-      default:
-        return String(role).toLowerCase();
+  private async getDefaultCitizenOrganizationId() {
+    const organization = await this.prisma.organization.findFirst({
+      where: {
+        name: this.defaultOrganizationName,
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (organization) {
+      return organization.id;
     }
+
+    const createdOrganization = await this.prisma.organization.create({
+      data: {
+        name: this.defaultOrganizationName,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    return createdOrganization.id;
   }
 
-  private async issueTokens(user: {
-    id: string;
-    email: string | null;
-    phone: string | null;
-    fullName: string;
-    role: UserRole | string;
-    organizationId: string | null;
-  }) {
+  private async issueTokens(user: AuthUser) {
     const payload = {
+      id: user.id,
       sub: user.id,
       email: user.email,
       phone: user.phone,
       fullName: user.fullName,
-      role: this.mapPrismaRoleToApiRole(user.role),
+      role: user.role,
       organizationId: user.organizationId,
     };
 
+    const accessToken = await this.jwtService.signAsync(payload, {
+      secret: process.env.JWT_ACCESS_SECRET || 'fixzone_access_secret',
+      expiresIn: '1d',
+    });
+
     return {
-      user: payload,
-      accessToken: await this.jwtService.signAsync(payload, {
-        secret: process.env.JWT_ACCESS_SECRET || 'fixzone_access_secret',
-        expiresIn: '1d',
-      }),
+      user: {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        fullName: user.fullName,
+        role: user.role,
+        organizationId: user.organizationId,
+      },
+      accessToken,
     };
   }
 }

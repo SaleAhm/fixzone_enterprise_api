@@ -1,10 +1,21 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { UserRole } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+
+type JwtPayload = {
+  sub: string;
+  email?: string | null;
+  phone?: string | null;
+  fullName?: string | null;
+  role: UserRole;
+  organizationId?: string | null;
+};
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor() {
+  constructor(private readonly prisma: PrismaService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
@@ -12,37 +23,32 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: {
-    sub: string;
-    email?: string | null;
-    phone?: string | null;
-    fullName?: string;
-    role: string;
-    organizationId?: string | null;
-  }) {
-    return {
-      id: payload.sub,
-      email: payload.email ?? null,
-      phone: payload.phone ?? null,
-      fullName: payload.fullName,
-      role: this.normalizeRole(payload.role),
-      organizationId: payload.organizationId ?? null,
-    };
-  }
+  async validate(payload: JwtPayload) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        fullName: true,
+        role: true,
+        organizationId: true,
+      },
+    });
 
-  private normalizeRole(role: string): string {
-    switch (String(role).toUpperCase()) {
-      case 'SUPER_ADMIN':
-      case 'ORG_ADMIN':
-      case 'DISPATCH_OFFICER':
-      case 'ADMIN':
-        return 'admin';
-      case 'PROVIDER':
-        return 'provider';
-      case 'CITIZEN':
-        return 'citizen';
-      default:
-        return String(role).toLowerCase();
+    if (!user) {
+      throw new UnauthorizedException('User no longer exists');
     }
+
+    return {
+      id: user.id,                 // ✅ primary id (used everywhere)
+      userId: user.id,             // ✅ backward compatibility
+      sub: user.id,                // ✅ JWT standard
+      email: user.email,
+      phone: user.phone,
+      fullName: user.fullName,
+      role: user.role,
+      organizationId: user.organizationId,
+    };
   }
 }

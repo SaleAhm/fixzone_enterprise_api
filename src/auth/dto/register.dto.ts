@@ -1,33 +1,38 @@
-import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
-
-export enum UserRole {
-  SUPER_ADMIN = 'SUPER_ADMIN',
-  ORG_ADMIN = 'ORG_ADMIN',
-  DISPATCH_OFFICER = 'DISPATCH_OFFICER',
-  PROVIDER = 'PROVIDER',
-  CITIZEN = 'CITIZEN',
-}
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
 
 export class RegisterDto {
   @IsString()
-  fullName!: string;
+  @MinLength(2)
+  fullName: string;
 
   @IsOptional()
-  @IsString()
+  @IsEmail()
   email?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(7)
   phone?: string;
 
   @IsString()
   @MinLength(6)
-  password!: string;
+  password: string;
 
-  @IsEnum(UserRole)
-  role!: UserRole;
+  @IsString()
+  role: string;
 
   @IsOptional()
   @IsString()
   organizationId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  organizationName?: string;
 }

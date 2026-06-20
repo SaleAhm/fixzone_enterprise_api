@@ -31,6 +31,32 @@
 $ npm install
 ```
 
+## Demo provider login
+
+The Flutter Provider Portal signs in with Firebase Auth first, verifies the
+Firestore `users/{uid}.providerId`, then calls this API at `/api/auth/login`
+with the same email and password.
+
+Use one aligned demo provider across Firebase and Prisma:
+
+```text
+Provider ID: PRV-2024-001
+Email: provider1@fixzone.ng
+Password: Password123!
+```
+
+Seed Prisma demo users with:
+
+```bash
+$ npm run seed
+```
+
+Seed the matching Firebase Auth user and Firestore provider profile with:
+
+```bash
+$ npm run seed:firebase-provider
+```
+
 ## Compile and run the project
 
 ```bash

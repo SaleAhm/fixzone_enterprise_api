@@ -10,6 +10,7 @@ describe('Auth API (e2e)', () => {
   let adminToken: string;
   let citizenToken: string;
   let providerToken: string;
+  let adminOrganizationId: string;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -31,6 +32,12 @@ describe('Auth API (e2e)', () => {
         ],
       },
     });
+    const adminOrganization = await prisma.organization.create({
+      data: {
+        name: `Auth Test Organization ${Date.now()}`,
+      },
+    });
+    adminOrganizationId = adminOrganization.id;
   });
 
   afterAll(async () => {
@@ -44,6 +51,11 @@ describe('Auth API (e2e)', () => {
       },
     });
 
+    await prisma.organization.delete({
+      where: { id: adminOrganizationId },
+    });
+
+    await prisma.$disconnect();
     await app.close();
   });
 
@@ -55,10 +67,13 @@ describe('Auth API (e2e)', () => {
         email: 'admin@test.com',
         password: '123456',
         role: 'admin',
+        organizationId: adminOrganizationId,
       });
 
     expect(res.status).toBe(201);
     expect(res.body.accessToken).toBeDefined();
+    expect(res.body.user.role).toBe('ORG_ADMIN');
+    expect(res.body.user.organizationId).toBe(adminOrganizationId);
   });
 
   it('Login Admin', async () => {
@@ -81,7 +96,7 @@ describe('Auth API (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.role).toBe('admin');
+    expect(res.body.role).toBe('ORG_ADMIN');
   });
 
   it('Admin can access admin-only route', async () => {
