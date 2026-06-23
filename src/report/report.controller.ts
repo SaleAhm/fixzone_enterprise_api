@@ -17,6 +17,9 @@ import { AssignProviderDto } from './dto/assign-provider.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
+import { RejectAssignmentDto } from './dto/reject-assignment.dto';
+import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
+import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
 import { DispatchAiService } from './services/dispatch-ai.service';
 import { ReportService } from './report.service';
@@ -63,6 +66,16 @@ export class ReportController {
   @Roles(UserRole.PROVIDER)
   getAssignedReports(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getAssignedReports(user);
+  }
+
+  @Patch(':id/reject-assignment')
+  @Roles(UserRole.PROVIDER)
+  rejectAssignment(
+    @Param('id') id: string,
+    @Body() dto: RejectAssignmentDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.rejectAssignment(id, dto, user);
   }
 
   // ===================== DASHBOARD =====================
@@ -163,6 +176,26 @@ export class ReportController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.reportService.uploadCompletionEvidence(id, dto, user);
+  }
+
+  @Patch(':id/citizen-confirm')
+  @Roles(UserRole.CITIZEN)
+  confirmCompletion(
+    @Param('id') id: string,
+    @Body() dto: CitizenConfirmCompletionDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.confirmCitizenCompletion(id, dto, user);
+  }
+
+  @Patch(':id/citizen-reject')
+  @Roles(UserRole.CITIZEN)
+  rejectCompletion(
+    @Param('id') id: string,
+    @Body() dto: CitizenRejectCompletionDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.rejectCitizenCompletion(id, dto, user);
   }
 
   @Patch(':id/recommend-provider')

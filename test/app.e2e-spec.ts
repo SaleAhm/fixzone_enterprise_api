@@ -22,8 +22,6 @@ describe('Application (e2e)', () => {
   });
 
   it('/api/auth/me requires authentication', () => {
-    return request(app.getHttpServer())
-      .get('/api/auth/me')
-      .expect(401);
+    return request(app.getHttpServer()).get('/api/auth/me').expect(401);
   });
 });

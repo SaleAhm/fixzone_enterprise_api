@@ -1,12 +1,13 @@
 import { ReportStatus } from '@prisma/client';
 
-export const ALLOWED_REPORT_TRANSITIONS: Record<ReportStatus, ReportStatus[]> = {
-  [ReportStatus.PENDING]: [ReportStatus.ASSIGNED],
-  [ReportStatus.ASSIGNED]: [ReportStatus.IN_PROGRESS],
-  [ReportStatus.IN_PROGRESS]: [ReportStatus.COMPLETED_BY_PROVIDER],
-  [ReportStatus.COMPLETED_BY_PROVIDER]: [ReportStatus.CLOSED],
-  [ReportStatus.CLOSED]: [],
-};
+export const ALLOWED_REPORT_TRANSITIONS: Record<ReportStatus, ReportStatus[]> =
+  {
+    [ReportStatus.PENDING]: [ReportStatus.ASSIGNED],
+    [ReportStatus.ASSIGNED]: [ReportStatus.IN_PROGRESS],
+    [ReportStatus.IN_PROGRESS]: [ReportStatus.COMPLETED_BY_PROVIDER],
+    [ReportStatus.COMPLETED_BY_PROVIDER]: [ReportStatus.CLOSED],
+    [ReportStatus.CLOSED]: [],
+  };
 
 export function normalizeReportStatus(status: ReportStatus | string) {
   const normalizedStatus = status.toString().toUpperCase() as ReportStatus;

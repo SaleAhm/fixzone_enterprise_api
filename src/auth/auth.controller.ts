@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Post,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
@@ -53,11 +46,7 @@ export class AuthController {
 
   // 🔒 Provider or Admin
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(
-    UserRole.PROVIDER,
-    UserRole.ORG_ADMIN,
-    UserRole.SUPER_ADMIN,
-  )
+  @Roles(UserRole.PROVIDER, UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN)
   @Get('provider-or-admin')
   providerOrAdmin(@Req() req: { user: any }) {
     return {

@@ -41,9 +41,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     return {
-      id: user.id,                 // ✅ primary id (used everywhere)
-      userId: user.id,             // ✅ backward compatibility
-      sub: user.id,                // ✅ JWT standard
+      id: user.id, // ✅ primary id (used everywhere)
+      userId: user.id, // ✅ backward compatibility
+      sub: user.id, // ✅ JWT standard
       email: user.email,
       phone: user.phone,
       fullName: user.fullName,

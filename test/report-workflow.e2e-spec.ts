@@ -367,7 +367,9 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: providerB.id });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe('Report cannot be assigned in its current status');
+    expect(res.body.message).toBe(
+      'Report cannot be assigned in its current status',
+    );
   });
 
   it('rejects assigning non-provider users', async () => {
@@ -568,6 +570,8 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${dispatchToken}`);
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe('Report cannot be assigned in its current status');
+    expect(res.body.message).toBe(
+      'Report cannot be assigned in its current status',
+    );
   });
 });

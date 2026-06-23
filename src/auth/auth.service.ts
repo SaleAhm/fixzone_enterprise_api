@@ -121,7 +121,10 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
+    const isPasswordValid = await bcrypt.compare(
+      dto.password,
+      user.passwordHash,
+    );
 
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
@@ -223,7 +226,9 @@ export class AuthService {
   }
 
   private mapApiRoleToPrismaRole(role?: string): UserRole {
-    const normalizedRole = String(role ?? '').trim().toUpperCase();
+    const normalizedRole = String(role ?? '')
+      .trim()
+      .toUpperCase();
 
     switch (normalizedRole) {
       case 'SUPER_ADMIN':

@@ -1,7 +1,4 @@
-import {
-  ForbiddenException,
-  Injectable,
-} from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -18,7 +15,24 @@ type JwtUser = {
 export class UsersService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async getUsers(user: JwtUser) {
+    return this.prisma.user.findMany({
+      where: this.buildAdminScope(user),
+      orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
+      select: this.adminUserSelect(),
+    });
+  }
+
   async getRecentUsers(user: JwtUser) {
+    return this.prisma.user.findMany({
+      where: this.buildAdminScope(user),
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: this.adminUserSelect(),
+    });
+  }
+
+  private buildAdminScope(user: JwtUser) {
     if (
       user.role !== UserRole.SUPER_ADMIN &&
       user.role !== UserRole.ORG_ADMIN &&
@@ -27,31 +41,24 @@ export class UsersService {
       throw new ForbiddenException('Not allowed');
     }
 
-    if (
-      user.role !== UserRole.SUPER_ADMIN &&
-      !user.organizationId
-    ) {
+    if (user.role !== UserRole.SUPER_ADMIN && !user.organizationId) {
       throw new ForbiddenException('No organization assigned');
     }
 
-    const where =
-      user.role === UserRole.SUPER_ADMIN
-        ? {}
-        : { organizationId: user.organizationId };
+    return user.role === UserRole.SUPER_ADMIN
+      ? {}
+      : { organizationId: user.organizationId };
+  }
 
-    return this.prisma.user.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        phone: true,
-        role: true,
-        createdAt: true,
-        organizationId: true,
-      },
-    });
+  private adminUserSelect() {
+    return {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      role: true,
+      createdAt: true,
+      organizationId: true,
+    };
   }
 }

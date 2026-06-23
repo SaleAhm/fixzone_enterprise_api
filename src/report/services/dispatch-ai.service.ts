@@ -144,7 +144,10 @@ export class DispatchAiService {
       .map((provider) => {
         const activeAssignments = provider.assignedReports.length;
         let score = 100;
-        const reasons: string[] = ['Same organization', 'Provider role matched'];
+        const reasons: string[] = [
+          'Same organization',
+          'Provider role matched',
+        ];
 
         if (activeAssignments === 0) {
           reasons.push('No active assignments');

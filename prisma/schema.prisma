@@ -22,6 +22,11 @@ enum ReportStatus {
   CLOSED
 }
 
+enum AssignmentOutcome {
+  REJECTED
+  TIMED_OUT
+}
+
 model Organization {
   id        String   @id @default(cuid())
   name      String
@@ -63,10 +68,19 @@ model Report {
   organizationId     String
   citizenId          String
   assignedProviderId String?
+  assignedAt           DateTime?
+  assignmentDeadlineAt DateTime?
+  lastAssignmentOutcome AssignmentOutcome?
+  lastAssignmentReason  String?
+  lastAssignmentAt      DateTime?
+  lastAssignmentProviderId String?
   completionNote     String?
   completionImageUrl String?
   completionImagePath String?
   completedByProviderAt DateTime?
+  citizenRating          Int?
+  citizenFeedback        String?
+  completionRejectionReason String?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 

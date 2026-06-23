@@ -22,6 +22,12 @@ type CurrentAuthUser = {
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  @Get('admin')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getUsers(@CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.getUsers(user);
+  }
+
   @Get('admin/recent')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   getRecentUsers(@CurrentUser() user: CurrentAuthUser) {

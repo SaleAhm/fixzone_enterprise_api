@@ -7,13 +7,16 @@ import {
 import { randomUUID } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
-import { ReportStatus, UserRole } from '@prisma/client';
+import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssignProviderDto } from './dto/assign-provider.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
+import { RejectAssignmentDto } from './dto/reject-assignment.dto';
+import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
+import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
 import {
   canTransitionReportStatus,
   normalizeReportStatus,
@@ -175,12 +178,58 @@ export class ReportService {
       data: {
         assignedProviderId: providerId,
         status: ReportStatus.ASSIGNED,
+        assignedAt: new Date(),
+        assignmentDeadlineAt: null,
+        lastAssignmentOutcome: null,
+        lastAssignmentReason: null,
+        lastAssignmentAt: null,
+        lastAssignmentProviderId: null,
       },
       include: this.includeRelations(),
     });
   }
 
   // ===================== STATUS =====================
+
+  async rejectAssignment(
+    reportId: string,
+    dto: RejectAssignmentDto,
+    user: JwtUser,
+  ) {
+    const userId = this.getUserId(user);
+    const reason = dto.reason.trim();
+
+    if (!this.isProvider(user)) {
+      throw new ForbiddenException('Only providers can reject assignments');
+    }
+
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+    });
+
+    if (!report) throw new NotFoundException('Report not found');
+    if (report.assignedProviderId !== userId) {
+      throw new ForbiddenException('Not your report');
+    }
+    if (report.status !== ReportStatus.ASSIGNED) {
+      throw new ForbiddenException('Only new assignments can be rejected');
+    }
+
+    return this.prisma.report.update({
+      where: { id: reportId },
+      data: {
+        status: ReportStatus.PENDING,
+        assignedProviderId: null,
+        assignedAt: null,
+        assignmentDeadlineAt: null,
+        lastAssignmentOutcome: AssignmentOutcome.REJECTED,
+        lastAssignmentReason: reason,
+        lastAssignmentAt: new Date(),
+        lastAssignmentProviderId: userId,
+      },
+      include: this.includeRelations(),
+    });
+  }
 
   async updateStatus(
     reportId: string,
@@ -267,6 +316,40 @@ export class ReportService {
       completionImagePath: relativePath.replace(/\\/g, '/'),
       completionImageUrl: publicPath,
     };
+  }
+
+  async confirmCitizenCompletion(
+    reportId: string,
+    dto: CitizenConfirmCompletionDto,
+    user: JwtUser,
+  ) {
+    const report = await this.getCitizenReviewReport(reportId, user);
+    return this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: ReportStatus.CLOSED,
+        citizenRating: dto.rating ?? null,
+        citizenFeedback: dto.feedback?.trim() || null,
+        completionRejectionReason: null,
+      },
+      include: this.includeRelations(),
+    });
+  }
+
+  async rejectCitizenCompletion(
+    reportId: string,
+    dto: CitizenRejectCompletionDto,
+    user: JwtUser,
+  ) {
+    const report = await this.getCitizenReviewReport(reportId, user);
+    return this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: ReportStatus.IN_PROGRESS,
+        completionRejectionReason: dto.reason.trim(),
+      },
+      include: this.includeRelations(),
+    });
   }
 
   // ===================== DASHBOARD =====================
@@ -419,6 +502,23 @@ export class ReportService {
     return Object.keys(map)
       .sort()
       .map((date) => ({ date, count: map[date] }));
+  }
+
+  private async getCitizenReviewReport(reportId: string, user: JwtUser) {
+    const userId = this.getUserId(user);
+    if (user.role !== UserRole.CITIZEN) {
+      throw new ForbiddenException('Only citizens can review completion');
+    }
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (report.citizenId !== userId)
+      throw new ForbiddenException('Not your report');
+    if (report.status !== ReportStatus.COMPLETED_BY_PROVIDER) {
+      throw new ForbiddenException('Report is not awaiting citizen review');
+    }
+    return report;
   }
 
   private getUserId(user: JwtUser) {

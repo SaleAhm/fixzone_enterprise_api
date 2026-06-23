@@ -1,5 +1,5 @@
 import { ForbiddenException } from '@nestjs/common';
-import { ReportStatus, UserRole } from '@prisma/client';
+import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import { ReportService } from './report.service';
 
 describe('ReportService workflow validators', () => {
@@ -55,7 +55,11 @@ describe('ReportService workflow validators', () => {
             organizationId: 'org-1',
           },
         ),
-      ).toThrow(new ForbiddenException('Report cannot be assigned in its current status'));
+      ).toThrow(
+        new ForbiddenException(
+          'Report cannot be assigned in its current status',
+        ),
+      );
     });
 
     it('rejects cross-org assignment for org admins', () => {
@@ -168,8 +172,68 @@ describe('ReportService workflow validators', () => {
           'super-admin',
         ),
       ).toThrow(
-        new ForbiddenException('Invalid status transition from CLOSED to IN_PROGRESS'),
+        new ForbiddenException(
+          'Invalid status transition from CLOSED to IN_PROGRESS',
+        ),
       );
     });
+  });
+});
+
+describe('ReportService assignment rejection', () => {
+  const findUnique = jest.fn();
+  const update = jest.fn();
+  const service = new ReportService({
+    report: { findUnique, update },
+  } as any);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns a rejected new assignment to the pending queue', async () => {
+    findUnique.mockResolvedValue({
+      id: 'report-1',
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: 'provider-1',
+      organizationId: 'org-1',
+    });
+    update.mockResolvedValue({ id: 'report-1', status: ReportStatus.PENDING });
+
+    await service.rejectAssignment(
+      'report-1',
+      { reason: 'Outside current service area' },
+      { id: 'provider-1', role: UserRole.PROVIDER, organizationId: 'org-1' },
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'report-1' },
+        data: expect.objectContaining({
+          status: ReportStatus.PENDING,
+          assignedProviderId: null,
+          lastAssignmentOutcome: AssignmentOutcome.REJECTED,
+          lastAssignmentReason: 'Outside current service area',
+          lastAssignmentProviderId: 'provider-1',
+        }),
+      }),
+    );
+  });
+
+  it('does not allow rejection after work has started', async () => {
+    findUnique.mockResolvedValue({
+      id: 'report-1',
+      status: ReportStatus.IN_PROGRESS,
+      assignedProviderId: 'provider-1',
+      organizationId: 'org-1',
+    });
+
+    await expect(
+      service.rejectAssignment(
+        'report-1',
+        { reason: 'Cannot continue' },
+        { id: 'provider-1', role: UserRole.PROVIDER },
+      ),
+    ).rejects.toThrow('Only new assignments can be rejected');
   });
 });
