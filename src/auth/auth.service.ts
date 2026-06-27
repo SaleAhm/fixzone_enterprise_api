@@ -164,6 +164,11 @@ export class AuthService {
           where: { phone },
         })
       : null;
+    const existingByEmail = email
+      ? await this.prisma.user.findUnique({
+          where: { email },
+        })
+      : null;
 
     if (
       existingByFirebaseUid &&
@@ -175,7 +180,28 @@ export class AuthService {
       );
     }
 
-    const existingUser = existingByFirebaseUid ?? existingByPhone;
+    if (
+      existingByFirebaseUid &&
+      existingByEmail &&
+      existingByFirebaseUid.id !== existingByEmail.id
+    ) {
+      throw new BadRequestException(
+        'Firebase UID and email belong to different users',
+      );
+    }
+
+    if (
+      existingByPhone &&
+      existingByEmail &&
+      existingByPhone.id !== existingByEmail.id
+    ) {
+      throw new BadRequestException(
+        'Phone and email belong to different users',
+      );
+    }
+
+    const existingUser =
+      existingByFirebaseUid ?? existingByPhone ?? existingByEmail;
 
     if (existingUser && existingUser.role !== UserRole.CITIZEN) {
       throw new BadRequestException(
@@ -188,9 +214,9 @@ export class AuthService {
           where: { id: existingUser.id },
           data: {
             firebaseUid: existingUser.firebaseUid ?? firebaseUid,
-            phone: existingUser.phone ?? phone,
-            email: existingUser.email ?? email,
-            fullName: existingUser.fullName || fullName,
+            phone: phone ?? existingUser.phone,
+            email: email ?? existingUser.email,
+            fullName: dto.fullName?.trim() || existingUser.fullName || fullName,
             role: UserRole.CITIZEN,
             organizationId: existingUser.organizationId ?? organizationId,
           },

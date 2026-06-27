@@ -60,6 +60,12 @@ export class ReportController {
     return this.reportService.getMyReports(user);
   }
 
+  @Get('citizen/dashboard/summary')
+  @Roles(UserRole.CITIZEN)
+  getCitizenDashboardSummary(@CurrentUser() user: CurrentAuthUser) {
+    return this.reportService.getCitizenDashboardSummary(user);
+  }
+
   // ===================== PROVIDER =====================
 
   @Get('assigned')

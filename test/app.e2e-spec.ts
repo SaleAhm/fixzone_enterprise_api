@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { configureApp } from '../src/configure-app';
 
 describe('Application (e2e)', () => {
   let app: INestApplication<App>;
@@ -12,8 +13,8 @@ describe('Application (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
+    app = moduleFixture.createNestApplication({ bodyParser: false });
+    configureApp(app);
     await app.init();
   });
 
@@ -23,5 +24,26 @@ describe('Application (e2e)', () => {
 
   it('/api/auth/me requires authentication', () => {
     return request(app.getHttpServer()).get('/api/auth/me').expect(401);
+  });
+
+  it('/api/health returns JSON from the Nest API', async () => {
+    const res = await request(app.getHttpServer()).get('/api/health');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/json');
+    expect(res.headers['x-fixzone-api']).toBe('fixzone-enterprise-api');
+    expect(res.body).toMatchObject({
+      status: 'ok',
+      service: 'fixzone-enterprise-api',
+      apiPrefix: '/api',
+    });
+  });
+
+  it('unknown API routes return JSON errors', async () => {
+    const res = await request(app.getHttpServer()).post('/api/auth/missing');
+
+    expect(res.status).toBe(404);
+    expect(res.headers['content-type']).toContain('application/json');
+    expect(res.text.trim().startsWith('<')).toBe(false);
   });
 });

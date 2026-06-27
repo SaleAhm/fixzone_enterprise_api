@@ -4,6 +4,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ReportStatus, UserRole } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Report Workflow (e2e)', () => {
@@ -20,8 +21,8 @@ describe('Report Workflow (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
+    app = moduleFixture.createNestApplication({ bodyParser: false });
+    configureApp(app);
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
@@ -295,6 +296,43 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.IN_PROGRESS });
 
     expect(res.status).toBe(403);
+  });
+
+  it('allows citizens to load their dashboard summary', async () => {
+    const org = await createOrganization('Workflow Citizen Dashboard Org');
+    const citizen = await createUser({
+      email: 'wf-citizen-dashboard@test.com',
+      fullName: 'Workflow Citizen Dashboard',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    await createReport({
+      title: 'WF citizen dashboard pending',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.PENDING,
+    });
+    await createReport({
+      title: 'WF citizen dashboard assigned',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+    });
+
+    const citizenToken = await signToken(citizen);
+    const res = await request(app.getHttpServer())
+      .get('/api/report/citizen/dashboard/summary')
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      total: 2,
+      pending: 1,
+      assigned: 1,
+      inProgress: 0,
+      completed: 0,
+      closed: 0,
+    });
   });
 
   it('rejects provider assignment attempts', async () => {

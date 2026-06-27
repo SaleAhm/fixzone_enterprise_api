@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Auth API (e2e)', () => {
@@ -17,21 +18,13 @@ describe('Auth API (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
+    app = moduleFixture.createNestApplication({ bodyParser: false });
+    configureApp(app);
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
 
-    await prisma.user.deleteMany({
-      where: {
-        OR: [
-          { email: 'admin@test.com' },
-          { email: 'citizen@test.com' },
-          { email: 'provider@test.com' },
-        ],
-      },
-    });
+    await cleanupAuthUsers();
     const adminOrganization = await prisma.organization.create({
       data: {
         name: `Auth Test Organization ${Date.now()}`,
@@ -41,15 +34,7 @@ describe('Auth API (e2e)', () => {
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({
-      where: {
-        OR: [
-          { email: 'admin@test.com' },
-          { email: 'citizen@test.com' },
-          { email: 'provider@test.com' },
-        ],
-      },
-    });
+    await cleanupAuthUsers();
 
     await prisma.organization.delete({
       where: { id: adminOrganizationId },
@@ -58,6 +43,45 @@ describe('Auth API (e2e)', () => {
     await prisma.$disconnect();
     await app.close();
   });
+
+  async function cleanupAuthUsers() {
+    const users = await prisma.user.findMany({
+      where: {
+        OR: [
+          { email: 'admin@test.com' },
+          { email: 'citizen@test.com' },
+          { email: 'provider@test.com' },
+          { email: 'citizen.sync@test.com' },
+          { phone: '+2348000000001' },
+        ],
+      },
+      select: { id: true },
+    });
+    const userIds = users.map((user) => user.id);
+
+    if (userIds.length > 0) {
+      await prisma.report.deleteMany({
+        where: {
+          OR: [
+            { citizenId: { in: userIds } },
+            { assignedProviderId: { in: userIds } },
+          ],
+        },
+      });
+    }
+
+    await prisma.user.deleteMany({
+      where: {
+        OR: [
+          { email: 'admin@test.com' },
+          { email: 'citizen@test.com' },
+          { email: 'provider@test.com' },
+          { email: 'citizen.sync@test.com' },
+          { phone: '+2348000000001' },
+        ],
+      },
+    });
+  }
 
   it('Register Admin', async () => {
     const res = await request(app.getHttpServer())
@@ -179,5 +203,35 @@ describe('Auth API (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(res.status).toBe(403);
+  });
+
+  it('syncs Firebase citizen profile fields by phone', async () => {
+    const firstLogin = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        firebaseUid: 'firebase-sync-uid',
+        phone: '+2348000000001',
+        email: '',
+        fullName: 'Citizen Sync',
+        role: 'citizen',
+      });
+
+    expect(firstLogin.status).toBe(201);
+    expect(firstLogin.body.user.phone).toBe('+2348000000001');
+    expect(firstLogin.body.user.email).toBeNull();
+
+    const secondLogin = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        firebaseUid: 'firebase-sync-uid',
+        phone: '+2348000000001',
+        email: 'citizen.sync@test.com',
+        fullName: 'Citizen Sync Updated',
+        role: 'citizen',
+      });
+
+    expect(secondLogin.status).toBe(201);
+    expect(secondLogin.body.user.email).toBe('citizen.sync@test.com');
+    expect(secondLogin.body.user.fullName).toBe('Citizen Sync Updated');
   });
 });

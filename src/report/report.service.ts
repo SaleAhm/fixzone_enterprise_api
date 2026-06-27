@@ -73,6 +73,33 @@ export class ReportService {
     });
   }
 
+  async getCitizenDashboardSummary(user: JwtUser) {
+    const userId = this.getUserId(user);
+    const where = { citizenId: userId };
+
+    const [total, pending, assigned, inProgress, completed, closed] =
+      await Promise.all([
+        this.prisma.report.count({ where }),
+        this.prisma.report.count({
+          where: { ...where, status: ReportStatus.PENDING },
+        }),
+        this.prisma.report.count({
+          where: { ...where, status: ReportStatus.ASSIGNED },
+        }),
+        this.prisma.report.count({
+          where: { ...where, status: ReportStatus.IN_PROGRESS },
+        }),
+        this.prisma.report.count({
+          where: { ...where, status: ReportStatus.COMPLETED_BY_PROVIDER },
+        }),
+        this.prisma.report.count({
+          where: { ...where, status: ReportStatus.CLOSED },
+        }),
+      ]);
+
+    return { total, pending, assigned, inProgress, completed, closed };
+  }
+
   // ===================== PROVIDER =====================
 
   async getAssignedReports(user: JwtUser) {
