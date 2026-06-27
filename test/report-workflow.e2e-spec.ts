@@ -335,6 +335,31 @@ describe('Report Workflow (e2e)', () => {
     });
   });
 
+  it('allows citizens to load their reports from the current citizen endpoint', async () => {
+    const org = await createOrganization('Workflow Citizen Reports Org');
+    const citizen = await createUser({
+      email: 'wf-citizen-current-reports@test.com',
+      fullName: 'Workflow Citizen Reports',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    await createReport({
+      title: 'WF current citizen report',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.PENDING,
+    });
+
+    const citizenToken = await signToken(citizen);
+    const res = await request(app.getHttpServer())
+      .get('/api/report/citizen/my')
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].title).toBe('WF current citizen report');
+  });
+
   it('rejects provider assignment attempts', async () => {
     const org = await createOrganization('Workflow Org I');
     const provider = await createUser({
