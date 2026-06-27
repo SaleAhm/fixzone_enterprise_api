@@ -217,8 +217,16 @@ describe('Auth API (e2e)', () => {
       });
 
     expect(firstLogin.status).toBe(201);
+    expect(firstLogin.body.accessToken).toBeDefined();
     expect(firstLogin.body.user.phone).toBe('+2348000000001');
     expect(firstLogin.body.user.email).toBeNull();
+
+    const me = await request(app.getHttpServer())
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${firstLogin.body.accessToken}`);
+
+    expect(me.status).toBe(200);
+    expect(me.body.role).toBe('CITIZEN');
 
     const secondLogin = await request(app.getHttpServer())
       .post('/api/auth/firebase-login')
@@ -231,6 +239,7 @@ describe('Auth API (e2e)', () => {
       });
 
     expect(secondLogin.status).toBe(201);
+    expect(secondLogin.body.accessToken).toBeDefined();
     expect(secondLogin.body.user.email).toBe('citizen.sync@test.com');
     expect(secondLogin.body.user.fullName).toBe('Citizen Sync Updated');
   });
