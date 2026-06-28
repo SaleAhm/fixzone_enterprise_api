@@ -360,6 +360,60 @@ describe('Report Workflow (e2e)', () => {
     expect(res.body[0].title).toBe('WF current citizen report');
   });
 
+  it('uses the Prisma user id for Firebase citizen report creation and retrieval', async () => {
+    const firebaseUid = `wf-firebase-citizen-${Date.now()}`;
+    const phone = `+23480${Date.now().toString().slice(-8)}`;
+
+    const loginRes = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        firebaseUid,
+        phone,
+        fullName: 'Workflow Firebase Citizen',
+        role: 'citizen',
+      });
+
+    expect(loginRes.status).toBe(201);
+    expect(loginRes.body.accessToken).toBeDefined();
+    expect(loginRes.body.user.id).toBeDefined();
+    expect(loginRes.body.user.id).not.toBe(firebaseUid);
+
+    const citizen = await prisma.user.findUniqueOrThrow({
+      where: { id: loginRes.body.user.id },
+    });
+    createdUserIds.push(citizen.id);
+
+    const createRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${loginRes.body.accessToken}`)
+      .send({
+        title: 'WF Firebase citizen report',
+        description: 'Created through backend citizen report endpoint',
+        category: 'Road',
+        location: 'Firebase Citizen Street',
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.citizenId).toBe(citizen.id);
+    expect(createRes.body.citizenId).not.toBe(firebaseUid);
+    createdReportIds.push(createRes.body.id);
+
+    const reportsRes = await request(app.getHttpServer())
+      .get('/api/report/citizen/my')
+      .set('Authorization', `Bearer ${loginRes.body.accessToken}`);
+
+    expect(reportsRes.status).toBe(200);
+    expect(reportsRes.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: createRes.body.id,
+          citizenId: citizen.id,
+          title: 'WF Firebase citizen report',
+        }),
+      ]),
+    );
+  });
+
   it('rejects provider assignment attempts', async () => {
     const org = await createOrganization('Workflow Org I');
     const provider = await createUser({

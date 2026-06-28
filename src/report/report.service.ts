@@ -26,6 +26,7 @@ type JwtUser = {
   id?: string;
   userId?: string;
   sub?: string;
+  firebaseUid?: string | null;
   email?: string | null;
   role: UserRole;
   organizationId?: string | null;
@@ -50,7 +51,7 @@ export class ReportService {
       throw new ForbiddenException('Citizen must belong to an organization');
     }
 
-    return this.prisma.report.create({
+    const report = await this.prisma.report.create({
       data: {
         ...dto,
         status: ReportStatus.PENDING,
@@ -59,6 +60,16 @@ export class ReportService {
       },
       include: this.includeRelations(),
     });
+
+    this.logger.debug({
+      message: 'Citizen report created',
+      reportId: report.id,
+      citizenId: report.citizenId,
+      firebaseUid: user.firebaseUid,
+      organizationId: report.organizationId,
+    });
+
+    return report;
   }
 
   // ===================== CITIZEN =====================
@@ -67,11 +78,22 @@ export class ReportService {
     const userId = this.getUserId(user);
 
     try {
-      return await this.prisma.report.findMany({
+      const reports = await this.prisma.report.findMany({
         where: { citizenId: userId },
         orderBy: { createdAt: 'desc' },
         include: this.includeRelations(),
       });
+
+      if (reports.length === 0) {
+        this.logger.warn({
+          message: 'Citizen report query returned no rows',
+          userId,
+          firebaseUid: user.firebaseUid,
+          organizationId: user.organizationId,
+        });
+      }
+
+      return reports;
     } catch (error) {
       const prismaError = error as {
         code?: string;

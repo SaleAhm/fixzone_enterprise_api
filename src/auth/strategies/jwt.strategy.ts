@@ -30,6 +30,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         id: true,
         email: true,
         phone: true,
+        firebaseUid: true,
         fullName: true,
         role: true,
         organizationId: true,
@@ -46,6 +47,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       sub: user.id, // ✅ JWT standard
       email: user.email,
       phone: user.phone,
+      firebaseUid: user.firebaseUid,
       fullName: user.fullName,
       role: user.role,
       organizationId: user.organizationId,
