@@ -17,6 +17,7 @@ import { AssignProviderDto } from './dto/assign-provider.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
+import { UploadReportEvidenceDto } from './dto/upload-report-evidence.dto';
 import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
@@ -188,6 +189,16 @@ export class ReportController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.reportService.uploadCompletionEvidence(id, dto, user);
+  }
+
+  @Post(':id/evidence')
+  @Roles(UserRole.CITIZEN)
+  uploadReportEvidence(
+    @Param('id') id: string,
+    @Body() dto: UploadReportEvidenceDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.uploadReportEvidence(id, dto, user);
   }
 
   @Patch(':id/citizen-confirm')

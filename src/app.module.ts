@@ -4,6 +4,8 @@ import { PrismaModule } from './prisma/prisma.module';
 import { OrganizationModule } from './organization/organization.module';
 import { UsersModule } from './users/users.module';
 import { ReportModule } from './report/report.module';
+import { NotificationModule } from './notification/notification.module';
+import { DemoDataModule } from './demo-data/demo-data.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -14,6 +16,8 @@ import { AppService } from './app.service';
     OrganizationModule,
     UsersModule,
     ReportModule,
+    NotificationModule,
+    DemoDataModule,
   ],
   controllers: [AppController],
   providers: [AppService],

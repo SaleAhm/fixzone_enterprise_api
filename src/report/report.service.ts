@@ -13,6 +13,7 @@ import { AssignProviderDto } from './dto/assign-provider.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
+import { UploadReportEvidenceDto } from './dto/upload-report-evidence.dto';
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
 import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
@@ -59,6 +60,14 @@ export class ReportService {
         organizationId: user.organizationId,
       },
       include: this.includeRelations(),
+    });
+
+    await this.createNotification({
+      userId,
+      reportId: report.id,
+      type: 'acknowledged',
+      title: 'Report received',
+      message: `Your report "${report.title}" has been received and is under review.`,
     });
 
     this.logger.debug({
@@ -244,7 +253,7 @@ export class ReportService {
       providerId,
     );
 
-    return this.prisma.report.update({
+    const updated = await this.prisma.report.update({
       where: { id: reportId },
       data: {
         assignedProviderId: providerId,
@@ -258,6 +267,9 @@ export class ReportService {
       },
       include: this.includeRelations(),
     });
+
+    await this.notifyStatusChange(updated);
+    return updated;
   }
 
   // ===================== STATUS =====================
@@ -326,11 +338,14 @@ export class ReportService {
       data.completedByProviderAt = new Date();
     }
 
-    return this.prisma.report.update({
+    const updated = await this.prisma.report.update({
       where: { id: reportId },
       data,
       include: this.includeRelations(),
     });
+
+    await this.notifyStatusChange(updated);
+    return updated;
   }
 
   async uploadCompletionEvidence(
@@ -366,27 +381,61 @@ export class ReportService {
       throw new ForbiddenException('Invalid completion image size');
     }
 
-    const extensionByContentType: Record<string, string> = {
-      'image/jpeg': 'jpg',
-      'image/png': 'png',
-      'image/webp': 'webp',
-    };
-    const extension = extensionByContentType[dto.contentType];
-    const fileName = `${Date.now()}-${randomUUID()}.${extension}`;
-    const relativePath = join('report-completion', reportId, fileName);
-    const uploadRoot = join(process.cwd(), 'uploads');
-    const targetDir = join(uploadRoot, 'report-completion', reportId);
-    const targetPath = join(uploadRoot, relativePath);
-
-    await mkdir(targetDir, { recursive: true });
-    await writeFile(targetPath, image);
-
-    const publicPath = `/uploads/${relativePath.replace(/\\/g, '/')}`;
+    const saved = await this.saveImage({
+      image,
+      contentType: dto.contentType,
+      folder: 'report-completion',
+      reportId,
+    });
 
     return {
-      completionImagePath: relativePath.replace(/\\/g, '/'),
-      completionImageUrl: publicPath,
+      completionImagePath: saved.imagePath,
+      completionImageUrl: saved.imageUrl,
     };
+  }
+
+  async uploadReportEvidence(
+    reportId: string,
+    dto: UploadReportEvidenceDto,
+    user: JwtUser,
+  ) {
+    const userId = this.getUserId(user);
+
+    if (user.role !== UserRole.CITIZEN) {
+      throw new ForbiddenException('Only citizens can upload report evidence');
+    }
+
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+    });
+
+    if (!report) throw new NotFoundException('Report not found');
+
+    if (report.citizenId !== userId) {
+      throw new ForbiddenException('Not your report');
+    }
+
+    const image = Buffer.from(dto.imageBase64, 'base64');
+
+    if (image.length === 0 || image.length > 5 * 1024 * 1024) {
+      throw new ForbiddenException('Invalid report image size');
+    }
+
+    const saved = await this.saveImage({
+      image,
+      contentType: dto.contentType,
+      folder: 'report-evidence',
+      reportId,
+    });
+
+    return this.prisma.report.update({
+      where: { id: reportId },
+      data: {
+        evidenceImagePath: saved.imagePath,
+        evidenceImageUrl: saved.imageUrl,
+      },
+      include: this.includeRelations(),
+    });
   }
 
   async confirmCitizenCompletion(
@@ -395,7 +444,7 @@ export class ReportService {
     user: JwtUser,
   ) {
     const report = await this.getCitizenReviewReport(reportId, user);
-    return this.prisma.report.update({
+    const updated = await this.prisma.report.update({
       where: { id: report.id },
       data: {
         status: ReportStatus.CLOSED,
@@ -405,6 +454,9 @@ export class ReportService {
       },
       include: this.includeRelations(),
     });
+
+    await this.notifyStatusChange(updated);
+    return updated;
   }
 
   async rejectCitizenCompletion(
@@ -413,7 +465,7 @@ export class ReportService {
     user: JwtUser,
   ) {
     const report = await this.getCitizenReviewReport(reportId, user);
-    return this.prisma.report.update({
+    const updated = await this.prisma.report.update({
       where: { id: report.id },
       data: {
         status: ReportStatus.IN_PROGRESS,
@@ -421,6 +473,9 @@ export class ReportService {
       },
       include: this.includeRelations(),
     });
+
+    await this.notifyStatusChange(updated);
+    return updated;
   }
 
   // ===================== DASHBOARD =====================
@@ -621,6 +676,87 @@ export class ReportService {
       citizen: true,
       assignedProvider: true,
       organization: true,
+    };
+  }
+
+  private async createNotification(data: {
+    userId: string;
+    reportId?: string;
+    type: string;
+    title: string;
+    message: string;
+  }) {
+    const notification = (this.prisma as any).notification;
+    if (!notification?.create) return;
+    await notification.create({ data });
+  }
+
+  private async notifyStatusChange(report: {
+    id: string;
+    title: string;
+    citizenId: string;
+    status: ReportStatus;
+  }) {
+    const messageByStatus: Partial<
+      Record<ReportStatus, { title: string; message: string; type: string }>
+    > = {
+      [ReportStatus.ASSIGNED]: {
+        type: 'assigned',
+        title: 'Report assigned',
+        message: `Your report "${report.title}" has been assigned to a provider.`,
+      },
+      [ReportStatus.IN_PROGRESS]: {
+        type: 'status_update',
+        title: 'Work started',
+        message: `A provider has started work on "${report.title}".`,
+      },
+      [ReportStatus.COMPLETED_BY_PROVIDER]: {
+        type: 'completion_review',
+        title: 'Ready for review',
+        message: `The provider marked "${report.title}" complete. Please review it.`,
+      },
+      [ReportStatus.CLOSED]: {
+        type: 'resolved',
+        title: 'Report closed',
+        message: `Your report "${report.title}" has been closed.`,
+      },
+    };
+
+    const notification = messageByStatus[report.status];
+    if (!notification) return;
+
+    await this.createNotification({
+      userId: report.citizenId,
+      reportId: report.id,
+      ...notification,
+    });
+  }
+
+  private async saveImage(params: {
+    image: Buffer;
+    contentType: string;
+    folder: string;
+    reportId: string;
+  }) {
+    const extensionByContentType: Record<string, string> = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp',
+    };
+    const extension = extensionByContentType[params.contentType];
+    const fileName = `${Date.now()}-${randomUUID()}.${extension}`;
+    const relativePath = join(params.folder, params.reportId, fileName);
+    const uploadRoot = join(process.cwd(), 'uploads');
+    const targetDir = join(uploadRoot, params.folder, params.reportId);
+    const targetPath = join(uploadRoot, relativePath);
+
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(targetPath, params.image);
+
+    const imagePath = relativePath.replace(/\\/g, '/');
+    return {
+      imagePath,
+      imageUrl: `/uploads/${imagePath}`,
     };
   }
 
