@@ -19,9 +19,19 @@ type AuthUser = {
 
 type ProviderRecommendation = {
   providerId: string;
+  providerName: string;
   fullName: string;
   email: string | null;
   phone: string | null;
+  activeJobs: number;
+  maxActiveJobs: number;
+  rating: number;
+  isOnline: boolean;
+  isAvailable: boolean;
+  confidence: number;
+  confidenceLabel: string;
+  specialties: string[];
+  coverageAreas: string[];
   activeAssignments: number;
   score: number;
   reasons: string[];
@@ -46,7 +56,7 @@ export class DispatchAiService {
     }
 
     if (user.role === UserRole.SUPER_ADMIN) {
-      return this.buildRecommendations(report);
+      return this.buildRecommendations(report, user);
     }
 
     if (
@@ -64,17 +74,20 @@ export class DispatchAiService {
       throw new ForbiddenException('Cross-org not allowed');
     }
 
-    return this.buildRecommendations(report);
+    return this.buildRecommendations(report, user);
   }
 
-  private async buildRecommendations(report: {
-    id: string;
-    title: string;
-    category: string;
-    location: string;
-    status: ReportStatus;
-    organizationId: string;
-  }) {
+  private async buildRecommendations(
+    report: {
+      id: string;
+      title: string;
+      category: string;
+      location: string;
+      status: ReportStatus;
+      organizationId: string;
+    },
+    user: AuthUser,
+  ) {
     const [totalUsers, providerRoleCount, organizationProviderCount] =
       await Promise.all([
         this.prisma.user.count(),
@@ -108,10 +121,17 @@ export class DispatchAiService {
       'Dispatch recommendation provider filtering counts',
     );
 
-    const providers = await this.prisma.user.findMany({
+    let providers = await this.prisma.user.findMany({
       where: {
         role: UserRole.PROVIDER,
-        organizationId: report.organizationId,
+        OR: [
+          { organizationId: report.organizationId },
+          {
+            providerOrganizations: {
+              some: { organizationId: report.organizationId, active: true },
+            },
+          },
+        ],
       },
       include: {
         assignedReports: {
@@ -125,11 +145,33 @@ export class DispatchAiService {
             status: true,
           },
         },
+        providerOrganizations: true,
       },
       orderBy: {
         fullName: 'asc',
       },
     });
+
+    if (providers.length === 0 && report.organizationId) {
+      const allowGlobalFallback = user.role === UserRole.SUPER_ADMIN;
+      if (allowGlobalFallback) {
+        providers = await this.prisma.user.findMany({
+          where: { role: UserRole.PROVIDER },
+          include: {
+            assignedReports: {
+              where: {
+                status: {
+                  in: [ReportStatus.ASSIGNED, ReportStatus.IN_PROGRESS],
+                },
+              },
+              select: { id: true, status: true },
+            },
+            providerOrganizations: true,
+          },
+          orderBy: { fullName: 'asc' },
+        });
+      }
+    }
 
     this.logger.debug(
       {
@@ -164,9 +206,22 @@ export class DispatchAiService {
 
         return {
           providerId: provider.id,
+          providerName: provider.fullName,
           fullName: provider.fullName,
           email: provider.email,
           phone: provider.phone,
+          activeJobs: activeAssignments,
+          maxActiveJobs: 5,
+          rating: 4.2,
+          isOnline: true,
+          isAvailable: activeAssignments < 5,
+          confidence: Math.max(0, Math.min(100, score)),
+          confidenceLabel:
+            provider.organizationId === report.organizationId
+              ? 'Same organization match'
+              : 'Manual assignment fallback',
+          specialties: this.specialtiesFor(provider.fullName, report.category),
+          coverageAreas: this.coverageAreas(provider, report.location),
           activeAssignments,
           score,
           reasons,
@@ -203,6 +258,39 @@ export class DispatchAiService {
       bestMatch: rankedProviders[0] ?? null,
       recommendations: rankedProviders.slice(0, 5),
     };
+  }
+
+  private specialtiesFor(name: string, category: string) {
+    const value = `${name} ${category}`.toLowerCase();
+    if (value.includes('drain') || value.includes('water')) {
+      return ['Drainage', 'Water & Sanitation'];
+    }
+    if (value.includes('electric') || value.includes('light')) {
+      return ['Electricity', 'Street Lighting'];
+    }
+    if (value.includes('waste') || value.includes('sanitation')) {
+      return ['Waste Management', 'Environmental Sanitation'];
+    }
+    if (value.includes('road') || value.includes('bridge')) {
+      return ['Road & Infrastructure', 'Traffic Management'];
+    }
+    return ['General Municipal Services'];
+  }
+
+  private coverageAreas(
+    provider: {
+      organizationId: string | null;
+      providerOrganizations?: unknown[];
+    },
+    location: string,
+  ) {
+    if (
+      provider.organizationId ||
+      (provider.providerOrganizations?.length ?? 0) > 0
+    ) {
+      return [location.split(',')[0] || 'Assigned service zone'];
+    }
+    return ['Platform-wide contractor pool'];
   }
 
   async autoAssignBestProvider(reportId: string, user: AuthUser) {

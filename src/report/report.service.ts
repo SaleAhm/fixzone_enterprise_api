@@ -78,6 +78,13 @@ export class ReportService {
       organizationId: report.organizationId,
     });
 
+    await this.audit('Report Created', user, {
+      targetType: 'Report',
+      targetId: report.id,
+      organizationId: report.organizationId,
+      category: report.category,
+    });
+
     return report;
   }
 
@@ -240,6 +247,7 @@ export class ReportService {
 
     const provider = await this.prisma.user.findUnique({
       where: { id: providerId },
+      include: { providerOrganizations: true },
     });
 
     if (!provider || provider.role !== UserRole.PROVIDER) {
@@ -249,6 +257,9 @@ export class ReportService {
     this.assertAssignmentAllowed(
       report,
       provider.organizationId,
+      provider.providerOrganizations.some(
+        (link) => link.organizationId === report.organizationId && link.active,
+      ),
       user,
       providerId,
     );
@@ -269,6 +280,12 @@ export class ReportService {
     });
 
     await this.notifyStatusChange(updated);
+    await this.audit('Report Assigned', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      providerId,
+      organizationId: updated.organizationId,
+    });
     return updated;
   }
 
@@ -298,7 +315,7 @@ export class ReportService {
       throw new ForbiddenException('Only new assignments can be rejected');
     }
 
-    return this.prisma.report.update({
+    const updated = await this.prisma.report.update({
       where: { id: reportId },
       data: {
         status: ReportStatus.PENDING,
@@ -312,6 +329,12 @@ export class ReportService {
       },
       include: this.includeRelations(),
     });
+    await this.audit('Provider Rejected Assignment', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      reason,
+    });
+    return updated;
   }
 
   async updateStatus(
@@ -345,6 +368,12 @@ export class ReportService {
     });
 
     await this.notifyStatusChange(updated);
+    await this.audit('Report Status Changed', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      status: dto.status,
+      organizationId: updated.organizationId,
+    });
     return updated;
   }
 
@@ -388,6 +417,12 @@ export class ReportService {
       reportId,
     });
 
+    await this.audit('Provider Completion Evidence Uploaded', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      imagePath: saved.imagePath,
+    });
+
     return {
       completionImagePath: saved.imagePath,
       completionImageUrl: saved.imageUrl,
@@ -428,7 +463,7 @@ export class ReportService {
       reportId,
     });
 
-    return this.prisma.report.update({
+    const updated = await this.prisma.report.update({
       where: { id: reportId },
       data: {
         evidenceImagePath: saved.imagePath,
@@ -436,6 +471,12 @@ export class ReportService {
       },
       include: this.includeRelations(),
     });
+    await this.audit('Report Evidence Uploaded', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      imagePath: saved.imagePath,
+    });
+    return updated;
   }
 
   async confirmCitizenCompletion(
@@ -456,6 +497,11 @@ export class ReportService {
     });
 
     await this.notifyStatusChange(updated);
+    await this.audit('Citizen Confirmed Completion', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      rating: dto.rating ?? null,
+    });
     return updated;
   }
 
@@ -475,6 +521,11 @@ export class ReportService {
     });
 
     await this.notifyStatusChange(updated);
+    await this.audit('Citizen Rejected Completion', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      reason: dto.reason.trim(),
+    });
     return updated;
   }
 
@@ -691,6 +742,24 @@ export class ReportService {
     await notification.create({ data });
   }
 
+  private async audit(
+    action: string,
+    user: JwtUser,
+    metadata: Record<string, unknown> = {},
+  ) {
+    const audit = (this.prisma as any).demoAuditLog;
+    if (!audit?.create) return;
+    const actorUserId = user.id ?? user.userId ?? user.sub;
+    if (!actorUserId) return;
+    await audit.create({
+      data: {
+        action,
+        actorUserId,
+        metadata,
+      },
+    });
+  }
+
   private async notifyStatusChange(report: {
     id: string;
     title: string;
@@ -784,9 +853,22 @@ export class ReportService {
       organizationId: string;
     },
     providerOrganizationId: string | null,
-    user: JwtUser,
+    providerLinkedToReportOrgOrUser: boolean | JwtUser,
+    userOrProviderId?: JwtUser | string,
     providerId?: string,
   ) {
+    const providerLinkedToReportOrg =
+      typeof providerLinkedToReportOrgOrUser === 'boolean'
+        ? providerLinkedToReportOrgOrUser
+        : false;
+    const user =
+      typeof providerLinkedToReportOrgOrUser === 'boolean'
+        ? (userOrProviderId as JwtUser)
+        : providerLinkedToReportOrgOrUser;
+    const resolvedProviderId =
+      typeof providerLinkedToReportOrgOrUser === 'boolean'
+        ? providerId
+        : (userOrProviderId as string | undefined);
     const normalizedCurrentStatus = normalizeReportStatus(report.status);
     const normalizedNextStatus = normalizeReportStatus(ReportStatus.ASSIGNED);
 
@@ -795,7 +877,7 @@ export class ReportService {
       reportId: report.id,
       currentStatus: report.status,
       assignedProviderId: report.assignedProviderId,
-      providerId,
+      providerId: resolvedProviderId,
       normalizedCurrentStatus,
       normalizedNextStatus,
     });
@@ -815,7 +897,10 @@ export class ReportService {
         throw new ForbiddenException('Cross-org not allowed');
       }
 
-      if (providerOrganizationId !== user.organizationId) {
+      if (
+        providerOrganizationId !== user.organizationId &&
+        !providerLinkedToReportOrg
+      ) {
         throw new ForbiddenException('Provider must be same org');
       }
     }

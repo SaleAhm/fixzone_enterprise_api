@@ -25,20 +25,38 @@ function randomFrom<T>(items: T[]): T {
 async function main() {
   console.log('Seeding FixZone enterprise demo data...');
 
-  await prisma.report.deleteMany();
-  await prisma.user.deleteMany();
-  await prisma.organization.deleteMany();
-
   const passwordHash = await bcrypt.hash('Password123!', 10);
 
-  const org = await prisma.organization.create({
-    data: {
-      name: 'FixZone Demo LGA',
-    },
+  const existingOrg = await prisma.organization.findFirst({
+    where: { name: 'FixZone Demo LGA' },
+    orderBy: { createdAt: 'asc' },
   });
+  const org = existingOrg
+    ? await prisma.organization.update({
+        where: { id: existingOrg.id },
+        data: {
+          type: 'LOCAL_GOVERNMENT',
+          subscriptionPlan: 'DEMO',
+          billingStatus: 'ACTIVE',
+        },
+      })
+    : await prisma.organization.create({
+        data: {
+          name: 'FixZone Demo LGA',
+          type: 'LOCAL_GOVERNMENT',
+          subscriptionPlan: 'DEMO',
+          billingStatus: 'ACTIVE',
+        },
+      });
 
-  await prisma.user.create({
-    data: {
+  await prisma.user.upsert({
+    where: { email: 'superadmin@fixzone.ng' },
+    update: {
+      fullName: 'Super Admin',
+      passwordHash,
+      role: UserRole.SUPER_ADMIN,
+    },
+    create: {
       fullName: 'Super Admin',
       email: 'superadmin@fixzone.ng',
       passwordHash,
@@ -46,8 +64,15 @@ async function main() {
     },
   });
 
-  await prisma.user.create({
-    data: {
+  await prisma.user.upsert({
+    where: { email: 'orgadmin@fixzone.ng' },
+    update: {
+      fullName: 'Org Admin',
+      passwordHash,
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    },
+    create: {
       fullName: 'Org Admin',
       email: 'orgadmin@fixzone.ng',
       passwordHash,
@@ -56,8 +81,15 @@ async function main() {
     },
   });
 
-  await prisma.user.create({
-    data: {
+  await prisma.user.upsert({
+    where: { email: 'dispatch@fixzone.ng' },
+    update: {
+      fullName: 'Dispatch Officer',
+      passwordHash,
+      role: UserRole.DISPATCH_OFFICER,
+      organizationId: org.id,
+    },
+    create: {
       fullName: 'Dispatch Officer',
       email: 'dispatch@fixzone.ng',
       passwordHash,
@@ -92,14 +124,38 @@ async function main() {
 
   const providers: User[] = [];
   for (let i = 0; i < providerNames.length; i++) {
-    const provider = await prisma.user.create({
-      data: {
+    const provider = await prisma.user.upsert({
+      where: { email: `provider${i + 1}@fixzone.ng` },
+      update: {
+        fullName: providerNames[i],
+        passwordHash,
+        role: UserRole.PROVIDER,
+        organizationId: org.id,
+        providerEngagementType: 'INTERNAL_STAFF',
+      },
+      create: {
         fullName: providerNames[i],
         email: `provider${i + 1}@fixzone.ng`,
         passwordHash,
         role: UserRole.PROVIDER,
         organizationId: org.id,
+        providerEngagementType: 'INTERNAL_STAFF',
         createdAt: daysAgo(20 - i),
+      },
+    });
+    await prisma.providerOrganization.upsert({
+      where: {
+        providerId_organizationId: {
+          providerId: provider.id,
+          organizationId: org.id,
+        },
+      },
+      update: { active: true, isPrimary: true },
+      create: {
+        providerId: provider.id,
+        organizationId: org.id,
+        active: true,
+        isPrimary: true,
       },
     });
 
@@ -108,8 +164,15 @@ async function main() {
 
   const citizens: User[] = [];
   for (let i = 0; i < citizenNames.length; i++) {
-    const citizen = await prisma.user.create({
-      data: {
+    const citizen = await prisma.user.upsert({
+      where: { email: `citizen${i + 1}@fixzone.ng` },
+      update: {
+        fullName: citizenNames[i],
+        passwordHash,
+        role: UserRole.CITIZEN,
+        organizationId: org.id,
+      },
+      create: {
         fullName: citizenNames[i],
         email: `citizen${i + 1}@fixzone.ng`,
         passwordHash,
@@ -132,8 +195,7 @@ async function main() {
     },
     {
       title: 'Broken street light near junction',
-      description:
-        'The street light has stopped working for several nights.',
+      description: 'The street light has stopped working for several nights.',
       category: 'Electricity',
       location: 'Central Junction by Bus Stop',
     },
@@ -146,8 +208,7 @@ async function main() {
     },
     {
       title: 'Overflowing waste bin at bus stop',
-      description:
-        'Waste has accumulated around the public collection point.',
+      description: 'Waste has accumulated around the public collection point.',
       category: 'Waste',
       location: 'Main Motor Park Bus Stop',
     },
@@ -167,6 +228,16 @@ async function main() {
     ReportStatus.COMPLETED_BY_PROVIDER,
     ReportStatus.CLOSED,
   ];
+
+  const existingReports = await prisma.report.count({
+    where: { organizationId: org.id },
+  });
+  if (existingReports > 0) {
+    console.log(
+      `Seed users updated. Existing reports preserved (${existingReports}).`,
+    );
+    return;
+  }
 
   for (let i = 0; i < 36; i++) {
     const citizen = randomFrom(citizens);

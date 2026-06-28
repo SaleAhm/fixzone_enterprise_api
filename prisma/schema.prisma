@@ -27,51 +27,123 @@ enum AssignmentOutcome {
   TIMED_OUT
 }
 
+enum OrganizationType {
+  FEDERAL
+  STATE
+  LOCAL_GOVERNMENT
+  AGENCY
+  CORPORATE
+  ESTATE
+  CAMPUS
+  COMMUNITY
+}
+
+enum SubscriptionPlan {
+  FREE
+  DEMO
+  STARTER
+  PROFESSIONAL
+  GOVERNMENT
+  ENTERPRISE
+}
+
+enum BillingStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+enum ProviderEngagementType {
+  INTERNAL_STAFF
+  EXTERNAL_CONTRACTOR
+}
+
 model Organization {
-  id                    String   @id @default(cuid())
-  name                  String
-  isDemo                Boolean  @default(false)
-  demoBatchId           String?
-  demoScenario          String?
-  demoGeneratedAt       DateTime?
-  createdBySuperAdminId String?
-  createdAt             DateTime @default(now())
+  id                     String           @id @default(cuid())
+  name                   String
+  type                   OrganizationType @default(LOCAL_GOVERNMENT)
+  parentId               String?
+  tenantCode             String?
+  subscriptionPlan       SubscriptionPlan @default(FREE)
+  billingStatus          BillingStatus    @default(TRIAL)
+  subscriptionStartAt    DateTime?
+  subscriptionEndAt      DateTime?
+  allowedUsers           Int?
+  allowedProviders       Int?
+  allowedReportsPerMonth Int?
+  allowedStorageMb       Int?
+  enabledModules         Json?
+  isDemo                 Boolean          @default(false)
+  demoBatchId            String?
+  demoScenario           String?
+  demoGeneratedAt        DateTime?
+  createdBySuperAdminId  String?
+  createdAt              DateTime         @default(now())
 
-  users   User[]
-  reports Report[]
+  users         User[]
+  reports       Report[]
+  parent        Organization?          @relation("OrganizationHierarchy", fields: [parentId], references: [id])
+  children      Organization[]         @relation("OrganizationHierarchy")
+  providerLinks ProviderOrganization[]
 
+  @@index([parentId])
+  @@index([type])
+  @@index([subscriptionPlan])
+  @@index([billingStatus])
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
 }
 
 model User {
-  id                    String   @id @default(cuid())
-  email                 String?  @unique
-  phone                 String?  @unique
-  firebaseUid           String?  @unique
-  passwordHash          String?
-  fullName              String
-  role                  UserRole
-  organizationId        String?
-  isDemo                Boolean  @default(false)
-  demoBatchId           String?
-  demoScenario          String?
-  demoGeneratedAt       DateTime?
-  createdBySuperAdminId String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                     String                  @id @default(cuid())
+  email                  String?                 @unique
+  phone                  String?                 @unique
+  firebaseUid            String?                 @unique
+  passwordHash           String?
+  fullName               String
+  role                   UserRole
+  organizationId         String?
+  providerEngagementType ProviderEngagementType?
+  serviceZones           Json?
+  isDemo                 Boolean                 @default(false)
+  demoBatchId            String?
+  demoScenario           String?
+  demoGeneratedAt        DateTime?
+  createdBySuperAdminId  String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
 
   organization Organization? @relation(fields: [organizationId], references: [id])
 
-  citizenReports  Report[]       @relation("CitizenReports")
-  assignedReports Report[]       @relation("AssignedProviderReports")
-  notifications   Notification[]
+  citizenReports        Report[]               @relation("CitizenReports")
+  assignedReports       Report[]               @relation("AssignedProviderReports")
+  notifications         Notification[]
+  providerOrganizations ProviderOrganization[]
 
   @@index([organizationId])
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
+}
+
+model ProviderOrganization {
+  id             String   @id @default(cuid())
+  providerId     String
+  organizationId String
+  isPrimary      Boolean  @default(false)
+  active         Boolean  @default(true)
+  serviceZones   Json?
+  createdAt      DateTime @default(now())
+
+  provider     User         @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, organizationId])
+  @@index([organizationId, active])
+  @@index([providerId, active])
 }
 
 model Report {
@@ -124,20 +196,20 @@ model Report {
 }
 
 model Notification {
-  id                    String   @id @default(cuid())
+  id                    String    @id @default(cuid())
   userId                String
   reportId              String?
   type                  String
   title                 String
   message               String
-  read                  Boolean  @default(false)
-  isDemo                Boolean  @default(false)
+  read                  Boolean   @default(false)
+  isDemo                Boolean   @default(false)
   demoBatchId           String?
   demoScenario          String?
   demoGeneratedAt       DateTime?
   createdBySuperAdminId String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   report Report? @relation(fields: [reportId], references: [id])
@@ -173,15 +245,15 @@ model PlatformSetting {
 }
 
 model PlatformBackup {
-  id            String   @id @default(cuid())
-  fileName      String   @unique
-  filePath      String
-  sizeBytes     Int
-  status        String   @default("READY")
-  createdById   String
-  restoredAt    DateTime?
-  restoredById  String?
-  createdAt     DateTime @default(now())
+  id           String    @id @default(cuid())
+  fileName     String    @unique
+  filePath     String
+  sizeBytes    Int
+  status       String    @default("READY")
+  createdById  String
+  restoredAt   DateTime?
+  restoredById String?
+  createdAt    DateTime  @default(now())
 
   @@index([createdAt])
   @@index([createdById])

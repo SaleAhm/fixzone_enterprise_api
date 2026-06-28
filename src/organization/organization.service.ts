@@ -40,6 +40,15 @@ export class OrganizationService {
   }
 
   async getMine(user: JwtUser) {
+    if (user.role === 'SUPER_ADMIN' && !user.organizationId) {
+      return {
+        id: 'platform',
+        name: 'Global Platform Admin',
+        description: 'Platform-wide access',
+        platformWide: true,
+      };
+    }
+
     if (!user.organizationId) {
       throw new NotFoundException('User is not linked to any organization');
     }

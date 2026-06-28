@@ -118,6 +118,10 @@ export class AuthService {
     });
 
     if (!user || !user.passwordHash) {
+      await this.audit('Failed Login', 'anonymous', {
+        email: dto.email?.toLowerCase().trim() ?? null,
+        phone: dto.phone?.trim() ?? null,
+      });
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -127,8 +131,17 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
+      await this.audit('Failed Login', user.id, {
+        email: user.email,
+        reason: 'invalid_password',
+      });
       throw new UnauthorizedException('Invalid credentials');
     }
+
+    await this.audit('Login', user.id, {
+      email: user.email,
+      role: user.role,
+    });
 
     return this.issueTokens({
       id: user.id,
@@ -249,6 +262,22 @@ export class AuthService {
         });
 
     return this.issueTokens(user);
+  }
+
+  private async audit(
+    action: string,
+    actorUserId: string,
+    metadata: Record<string, unknown> = {},
+  ) {
+    const audit = (this.prisma as any).demoAuditLog;
+    if (!audit?.create) return;
+    await audit.create({
+      data: {
+        action,
+        actorUserId,
+        metadata,
+      },
+    });
   }
 
   private mapApiRoleToPrismaRole(role?: string): UserRole {
