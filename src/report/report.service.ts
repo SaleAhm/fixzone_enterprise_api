@@ -66,11 +66,33 @@ export class ReportService {
   async getMyReports(user: JwtUser) {
     const userId = this.getUserId(user);
 
-    return this.prisma.report.findMany({
-      where: { citizenId: userId },
-      orderBy: { createdAt: 'desc' },
-      include: this.includeRelations(),
-    });
+    try {
+      return await this.prisma.report.findMany({
+        where: { citizenId: userId },
+        orderBy: { createdAt: 'desc' },
+        include: this.includeRelations(),
+      });
+    } catch (error) {
+      const prismaError = error as {
+        code?: string;
+        message?: string;
+        meta?: unknown;
+        stack?: string;
+      };
+
+      this.logger.error(
+        {
+          message: 'Failed to fetch citizen reports',
+          userId,
+          prismaCode: prismaError.code,
+          prismaMessage: prismaError.message,
+          prismaMeta: prismaError.meta,
+        },
+        prismaError.stack,
+      );
+
+      throw error;
+    }
   }
 
   async getCitizenDashboardSummary(user: JwtUser) {
