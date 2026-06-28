@@ -6,6 +6,7 @@ import { UsersModule } from './users/users.module';
 import { ReportModule } from './report/report.module';
 import { NotificationModule } from './notification/notification.module';
 import { DemoDataModule } from './demo-data/demo-data.module';
+import { PlatformToolsModule } from './platform-tools/platform-tools.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -18,6 +19,7 @@ import { AppService } from './app.service';
     ReportModule,
     NotificationModule,
     DemoDataModule,
+    PlatformToolsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
