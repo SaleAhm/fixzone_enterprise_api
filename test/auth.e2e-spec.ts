@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import * as bcrypt from 'bcrypt';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -51,6 +52,8 @@ describe('Auth API (e2e)', () => {
           { email: 'admin@test.com' },
           { email: 'citizen@test.com' },
           { email: 'provider@test.com' },
+          { email: 'provider2-auth@test.com' },
+          { email: 'provider2-suspended@test.com' },
           { email: 'citizen.sync@test.com' },
           { phone: '+2348000000001' },
         ],
@@ -76,6 +79,8 @@ describe('Auth API (e2e)', () => {
           { email: 'admin@test.com' },
           { email: 'citizen@test.com' },
           { email: 'provider@test.com' },
+          { email: 'provider2-auth@test.com' },
+          { email: 'provider2-suspended@test.com' },
           { email: 'citizen.sync@test.com' },
           { phone: '+2348000000001' },
         ],
@@ -187,6 +192,87 @@ describe('Auth API (e2e)', () => {
 
     expect(res.status).toBe(201);
     providerToken = res.body.accessToken;
+  });
+
+  it('rejects provider login when Provider ID belongs to another provider', async () => {
+    const passwordHash = await bcrypt.hash('Password123!', 10);
+    await prisma.user.create({
+      data: {
+        fullName: 'Provider Two Auth',
+        email: 'provider2-auth@test.com',
+        passwordHash,
+        role: 'PROVIDER',
+        providerId: 'PRV-2024-002',
+        organizationId: adminOrganizationId,
+      },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider2-auth@test.com',
+        password: 'Password123!',
+        providerId: 'PRV-2024-001',
+      });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('allows provider login when Provider ID matches the backend account', async () => {
+    const existing = await prisma.user.findUnique({
+      where: { email: 'provider2-auth@test.com' },
+    });
+    if (!existing) {
+      const passwordHash = await bcrypt.hash('Password123!', 10);
+      await prisma.user.create({
+        data: {
+          fullName: 'Provider Two Auth',
+          email: 'provider2-auth@test.com',
+          passwordHash,
+          role: 'PROVIDER',
+          providerId: 'PRV-2024-002',
+          organizationId: adminOrganizationId,
+        },
+      });
+    }
+
+    const res = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider2-auth@test.com',
+        password: 'Password123!',
+        providerId: 'PRV-2024-002',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.accessToken).toBeDefined();
+    expect(res.body.user.providerId).toBe('PRV-2024-002');
+  });
+
+  it('blocks suspended provider login', async () => {
+    const passwordHash = await bcrypt.hash('Password123!', 10);
+    await prisma.user.create({
+      data: {
+        fullName: 'Provider Suspended Auth',
+        email: 'provider2-suspended@test.com',
+        passwordHash,
+        role: 'PROVIDER',
+        providerId: 'PRV-2024-099',
+        accountStatus: 'SUSPENDED',
+        organizationId: adminOrganizationId,
+      },
+    });
+
+    const res = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider2-suspended@test.com',
+        password: 'Password123!',
+        providerId: 'PRV-2024-099',
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe('Account is suspended');
   });
 
   it('Provider can access provider-or-admin route', async () => {

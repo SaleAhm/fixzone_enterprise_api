@@ -155,6 +155,19 @@ export class AuthService {
       throw new UnauthorizedException('Account is suspended');
     }
 
+    const requestedProviderId = dto.providerId?.trim();
+    if (requestedProviderId) {
+      if (user.role !== UserRole.PROVIDER || user.providerId !== requestedProviderId) {
+        await this.audit('Provider Login ID Mismatch', user.id, {
+          email: user.email,
+          requestedProviderId,
+          actualProviderId: user.providerId,
+          role: user.role,
+        });
+        throw new UnauthorizedException('Invalid provider credentials');
+      }
+    }
+
     await this.audit('Login', user.id, {
       email: user.email,
       role: user.role,

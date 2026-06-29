@@ -2,7 +2,6 @@ import {
   IsEmail,
   IsEnum,
   IsInt,
-  IsNotEmpty,
   IsObject,
   IsOptional,
   IsString,
@@ -14,10 +13,10 @@ import {
   SubscriptionPlan,
 } from '@prisma/client';
 
-export class CreateOrganizationDto {
+export class UpdateOrganizationDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  name: string;
+  name?: string;
 
   @IsOptional()
   @IsEnum(OrganizationType)

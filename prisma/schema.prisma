@@ -36,6 +36,14 @@ enum OrganizationType {
   ESTATE
   CAMPUS
   COMMUNITY
+  GOVERNMENT
+  FEDERAL_AGENCY
+  STATE_AGENCY
+  UNIVERSITY
+  HOSPITAL
+  UTILITY_COMPANY
+  PRIVATE_FACILITY
+  OTHER
 }
 
 enum SubscriptionPlan {
@@ -65,14 +73,28 @@ enum AccountStatus {
   SUSPENDED
 }
 
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
 model Organization {
-  id                     String           @id @default(cuid())
+  id                     String             @id @default(cuid())
   name                   String
-  type                   OrganizationType @default(LOCAL_GOVERNMENT)
+  type                   OrganizationType   @default(LOCAL_GOVERNMENT)
+  status                 OrganizationStatus @default(ACTIVE)
   parentId               String?
   tenantCode             String?
-  subscriptionPlan       SubscriptionPlan @default(FREE)
-  billingStatus          BillingStatus    @default(TRIAL)
+  contactEmail           String?
+  contactPhone           String?
+  address                String?
+  state                  String?
+  lga                    String?
+  country                String?            @default("Nigeria")
+  profileData            Json?
+  subscriptionPlan       SubscriptionPlan   @default(FREE)
+  billingStatus          BillingStatus      @default(TRIAL)
   subscriptionStartAt    DateTime?
   subscriptionEndAt      DateTime?
   allowedUsers           Int?
@@ -80,12 +102,12 @@ model Organization {
   allowedReportsPerMonth Int?
   allowedStorageMb       Int?
   enabledModules         Json?
-  isDemo                 Boolean          @default(false)
+  isDemo                 Boolean            @default(false)
   demoBatchId            String?
   demoScenario           String?
   demoGeneratedAt        DateTime?
   createdBySuperAdminId  String?
-  createdAt              DateTime         @default(now())
+  createdAt              DateTime           @default(now())
 
   users         User[]
   reports       Report[]
@@ -95,6 +117,7 @@ model Organization {
 
   @@index([parentId])
   @@index([type])
+  @@index([status])
   @@index([subscriptionPlan])
   @@index([billingStatus])
   @@index([isDemo])
@@ -193,10 +216,11 @@ model Report {
   createdAt                 DateTime           @default(now())
   updatedAt                 DateTime           @updatedAt
 
-  organization     Organization   @relation(fields: [organizationId], references: [id])
-  citizen          User           @relation("CitizenReports", fields: [citizenId], references: [id])
-  assignedProvider User?          @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
+  organization     Organization     @relation(fields: [organizationId], references: [id])
+  citizen          User             @relation("CitizenReports", fields: [citizenId], references: [id])
+  assignedProvider User?            @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
   notifications    Notification[]
+  activities       ReportActivity[]
 
   @@index([organizationId])
   @@index([citizenId])
@@ -205,6 +229,30 @@ model Report {
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
+}
+
+model ReportActivity {
+  id             String        @id @default(cuid())
+  reportId       String
+  organizationId String
+  actorUserId    String?
+  actorRole      UserRole?
+  actorName      String?
+  action         String
+  fromStatus     ReportStatus?
+  toStatus       ReportStatus?
+  providerId     String?
+  reason         String?
+  note           String?
+  metadata       Json?
+  createdAt      DateTime      @default(now())
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([action])
 }
 
 model Notification {

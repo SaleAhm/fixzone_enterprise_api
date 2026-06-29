@@ -132,6 +132,21 @@ export class ReportController {
     return this.reportService.getRecentReports(user);
   }
 
+  @Get(':id/timeline')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  getReportTimeline(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.getReportTimeline(id, user);
+  }
+
   // ===================== ORGANIZATION =====================
 
   @Get()
@@ -199,6 +214,55 @@ export class ReportController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.reportService.uploadReportEvidence(id, dto, user);
+  }
+
+  @Post('provider/:id/reject')
+  @Roles(UserRole.PROVIDER)
+  rejectProviderAssignment(
+    @Param('id') id: string,
+    @Body() dto: RejectAssignmentDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.rejectAssignment(id, dto, user);
+  }
+
+  @Post(':id/reject-assignment')
+  @Roles(UserRole.PROVIDER)
+  rejectAssignmentPostAlias(
+    @Param('id') id: string,
+    @Body() dto: RejectAssignmentDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.rejectAssignment(id, dto, user);
+  }
+
+  @Get('citizen/:id/completion-review')
+  @Roles(UserRole.CITIZEN)
+  getCitizenCompletionReview(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.getCitizenCompletionReview(id, user);
+  }
+
+  @Post('citizen/:id/confirm-completion')
+  @Roles(UserRole.CITIZEN)
+  confirmCitizenCompletionAlias(
+    @Param('id') id: string,
+    @Body() dto: CitizenConfirmCompletionDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.confirmCitizenCompletion(id, dto, user);
+  }
+
+  @Post('citizen/:id/reject-completion')
+  @Roles(UserRole.CITIZEN)
+  rejectCitizenCompletionAlias(
+    @Param('id') id: string,
+    @Body() dto: CitizenRejectCompletionDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.rejectCitizenCompletion(id, dto, user);
   }
 
   @Patch(':id/citizen-confirm')

@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
-import { ReportStatus, UserRole } from '@prisma/client';
+import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -183,6 +183,22 @@ describe('Report Workflow (e2e)', () => {
 
     expect(closedRes.status).toBe(200);
     expect(closedRes.body.status).toBe(ReportStatus.CLOSED);
+
+    const timelineRes = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/timeline`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(timelineRes.status).toBe(200);
+    expect(
+      timelineRes.body.map((item: { action: string }) => item.action),
+    ).toEqual(
+      expect.arrayContaining([
+        'PROVIDER_ASSIGNED',
+        'PROVIDER_STARTED_WORK',
+        'PROVIDER_SUBMITTED_COMPLETION',
+        'REPORT_CLOSED',
+      ]),
+    );
   });
 
   it('rejects direct ASSIGNED to COMPLETED_BY_PROVIDER transitions', async () => {
@@ -690,5 +706,64 @@ describe('Report Workflow (e2e)', () => {
     expect(res.body.message).toBe(
       'Report cannot be assigned in its current status',
     );
+  });
+
+  it('allows assigned providers to reject jobs back to the dispatch queue', async () => {
+    const org = await createOrganization('Workflow Org H');
+    const dispatchOfficer = await createUser({
+      email: 'wf-dispatch-reject@test.com',
+      fullName: 'Workflow Dispatch Reject',
+      role: UserRole.DISPATCH_OFFICER,
+      organizationId: org.id,
+    });
+    const providerA = await createUser({
+      email: 'wf-provider-reject-a@test.com',
+      fullName: 'Workflow Provider Reject A',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const providerB = await createUser({
+      email: 'wf-provider-reject-b@test.com',
+      fullName: 'Workflow Provider Reject B',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-reject@test.com',
+      fullName: 'Workflow Citizen Reject',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF provider reject',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: providerA.id,
+    });
+
+    const providerToken = await signToken(providerA);
+    const rejectRes = await request(app.getHttpServer())
+      .post(`/api/report/provider/${report.id}/reject`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ reason: 'Crew unavailable today' });
+
+    expect(rejectRes.status).toBe(201);
+    expect(rejectRes.body.status).toBe(ReportStatus.PENDING);
+    expect(rejectRes.body.assignedProviderId).toBeNull();
+    expect(rejectRes.body.lastAssignmentOutcome).toBe(
+      AssignmentOutcome.REJECTED,
+    );
+    expect(rejectRes.body.lastAssignmentReason).toBe('Crew unavailable today');
+
+    const dispatchToken = await signToken(dispatchOfficer);
+    const reassignRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${dispatchToken}`)
+      .send({ providerId: providerB.id });
+
+    expect(reassignRes.status).toBe(200);
+    expect(reassignRes.body.status).toBe(ReportStatus.ASSIGNED);
+    expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
   });
 });

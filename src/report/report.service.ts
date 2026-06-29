@@ -29,6 +29,7 @@ type JwtUser = {
   sub?: string;
   firebaseUid?: string | null;
   email?: string | null;
+  fullName?: string | null;
   role: UserRole;
   organizationId?: string | null;
 };
@@ -84,6 +85,11 @@ export class ReportService {
       organizationId: report.organizationId,
       category: report.category,
     });
+    await this.recordReportActivity(report.id, 'REPORT_CREATED', user, {
+      organizationId: report.organizationId,
+      toStatus: report.status,
+      metadata: { category: report.category },
+    });
 
     return report;
   }
@@ -137,27 +143,53 @@ export class ReportService {
     const userId = this.getUserId(user);
     const where = { citizenId: userId };
 
-    const [total, pending, assigned, inProgress, completed, closed] =
-      await Promise.all([
-        this.prisma.report.count({ where }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.PENDING },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.ASSIGNED },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.IN_PROGRESS },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.COMPLETED_BY_PROVIDER },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.CLOSED },
-        }),
-      ]);
+    const [
+      total,
+      pending,
+      assigned,
+      inProgress,
+      completed,
+      closed,
+      rejectedAssignments,
+      citizenRejectedCompletions,
+      organizationMetrics,
+    ] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.PENDING },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.ASSIGNED },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.IN_PROGRESS },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.COMPLETED_BY_PROVIDER },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.CLOSED },
+      }),
+      this.prisma.report.count({
+        where: { ...where, lastAssignmentOutcome: AssignmentOutcome.REJECTED },
+      }),
+      this.prisma.report.count({
+        where: { ...where, completionRejectionReason: { not: null } },
+      }),
+      this.getDashboardOrganizationMetrics(user),
+    ]);
 
-    return { total, pending, assigned, inProgress, completed, closed };
+    return {
+      total,
+      pending,
+      assigned,
+      inProgress,
+      completed,
+      closed,
+      rejectedAssignments,
+      citizenRejectedCompletions,
+      organizations: organizationMetrics,
+    };
   }
 
   // ===================== PROVIDER =====================
@@ -214,6 +246,16 @@ export class ReportService {
     }
 
     throw new ForbiddenException('Access denied');
+  }
+
+  async getReportTimeline(reportId: string, user: JwtUser) {
+    await this.getReportById(reportId, user);
+    const activity = (this.prisma as any).reportActivity;
+    if (!activity?.findMany) return [];
+    return activity.findMany({
+      where: { reportId },
+      orderBy: { createdAt: 'asc' },
+    });
   }
 
   // ===================== ASSIGN =====================
@@ -289,6 +331,12 @@ export class ReportService {
       providerId,
       organizationId: updated.organizationId,
     });
+    await this.recordReportActivity(reportId, 'PROVIDER_ASSIGNED', user, {
+      organizationId: updated.organizationId,
+      fromStatus: report.status,
+      toStatus: updated.status,
+      providerId,
+    });
     return updated;
   }
 
@@ -338,6 +386,14 @@ export class ReportService {
       targetId: reportId,
       reason,
     });
+    await this.recordReportActivity(reportId, 'PROVIDER_REJECTED', user, {
+      organizationId: updated.organizationId,
+      fromStatus: report.status,
+      toStatus: updated.status,
+      providerId: userId,
+      reason,
+      metadata: { returnedToQueue: true },
+    });
     return updated;
   }
 
@@ -379,6 +435,21 @@ export class ReportService {
       status: dto.status,
       organizationId: updated.organizationId,
     });
+    await this.recordReportActivity(
+      reportId,
+      this.activityActionForStatus(dto.status),
+      user,
+      {
+        organizationId: updated.organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? undefined,
+        note: dto.completionNote?.trim() || undefined,
+        metadata: {
+          completionImagePath: dto.completionImagePath?.trim() || undefined,
+        },
+      },
+    );
     return updated;
   }
 
@@ -428,6 +499,18 @@ export class ReportService {
       targetId: reportId,
       imagePath: saved.imagePath,
     });
+    await this.recordReportActivity(
+      reportId,
+      'COMPLETION_EVIDENCE_UPLOADED',
+      user,
+      {
+        organizationId: report.organizationId,
+        fromStatus: report.status,
+        toStatus: report.status,
+        providerId: userId,
+        metadata: { imagePath: saved.imagePath, imageUrl: saved.imageUrl },
+      },
+    );
 
     return {
       completionImagePath: saved.imagePath,
@@ -482,6 +565,17 @@ export class ReportService {
       targetId: reportId,
       imagePath: saved.imagePath,
     });
+    await this.recordReportActivity(
+      reportId,
+      'REPORT_EVIDENCE_UPLOADED',
+      user,
+      {
+        organizationId: report.organizationId,
+        fromStatus: report.status,
+        toStatus: report.status,
+        metadata: { imagePath: saved.imagePath, imageUrl: saved.imageUrl },
+      },
+    );
     return updated;
   }
 
@@ -508,6 +602,19 @@ export class ReportService {
       targetId: reportId,
       rating: dto.rating ?? null,
     });
+    await this.recordReportActivity(
+      reportId,
+      'CITIZEN_CONFIRMED_COMPLETION',
+      user,
+      {
+        organizationId: updated.organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? undefined,
+        note: dto.feedback?.trim() || undefined,
+        metadata: { rating: dto.rating ?? null },
+      },
+    );
     return updated;
   }
 
@@ -532,7 +639,52 @@ export class ReportService {
       targetId: reportId,
       reason: dto.reason.trim(),
     });
+    await this.recordReportActivity(
+      reportId,
+      'CITIZEN_REJECTED_COMPLETION',
+      user,
+      {
+        organizationId: updated.organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? undefined,
+        reason: dto.reason.trim(),
+      },
+    );
     return updated;
+  }
+
+  async getCitizenCompletionReview(reportId: string, user: JwtUser) {
+    const userId = this.getUserId(user);
+    if (user.role !== UserRole.CITIZEN) {
+      throw new ForbiddenException('Only citizens can review completion');
+    }
+
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+
+    if (!report) throw new NotFoundException('Report not found');
+    if (report.citizenId !== userId) {
+      throw new ForbiddenException('Not your report');
+    }
+
+    const awaitingReview = report.status === ReportStatus.COMPLETED_BY_PROVIDER;
+    return {
+      ...report,
+      completion: {
+        note: report.completionNote,
+        imageUrl: report.completionImageUrl,
+        imagePath: report.completionImagePath,
+        submittedAt: report.completedByProviderAt,
+      },
+      provider: report.assignedProvider,
+      availableActions: {
+        confirm: awaitingReview,
+        reject: awaitingReview,
+      },
+    };
   }
 
   // ===================== DASHBOARD =====================
@@ -728,6 +880,32 @@ export class ReportService {
     return where;
   }
 
+  private async getDashboardOrganizationMetrics(user: JwtUser) {
+    if (this.isSuperAdmin(user)) {
+      const [total, active, suspended, archived] = await Promise.all([
+        this.prisma.organization.count(),
+        this.prisma.organization.count({ where: { status: 'ACTIVE' } }),
+        this.prisma.organization.count({ where: { status: 'SUSPENDED' } }),
+        this.prisma.organization.count({ where: { status: 'ARCHIVED' } }),
+      ]);
+      return { total, active, suspended, archived };
+    }
+
+    if (!user.organizationId) return null;
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: user.organizationId },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        subscriptionPlan: true,
+        billingStatus: true,
+        allowedReportsPerMonth: true,
+      },
+    });
+    return organization;
+  }
+
   private includeRelations() {
     return {
       citizen: true,
@@ -778,6 +956,58 @@ export class ReportService {
         metadata,
       },
     });
+  }
+
+  private async recordReportActivity(
+    reportId: string,
+    action: string,
+    user: JwtUser,
+    details: {
+      organizationId: string;
+      fromStatus?: ReportStatus | null;
+      toStatus?: ReportStatus | null;
+      providerId?: string;
+      reason?: string;
+      note?: string;
+      metadata?: Record<string, unknown>;
+    },
+  ) {
+    const activity = (this.prisma as any).reportActivity;
+    if (!activity?.create) return;
+
+    const actorUserId = user.id ?? user.userId ?? user.sub;
+    await activity.create({
+      data: {
+        reportId,
+        organizationId: details.organizationId,
+        actorUserId: actorUserId ?? null,
+        actorRole: user.role ?? null,
+        actorName: user.fullName ?? user.email ?? null,
+        action,
+        fromStatus: details.fromStatus ?? null,
+        toStatus: details.toStatus ?? null,
+        providerId: details.providerId ?? null,
+        reason: details.reason ?? null,
+        note: details.note ?? null,
+        metadata: details.metadata ?? undefined,
+      },
+    });
+  }
+
+  private activityActionForStatus(status: ReportStatus) {
+    switch (status) {
+      case ReportStatus.ASSIGNED:
+        return 'PROVIDER_ASSIGNED';
+      case ReportStatus.IN_PROGRESS:
+        return 'PROVIDER_STARTED_WORK';
+      case ReportStatus.COMPLETED_BY_PROVIDER:
+        return 'PROVIDER_SUBMITTED_COMPLETION';
+      case ReportStatus.CLOSED:
+        return 'REPORT_CLOSED';
+      case ReportStatus.PENDING:
+      default:
+        return 'REPORT_STATUS_CHANGED';
+    }
   }
 
   private async notifyStatusChange(report: {
