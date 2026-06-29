@@ -60,6 +60,11 @@ enum ProviderEngagementType {
   EXTERNAL_CONTRACTOR
 }
 
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 model Organization {
   id                     String           @id @default(cuid())
   name                   String
@@ -102,11 +107,17 @@ model User {
   email                  String?                 @unique
   phone                  String?                 @unique
   firebaseUid            String?                 @unique
+  providerId             String?                 @unique
   passwordHash           String?
   fullName               String
   role                   UserRole
+  accountStatus          AccountStatus           @default(ACTIVE)
   organizationId         String?
   providerEngagementType ProviderEngagementType?
+  serviceCategories      Json?
+  coverageAreas          Json?
+  profileData            Json?
+  subscriptionPlan       SubscriptionPlan?
   serviceZones           Json?
   isDemo                 Boolean                 @default(false)
   demoBatchId            String?
@@ -124,6 +135,7 @@ model User {
   providerOrganizations ProviderOrganization[]
 
   @@index([organizationId])
+  @@index([accountStatus])
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])

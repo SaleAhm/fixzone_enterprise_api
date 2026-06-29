@@ -253,6 +253,9 @@ export class ReportService {
     if (!provider || provider.role !== UserRole.PROVIDER) {
       throw new ForbiddenException('Invalid provider');
     }
+    if (provider.accountStatus === 'SUSPENDED') {
+      throw new ForbiddenException('Provider account is suspended');
+    }
 
     this.assertAssignmentAllowed(
       report,
@@ -302,6 +305,7 @@ export class ReportService {
     if (!this.isProvider(user)) {
       throw new ForbiddenException('Only providers can reject assignments');
     }
+    await this.assertActiveProvider(userId);
 
     const report = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -349,6 +353,7 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
+    if (this.isProvider(user)) await this.assertActiveProvider(userId);
 
     this.assertStatusTransitionAllowed(report, dto.status, user, userId);
 
@@ -387,6 +392,7 @@ export class ReportService {
     if (!this.isProvider(user)) {
       throw new ForbiddenException('Only providers allowed');
     }
+    await this.assertActiveProvider(userId);
 
     const report = await this.prisma.report.findUnique({
       where: { id: reportId },
@@ -740,6 +746,20 @@ export class ReportService {
     const notification = (this.prisma as any).notification;
     if (!notification?.create) return;
     await notification.create({ data });
+  }
+
+  private async assertActiveProvider(userId: string) {
+    if (!this.prisma.user?.findUnique) return;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { accountStatus: true, role: true },
+    });
+    if (!user || user.role !== UserRole.PROVIDER) {
+      throw new ForbiddenException('Provider account not found');
+    }
+    if (user.accountStatus === 'SUSPENDED') {
+      throw new ForbiddenException('Provider account is suspended');
+    }
   }
 
   private async audit(

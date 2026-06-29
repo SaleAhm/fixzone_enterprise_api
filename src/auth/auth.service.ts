@@ -13,7 +13,14 @@ import { RegisterDto } from './dto/register.dto';
 
 type AuthUser = Pick<
   User,
-  'id' | 'email' | 'phone' | 'fullName' | 'role' | 'organizationId'
+  | 'id'
+  | 'email'
+  | 'phone'
+  | 'fullName'
+  | 'role'
+  | 'organizationId'
+  | 'providerId'
+  | 'accountStatus'
 >;
 
 @Injectable()
@@ -93,6 +100,8 @@ export class AuthService {
         fullName: true,
         role: true,
         organizationId: true,
+        providerId: true,
+        accountStatus: true,
       },
     });
 
@@ -138,6 +147,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    if (user.accountStatus === 'SUSPENDED') {
+      await this.audit('Suspended Login Blocked', user.id, {
+        email: user.email,
+        role: user.role,
+      });
+      throw new UnauthorizedException('Account is suspended');
+    }
+
     await this.audit('Login', user.id, {
       email: user.email,
       role: user.role,
@@ -150,6 +167,8 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       organizationId: user.organizationId,
+      providerId: user.providerId,
+      accountStatus: user.accountStatus,
     });
   }
 
@@ -240,6 +259,8 @@ export class AuthService {
             fullName: true,
             role: true,
             organizationId: true,
+            providerId: true,
+            accountStatus: true,
           },
         })
       : await this.prisma.user.create({
@@ -258,6 +279,8 @@ export class AuthService {
             fullName: true,
             role: true,
             organizationId: true,
+            providerId: true,
+            accountStatus: true,
           },
         });
 
@@ -340,6 +363,8 @@ export class AuthService {
       fullName: user.fullName,
       role: user.role,
       organizationId: user.organizationId,
+      providerId: user.providerId,
+      accountStatus: user.accountStatus,
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
@@ -355,6 +380,8 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role,
         organizationId: user.organizationId,
+        providerId: user.providerId,
+        accountStatus: user.accountStatus,
       },
       accessToken,
     };

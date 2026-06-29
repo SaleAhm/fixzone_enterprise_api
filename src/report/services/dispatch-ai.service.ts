@@ -124,6 +124,7 @@ export class DispatchAiService {
     let providers = await this.prisma.user.findMany({
       where: {
         role: UserRole.PROVIDER,
+        accountStatus: 'ACTIVE',
         OR: [
           { organizationId: report.organizationId },
           {
@@ -156,7 +157,7 @@ export class DispatchAiService {
       const allowGlobalFallback = user.role === UserRole.SUPER_ADMIN;
       if (allowGlobalFallback) {
         providers = await this.prisma.user.findMany({
-          where: { role: UserRole.PROVIDER },
+          where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
           include: {
             assignedReports: {
               where: {
