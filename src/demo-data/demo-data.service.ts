@@ -94,7 +94,7 @@ type DemoReportTemplate = {
 @Injectable()
 export class DemoDataService {
   private readonly logger = new Logger(DemoDataService.name);
-  private readonly demoPassword = 'DemoPassword123!';
+  private readonly demoPassword = 'Password123!';
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -194,6 +194,41 @@ export class DemoDataService {
               passwordHash,
               role: UserRole.PROVIDER,
               organizationId: organization.id,
+              providerId: `DEMO-PRV-${String(i + 1).padStart(3, '0')}`,
+              accountStatus: 'ACTIVE',
+              providerEngagementType: 'INTERNAL_STAFF',
+              serviceCategories: [
+                'Roads',
+                'Drainage',
+                'Electricity',
+                'Water',
+                'Waste',
+              ],
+              coverageAreas: [
+                organization.name,
+                'Central District',
+                'Market Corridor',
+              ],
+              subscriptionPlan: 'PROFESSIONAL',
+              profileData: {
+                registrationNumber: `FZ-DEMO-RC-${String(i + 1).padStart(4, '0')}`,
+                performanceBadge:
+                  i % 3 === 0
+                    ? 'Gold Response Team'
+                    : i % 3 === 1
+                      ? 'Verified Municipal Provider'
+                      : 'Rapid Response Partner',
+                profilePhotoUrl: `/uploads/demo/provider-${(i % 6) + 1}.jpg`,
+                activeSubscription: true,
+                billingHistory: [
+                  { plan: 'FREE', status: 'COMPLETED', amount: 0 },
+                  {
+                    plan: 'PROFESSIONAL',
+                    status: 'ACTIVE',
+                    amount: 45000,
+                  },
+                ],
+              },
               ...tag,
             },
           }),

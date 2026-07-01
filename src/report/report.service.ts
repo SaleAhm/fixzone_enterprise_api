@@ -37,6 +37,9 @@ type JwtUser = {
 @Injectable()
 export class ReportService {
   private readonly logger = new Logger(ReportService.name);
+  private readonly assignmentTimeoutMinutes = Number(
+    process.env.ASSIGNMENT_TIMEOUT_MINUTES || 30,
+  );
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -201,6 +204,8 @@ export class ReportService {
       throw new ForbiddenException('Only providers allowed');
     }
 
+    await this.expireOverdueAssignments({ providerId: userId });
+
     return this.prisma.report.findMany({
       where: { assignedProviderId: userId },
       orderBy: { createdAt: 'desc' },
@@ -212,6 +217,9 @@ export class ReportService {
 
   async getOrganizationReports(user: JwtUser) {
     const where = this.buildOrgScope(user);
+    await this.expireOverdueAssignments({
+      organizationId: where.organizationId,
+    });
 
     return this.prisma.report.findMany({
       where,
@@ -315,7 +323,9 @@ export class ReportService {
         assignedProviderId: providerId,
         status: ReportStatus.ASSIGNED,
         assignedAt: new Date(),
-        assignmentDeadlineAt: null,
+        assignmentDeadlineAt: new Date(
+          Date.now() + this.assignmentTimeoutMinutes * 60 * 1000,
+        ),
         lastAssignmentOutcome: null,
         lastAssignmentReason: null,
         lastAssignmentAt: null,
@@ -325,6 +335,12 @@ export class ReportService {
     });
 
     await this.notifyStatusChange(updated);
+    await this.notifyOrganizationOperators(updated.organizationId, {
+      reportId,
+      type: 'assignment',
+      title: 'Provider assigned',
+      message: `A provider was assigned to "${updated.title}".`,
+    });
     await this.audit('Report Assigned', user, {
       targetType: 'Report',
       targetId: reportId,
@@ -393,6 +409,12 @@ export class ReportService {
       providerId: userId,
       reason,
       metadata: { returnedToQueue: true },
+    });
+    await this.notifyOrganizationOperators(updated.organizationId, {
+      reportId,
+      type: 'assignment_rejected',
+      title: 'Assignment rejected',
+      message: `Provider rejected "${updated.title}". Reason: ${reason}`,
     });
     return updated;
   }
@@ -627,21 +649,21 @@ export class ReportService {
     const updated = await this.prisma.report.update({
       where: { id: report.id },
       data: {
-        status: ReportStatus.IN_PROGRESS,
+        status: ReportStatus.ASSIGNED,
         completionRejectionReason: dto.reason.trim(),
       },
       include: this.includeRelations(),
     });
 
     await this.notifyStatusChange(updated);
-    await this.audit('Citizen Rejected Completion', user, {
+    await this.audit('Citizen Requested Completion Review', user, {
       targetType: 'Report',
       targetId: reportId,
       reason: dto.reason.trim(),
     });
     await this.recordReportActivity(
       reportId,
-      'CITIZEN_REJECTED_COMPLETION',
+      'CITIZEN_MARKED_WORK_INCOMPLETE',
       user,
       {
         organizationId: updated.organizationId,
@@ -651,6 +673,12 @@ export class ReportService {
         reason: dto.reason.trim(),
       },
     );
+    await this.notifyOrganizationOperators(updated.organizationId, {
+      reportId,
+      type: 'completion_review_requested',
+      title: 'Citizen requested review',
+      message: `Citizen marked "${updated.title}" as still incomplete.`,
+    });
     return updated;
   }
 
@@ -682,7 +710,7 @@ export class ReportService {
       provider: report.assignedProvider,
       availableActions: {
         confirm: awaitingReview,
-        reject: awaitingReview,
+        markIncomplete: awaitingReview,
       },
     };
   }
@@ -924,6 +952,95 @@ export class ReportService {
     const notification = (this.prisma as any).notification;
     if (!notification?.create) return;
     await notification.create({ data });
+  }
+
+  private async notifyOrganizationOperators(
+    organizationId: string,
+    data: {
+      reportId: string;
+      type: string;
+      title: string;
+      message: string;
+    },
+  ) {
+    if (!this.prisma.user?.findMany) return;
+    const operators = await this.prisma.user.findMany({
+      where: {
+        organizationId,
+        role: { in: [UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER] },
+        accountStatus: 'ACTIVE',
+      },
+      select: { id: true },
+    });
+
+    await Promise.all(
+      operators.map((operator) =>
+        this.createNotification({
+          userId: operator.id,
+          ...data,
+        }),
+      ),
+    );
+  }
+
+  private async expireOverdueAssignments(filter: {
+    providerId?: string;
+    organizationId?: string;
+  }) {
+    const overdueReports = await this.prisma.report.findMany({
+      where: {
+        status: ReportStatus.ASSIGNED,
+        assignmentDeadlineAt: { lt: new Date() },
+        ...(filter.providerId ? { assignedProviderId: filter.providerId } : {}),
+        ...(filter.organizationId
+          ? { organizationId: filter.organizationId }
+          : {}),
+      },
+      select: {
+        id: true,
+        title: true,
+        organizationId: true,
+        assignedProviderId: true,
+      },
+    });
+
+    for (const report of overdueReports) {
+      await this.prisma.report.update({
+        where: { id: report.id },
+        data: {
+          status: ReportStatus.PENDING,
+          assignedProviderId: null,
+          assignedAt: null,
+          assignmentDeadlineAt: null,
+          lastAssignmentOutcome: AssignmentOutcome.TIMED_OUT,
+          lastAssignmentReason: 'Assignment acceptance window expired',
+          lastAssignmentAt: new Date(),
+          lastAssignmentProviderId: report.assignedProviderId,
+        },
+      });
+      await this.recordReportActivity(
+        report.id,
+        'ASSIGNMENT_TIMED_OUT',
+        {
+          role: UserRole.DISPATCH_OFFICER,
+          fullName: 'System',
+        },
+        {
+          organizationId: report.organizationId,
+          fromStatus: ReportStatus.ASSIGNED,
+          toStatus: ReportStatus.PENDING,
+          providerId: report.assignedProviderId ?? undefined,
+          reason: 'Assignment acceptance window expired',
+          metadata: { autoUnassigned: true },
+        },
+      );
+      await this.notifyOrganizationOperators(report.organizationId, {
+        reportId: report.id,
+        type: 'assignment_timeout',
+        title: 'Assignment timed out',
+        message: `Assignment for "${report.title}" timed out and returned to dispatch.`,
+      });
+    }
   }
 
   private async assertActiveProvider(userId: string) {

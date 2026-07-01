@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -60,5 +60,24 @@ export class UsersController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
   activateUser(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.setUserStatus(id, 'ACTIVE', user);
+  }
+
+  @Post('admin/:id/reset-password')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  resetPassword(
+    @Param('id') id: string,
+    @Body() dto: { password?: unknown },
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.resetPassword(id, dto, user);
+  }
+
+  @Post('admin/:id/resend-invitation')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  resendInvitation(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.resendInvitation(id, user);
   }
 }

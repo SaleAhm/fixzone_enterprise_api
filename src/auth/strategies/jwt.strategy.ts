@@ -34,6 +34,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         fullName: true,
         role: true,
         organizationId: true,
+        providerId: true,
+        accountStatus: true,
+        providerEngagementType: true,
+        serviceCategories: true,
+        coverageAreas: true,
+        profileData: true,
+        subscriptionPlan: true,
+        createdAt: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            subscriptionPlan: true,
+            billingStatus: true,
+          },
+        },
       },
     });
 
@@ -51,6 +68,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       fullName: user.fullName,
       role: user.role,
       organizationId: user.organizationId,
+      providerId: user.providerId,
+      accountStatus: user.accountStatus,
+      providerEngagementType: user.providerEngagementType,
+      serviceCategories: user.serviceCategories,
+      coverageAreas: user.coverageAreas,
+      profileData: user.profileData,
+      subscriptionPlan: user.subscriptionPlan,
+      organization: user.organization,
     };
   }
 }

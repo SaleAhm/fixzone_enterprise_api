@@ -128,6 +128,7 @@ async function main() {
       where: { email: `provider${i + 1}@fixzone.ng` },
       update: {
         fullName: providerNames[i],
+        phone: `+23480000010${i + 1}`,
         passwordHash,
         role: UserRole.PROVIDER,
         organizationId: org.id,
@@ -143,10 +144,21 @@ async function main() {
         ],
         coverageAreas: ['FixZone Demo LGA'],
         subscriptionPlan: 'DEMO',
+        profileData: {
+          registrationNumber: `FZ-RC-${String(i + 1).padStart(4, '0')}`,
+          performanceBadge: i < 2 ? 'Gold Response Team' : 'Verified Provider',
+          profilePhotoUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(providerNames[i])}&background=0f766e&color=fff`,
+          activeSubscription: true,
+          billingHistory: [
+            { plan: 'FREE', status: 'COMPLETED', amount: 0 },
+            { plan: 'DEMO', status: 'ACTIVE', amount: 0 },
+          ],
+        },
       },
       create: {
         fullName: providerNames[i],
         email: `provider${i + 1}@fixzone.ng`,
+        phone: `+23480000010${i + 1}`,
         providerId: `PRV-2024-${String(i + 1).padStart(3, '0')}`,
         passwordHash,
         role: UserRole.PROVIDER,
@@ -162,6 +174,16 @@ async function main() {
         ],
         coverageAreas: ['FixZone Demo LGA'],
         subscriptionPlan: 'DEMO',
+        profileData: {
+          registrationNumber: `FZ-RC-${String(i + 1).padStart(4, '0')}`,
+          performanceBadge: i < 2 ? 'Gold Response Team' : 'Verified Provider',
+          profilePhotoUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(providerNames[i])}&background=0f766e&color=fff`,
+          activeSubscription: true,
+          billingHistory: [
+            { plan: 'FREE', status: 'COMPLETED', amount: 0 },
+            { plan: 'DEMO', status: 'ACTIVE', amount: 0 },
+          ],
+        },
         createdAt: daysAgo(20 - i),
       },
     });

@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { AccountStatus, Prisma, UserRole } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 
 type JwtUser = {
@@ -133,6 +134,70 @@ export class UsersService {
       { targetUserId: id, role: existing.role },
     );
     return updated;
+  }
+
+  async resetPassword(
+    id: string,
+    dto: { password?: unknown },
+    user: JwtUser,
+  ) {
+    const existing = await this.getUser(id, user);
+    if (
+      user.role !== UserRole.SUPER_ADMIN &&
+      existing.role !== UserRole.PROVIDER &&
+      existing.role !== UserRole.CITIZEN
+    ) {
+      throw new ForbiddenException(
+        'Only Super Admin can reset administrator passwords',
+      );
+    }
+
+    const password =
+      typeof dto.password === 'string' && dto.password.trim().length >= 8
+        ? dto.password.trim()
+        : 'Password123!';
+    const passwordHash = await bcrypt.hash(password, 10);
+    const updated = await this.prisma.user.update({
+      where: { id },
+      data: { passwordHash, accountStatus: 'ACTIVE' },
+      select: this.adminUserSelect(),
+    });
+
+    await this.audit('User Password Reset', user, {
+      targetUserId: id,
+      role: existing.role,
+    });
+
+    return {
+      user: updated,
+      temporaryPassword: password,
+      message: 'Password reset successfully.',
+    };
+  }
+
+  async resendInvitation(id: string, user: JwtUser) {
+    const existing = await this.getUser(id, user);
+    if (
+      existing.role === UserRole.SUPER_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException(
+        'Only Super Admin can invite Super Admin users',
+      );
+    }
+
+    await this.audit('User Invitation Resent', user, {
+      targetUserId: id,
+      role: existing.role,
+      email: existing.email,
+      phone: existing.phone,
+    });
+
+    return {
+      user: existing,
+      message:
+        'Invitation recorded. Email/SMS delivery can be connected to the notification provider.',
+    };
   }
 
   private buildAdminScope(user: JwtUser) {
