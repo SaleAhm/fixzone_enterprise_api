@@ -124,6 +124,15 @@ export class PlatformToolsService {
     const data = {
       format: 'fixzone-json-db-backup-v1',
       createdAt: createdAt.toISOString(),
+      metadata: {
+        applicationName: 'SecureZone Platform',
+        activeModule: 'FixZone Maintenance Services',
+        applicationVersion: process.env.npm_package_version ?? '0.0.1',
+        databaseProvider: 'postgresql',
+        schemaVersion: 'prisma-schema-v1',
+        createdById: actorUserId,
+        futureCloudTargets: ['google_drive', 'microsoft_onedrive'],
+      },
       tables: {
         organizations: await this.prisma.organization.findMany(),
         users: await this.prisma.user.findMany(),
@@ -152,15 +161,24 @@ export class PlatformToolsService {
 
   async listBackups(user: JwtUser) {
     this.requireSuperAdmin(user);
-    return this.prisma.platformBackup.findMany({
+    const backups = await this.prisma.platformBackup.findMany({
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
+    return Promise.all(
+      backups.map(async (backup) => ({
+        ...backup,
+        metadata: await this.safeBackupMetadata(backup.filePath),
+      })),
+    );
   }
 
   async getBackupStream(id: string, user: JwtUser) {
-    this.requireSuperAdmin(user);
+    const actorUserId = this.requireSuperAdmin(user);
     const backup = await this.findBackup(id);
+    await this.audit('Backup Downloaded', actorUserId, {
+      metadata: { backupId: backup.id, fileName: backup.fileName },
+    });
     return {
       backup,
       stream: createReadStream(backup.filePath),
@@ -426,6 +444,27 @@ export class PlatformToolsService {
       throw new ForbiddenException('Backup path is outside backup directory');
     }
     return backup;
+  }
+
+  private async safeBackupMetadata(filePath: string) {
+    try {
+      const parsed = JSON.parse(await readFile(filePath, 'utf8')) as {
+        format?: string;
+        createdAt?: string;
+        metadata?: Record<string, unknown>;
+      };
+      return {
+        format: parsed.format ?? null,
+        createdAt: parsed.createdAt ?? null,
+        ...(parsed.metadata ?? {}),
+      };
+    } catch {
+      return {
+        format: null,
+        createdAt: null,
+        unreadable: true,
+      };
+    }
   }
 
   private cachePathFor(scope: string) {

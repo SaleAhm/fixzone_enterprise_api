@@ -130,8 +130,9 @@ export class AuthService {
       await this.audit('Failed Login', 'anonymous', {
         email: dto.email?.toLowerCase().trim() ?? null,
         phone: dto.phone?.trim() ?? null,
+        reason: 'user_not_found',
       });
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('User not found');
     }
 
     const isPasswordValid = await bcrypt.compare(
@@ -144,7 +145,7 @@ export class AuthService {
         email: user.email,
         reason: 'invalid_password',
       });
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Incorrect password');
     }
 
     if (user.accountStatus !== 'ACTIVE') {
@@ -159,7 +160,7 @@ export class AuthService {
           : user.accountStatus === 'PENDING_APPROVAL'
             ? 'Account is pending approval'
             : user.accountStatus === 'DEACTIVATED'
-              ? 'Account is deactivated'
+              ? 'Account is inactive'
               : 'Account is suspended',
       );
     }

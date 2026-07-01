@@ -181,6 +181,32 @@ export class ReportController {
     return this.reportService.assignProvider(id, dto, user);
   }
 
+  @Post('admin/assignments/expire-overdue')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  expireOverdueAssignments(@CurrentUser() user: CurrentAuthUser) {
+    return this.reportService.processOverdueAssignments(user);
+  }
+
+  @Post(':id/cancel-assignment')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  cancelAssignment(
+    @Param('id') id: string,
+    @Body() dto: { reason?: string },
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.cancelAssignment(id, dto?.reason, user);
+  }
+
+  @Patch(':id/reassign')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  reassignProvider(
+    @Param('id') id: string,
+    @Body() dto: AssignProviderDto & { reason?: string },
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.reassignProvider(id, dto.providerId, dto.reason, user);
+  }
+
   @Patch(':id/status')
   @Roles(
     UserRole.SUPER_ADMIN,
