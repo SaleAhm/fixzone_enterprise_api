@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -32,6 +40,30 @@ export class UsersController {
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   getRecentUsers(@CurrentUser() user: CurrentAuthUser) {
     return this.usersService.getRecentUsers(user);
+  }
+
+  @Get('admin/invitations')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  getInvitations(@CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.getInvitations(user);
+  }
+
+  @Post('admin/invitations')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  inviteUser(
+    @Body() dto: Record<string, unknown>,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.inviteUser(dto, user);
+  }
+
+  @Post('admin/invitations/:id/revoke')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  revokeInvitation(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.revokeInvitation(id, user);
   }
 
   @Get('admin/:id')
@@ -79,5 +111,23 @@ export class UsersController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.usersService.resendInvitation(id, user);
+  }
+
+  @Post('admin/:id/approve-provider')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  approveProviderRequest(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.approveProviderRequest(id, user);
+  }
+
+  @Post('admin/:id/reject-provider')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  rejectProviderRequest(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.rejectProviderRequest(id, user);
   }
 }

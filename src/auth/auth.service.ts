@@ -147,12 +147,21 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    if (user.accountStatus === 'SUSPENDED') {
-      await this.audit('Suspended Login Blocked', user.id, {
+    if (user.accountStatus !== 'ACTIVE') {
+      await this.audit('Inactive Login Blocked', user.id, {
         email: user.email,
         role: user.role,
+        accountStatus: user.accountStatus,
       });
-      throw new UnauthorizedException('Account is suspended');
+      throw new UnauthorizedException(
+        user.accountStatus === 'PENDING_INVITE'
+          ? 'Invitation has not been accepted'
+          : user.accountStatus === 'PENDING_APPROVAL'
+            ? 'Account is pending approval'
+            : user.accountStatus === 'DEACTIVATED'
+              ? 'Account is deactivated'
+              : 'Account is suspended',
+      );
     }
 
     const requestedProviderId = dto.providerId?.trim();
@@ -300,6 +309,10 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
+  async issueTokensForOnboarding(user: AuthUser) {
+    return this.issueTokens(user);
+  }
+
   private async audit(
     action: string,
     actorUserId: string,
@@ -331,6 +344,8 @@ export class AuthService {
         return UserRole.DISPATCH_OFFICER;
       case 'PROVIDER':
         return UserRole.PROVIDER;
+      case 'PENDING_PROVIDER':
+        return UserRole.PENDING_PROVIDER;
       case 'CITIZEN':
         return UserRole.CITIZEN;
       default:

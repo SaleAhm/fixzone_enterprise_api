@@ -11,6 +11,7 @@ enum UserRole {
   ORG_ADMIN
   DISPATCH_OFFICER
   PROVIDER
+  PENDING_PROVIDER
   CITIZEN
 }
 
@@ -69,8 +70,18 @@ enum ProviderEngagementType {
 }
 
 enum AccountStatus {
+  PENDING_INVITE
+  PENDING_APPROVAL
   ACTIVE
   SUSPENDED
+  DEACTIVATED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
 }
 
 enum OrganizationStatus {
@@ -114,6 +125,7 @@ model Organization {
   parent        Organization?          @relation("OrganizationHierarchy", fields: [parentId], references: [id])
   children      Organization[]         @relation("OrganizationHierarchy")
   providerLinks ProviderOrganization[]
+  invitations   Invitation[]
 
   @@index([parentId])
   @@index([type])
@@ -156,12 +168,46 @@ model User {
   assignedReports       Report[]               @relation("AssignedProviderReports")
   notifications         Notification[]
   providerOrganizations ProviderOrganization[]
+  sentInvitations       Invitation[]           @relation("InvitationInviter")
+  acceptedInvitations   Invitation[]           @relation("InvitationAcceptedUser")
 
   @@index([organizationId])
   @@index([accountStatus])
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
+}
+
+model Invitation {
+  id                    String           @id @default(cuid())
+  email                 String?
+  phone                 String?
+  fullName              String
+  role                  UserRole
+  status                InvitationStatus @default(PENDING)
+  temporaryPasswordHash String?
+  inviteCode            String           @unique
+  organizationId        String?
+  invitedById           String
+  acceptedUserId        String?
+  metadata              Json?
+  expiresAt             DateTime?
+  acceptedAt            DateTime?
+  revokedAt             DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  invitedBy    User          @relation("InvitationInviter", fields: [invitedById], references: [id])
+  acceptedUser User?         @relation("InvitationAcceptedUser", fields: [acceptedUserId], references: [id])
+
+  @@index([organizationId])
+  @@index([invitedById])
+  @@index([status])
+  @@index([role])
+  @@index([email])
+  @@index([phone])
+  @@index([createdAt])
 }
 
 model ProviderOrganization {

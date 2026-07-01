@@ -7,6 +7,7 @@ import { ReportModule } from './report/report.module';
 import { NotificationModule } from './notification/notification.module';
 import { DemoDataModule } from './demo-data/demo-data.module';
 import { PlatformToolsModule } from './platform-tools/platform-tools.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -20,6 +21,7 @@ import { AppService } from './app.service';
     NotificationModule,
     DemoDataModule,
     PlatformToolsModule,
+    OnboardingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
