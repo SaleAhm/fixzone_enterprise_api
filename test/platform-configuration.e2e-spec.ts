@@ -139,6 +139,17 @@ describe('Platform Configuration (e2e)', () => {
     expect(getRes.status).toBe(200);
     expect(getRes.body.defaultService).toBe('maintenance_report');
     expect(getRes.body.enabledServices).toContain('maintenance_report');
+
+    const audit = await prisma.demoAuditLog.findFirst({
+      where: {
+        action: 'Tenant Service Configuration Updated',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit?.metadata).toMatchObject({
+      organizationId: organization.id,
+      defaultService: 'maintenance_report',
+    });
   });
 
   it('assigns deactivates and removes provider capabilities as metadata', async () => {
@@ -172,5 +183,25 @@ describe('Platform Configuration (e2e)', () => {
     expect(
       removeRes.body.assignments.map((item: { id: string }) => item.id),
     ).not.toContain('medical');
+
+    const auditActions = await prisma.demoAuditLog.findMany({
+      where: {
+        action: {
+          in: [
+            'Provider Capabilities Assigned',
+            'Provider Capability Deactivated',
+            'Provider Capability Removed',
+          ],
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(auditActions.map((item) => item.action)).toEqual(
+      expect.arrayContaining([
+        'Provider Capabilities Assigned',
+        'Provider Capability Deactivated',
+        'Provider Capability Removed',
+      ]),
+    );
   });
 });

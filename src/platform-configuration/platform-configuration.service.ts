@@ -165,6 +165,12 @@ export class PlatformConfigurationService {
     });
 
     const updatedProfile = this.asRecord(updated.profileData);
+    await this.audit('Tenant Service Configuration Updated', user, {
+      organizationId,
+      enabledServices: nextConfiguration.enabledServices,
+      defaultService: nextConfiguration.defaultService,
+      serviceVisibility: nextConfiguration.serviceVisibility,
+    });
     return {
       organizationId: updated.id,
       ...this.mergeServiceConfiguration(
@@ -199,9 +205,17 @@ export class PlatformConfigurationService {
       });
     }
 
-    return this.saveProviderCapabilities(providerId, profileData, [
-      ...capabilityMap.values(),
-    ]);
+    const result = await this.saveProviderCapabilities(
+      providerId,
+      profileData,
+      [...capabilityMap.values()],
+    );
+    await this.audit('Provider Capabilities Assigned', user, {
+      providerId,
+      capabilityIds: dto.capabilityIds,
+      status: dto.status?.trim() || 'ACTIVE',
+    });
+    return result;
   }
 
   async removeProviderCapability(
@@ -215,7 +229,16 @@ export class PlatformConfigurationService {
     const next = this.readProviderCapabilityAssignments(profileData).filter(
       (item) => item.id !== capabilityId,
     );
-    return this.saveProviderCapabilities(providerId, profileData, next);
+    const result = await this.saveProviderCapabilities(
+      providerId,
+      profileData,
+      next,
+    );
+    await this.audit('Provider Capability Removed', user, {
+      providerId,
+      capabilityId,
+    });
+    return result;
   }
 
   async deactivateProviderCapability(
@@ -236,7 +259,16 @@ export class PlatformConfigurationService {
             }
           : item,
     );
-    return this.saveProviderCapabilities(providerId, profileData, next);
+    const result = await this.saveProviderCapabilities(
+      providerId,
+      profileData,
+      next,
+    );
+    await this.audit('Provider Capability Deactivated', user, {
+      providerId,
+      capabilityId,
+    });
+    return result;
   }
 
   async getProviderCapabilitySummary(user: PlatformUser, providerId: string) {
@@ -474,5 +506,21 @@ export class PlatformConfigurationService {
       .filter(([, entry]) => typeof entry === 'boolean')
       .map(([key, entry]) => [key, entry as boolean]);
     return Object.fromEntries(entries);
+  }
+
+  private async audit(
+    action: string,
+    user: PlatformUser,
+    metadata: Record<string, unknown> = {},
+  ) {
+    const actorUserId = user.sub ?? user.id;
+    if (!actorUserId) return;
+    await this.prisma.demoAuditLog.create({
+      data: {
+        action,
+        actorUserId,
+        metadata: metadata as Prisma.InputJsonValue,
+      },
+    });
   }
 }
