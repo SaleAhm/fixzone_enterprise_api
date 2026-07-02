@@ -54,6 +54,12 @@ describe('Auth API (e2e)', () => {
           { email: 'provider@test.com' },
           { email: 'provider2-auth@test.com' },
           { email: 'provider2-suspended@test.com' },
+          { email: 'provider-new-auth@test.com' },
+          { email: 'provider-reset-auth@test.com' },
+          { email: 'provider-invited-reset-auth@test.com' },
+          { email: 'demo-provider-1-auth@test.com' },
+          { email: 'demo-provider-2-auth@test.com' },
+          { email: 'demo-provider-3-auth@test.com' },
           { email: 'citizen.sync@test.com' },
           { phone: '+2348000000001' },
         ],
@@ -63,6 +69,14 @@ describe('Auth API (e2e)', () => {
     const userIds = users.map((user) => user.id);
 
     if (userIds.length > 0) {
+      await prisma.invitation.deleteMany({
+        where: {
+          OR: [
+            { invitedById: { in: userIds } },
+            { acceptedUserId: { in: userIds } },
+          ],
+        },
+      });
       await prisma.report.deleteMany({
         where: {
           OR: [
@@ -81,6 +95,12 @@ describe('Auth API (e2e)', () => {
           { email: 'provider@test.com' },
           { email: 'provider2-auth@test.com' },
           { email: 'provider2-suspended@test.com' },
+          { email: 'provider-new-auth@test.com' },
+          { email: 'provider-reset-auth@test.com' },
+          { email: 'provider-invited-reset-auth@test.com' },
+          { email: 'demo-provider-1-auth@test.com' },
+          { email: 'demo-provider-2-auth@test.com' },
+          { email: 'demo-provider-3-auth@test.com' },
           { email: 'citizen.sync@test.com' },
           { phone: '+2348000000001' },
         ],
@@ -281,6 +301,160 @@ describe('Auth API (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`);
 
     expect(res.status).toBe(200);
+  });
+
+  it('allows seeded provider-style accounts to log in with Password123!', async () => {
+    const passwordHash = await bcrypt.hash('Password123!', 10);
+    const providers = [
+      ['demo-provider-1-auth@test.com', 'PRV-AUTH-001'],
+      ['demo-provider-2-auth@test.com', 'PRV-AUTH-002'],
+      ['demo-provider-3-auth@test.com', 'PRV-AUTH-003'],
+    ];
+
+    for (const [email, providerId] of providers) {
+      await prisma.user.upsert({
+        where: { email },
+        update: {
+          passwordHash,
+          role: 'PROVIDER',
+          providerId,
+          accountStatus: 'ACTIVE',
+          organizationId: adminOrganizationId,
+        },
+        create: {
+          fullName: `Demo Provider ${providerId}`,
+          email,
+          passwordHash,
+          role: 'PROVIDER',
+          providerId,
+          accountStatus: 'ACTIVE',
+          organizationId: adminOrganizationId,
+        },
+      });
+
+      const login = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({
+          email,
+          password: 'Password123!',
+          providerId,
+        });
+
+      expect(login.status).toBe(201);
+      expect(login.body.accessToken).toBeDefined();
+      expect(login.body.user.role).toBe('PROVIDER');
+      expect(login.body.user.providerId).toBe(providerId);
+    }
+  });
+
+  it('newly registered provider can log in and never stores plaintext password', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({
+        fullName: 'New Provider Auth',
+        email: 'provider-new-auth@test.com',
+        password: 'Password123!',
+        role: 'provider',
+        organizationId: adminOrganizationId,
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.user.role).toBe('PROVIDER');
+
+    const stored = await prisma.user.findUnique({
+      where: { email: 'provider-new-auth@test.com' },
+    });
+    expect(stored?.passwordHash).toBeDefined();
+    expect(stored?.passwordHash).not.toBe('Password123!');
+    expect(await bcrypt.compare('Password123!', stored!.passwordHash!)).toBe(
+      true,
+    );
+
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider-new-auth@test.com',
+        password: 'Password123!',
+      });
+
+    expect(login.status).toBe(201);
+    expect(login.body.user.role).toBe('PROVIDER');
+  });
+
+  it('reset provider password hashes the new password and permits login', async () => {
+    const originalHash = await bcrypt.hash('Password123!', 10);
+    const provider = await prisma.user.create({
+      data: {
+        fullName: 'Provider Reset Auth',
+        email: 'provider-reset-auth@test.com',
+        passwordHash: originalHash,
+        role: 'PROVIDER',
+        providerId: 'PRV-AUTH-RESET',
+        accountStatus: 'SUSPENDED',
+        organizationId: adminOrganizationId,
+      },
+    });
+
+    const reset = await request(app.getHttpServer())
+      .post(`/api/users/admin/${provider.id}/reset-password`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ password: 'NewPassword123!' });
+
+    expect(reset.status).toBe(201);
+    expect(reset.body.user.accountStatus).toBe('ACTIVE');
+
+    const stored = await prisma.user.findUnique({ where: { id: provider.id } });
+    expect(stored?.passwordHash).toBeDefined();
+    expect(stored?.passwordHash).not.toBe('NewPassword123!');
+    expect(await bcrypt.compare('NewPassword123!', stored!.passwordHash!)).toBe(
+      true,
+    );
+
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider-reset-auth@test.com',
+        password: 'NewPassword123!',
+        providerId: 'PRV-AUTH-RESET',
+      });
+
+    expect(login.status).toBe(201);
+    expect(login.body.user.accountStatus).toBe('ACTIVE');
+    expect(login.body.user.role).toBe('PROVIDER');
+  });
+
+  it('admin-created provider can log in after password reset activation', async () => {
+    const invite = await request(app.getHttpServer())
+      .post('/api/users/admin/invitations')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        fullName: 'Provider Invited Reset Auth',
+        email: 'provider-invited-reset-auth@test.com',
+        role: 'PROVIDER',
+        temporaryPassword: 'TempPassword123!',
+        organizationId: adminOrganizationId,
+      });
+
+    expect(invite.status).toBe(201);
+    expect(invite.body.user.accountStatus).toBe('PENDING_INVITE');
+
+    const reset = await request(app.getHttpServer())
+      .post(`/api/users/admin/${invite.body.user.id}/reset-password`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ password: 'ProviderReset123!' });
+
+    expect(reset.status).toBe(201);
+    expect(reset.body.user.accountStatus).toBe('ACTIVE');
+
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider-invited-reset-auth@test.com',
+        password: 'ProviderReset123!',
+      });
+
+    expect(login.status).toBe(201);
+    expect(login.body.user.role).toBe('PROVIDER');
   });
 
   it('Citizen cannot access provider-or-admin route', async () => {
