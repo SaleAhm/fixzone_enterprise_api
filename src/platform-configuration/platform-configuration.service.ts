@@ -31,6 +31,20 @@ type TenantServiceConfiguration = {
 
 const PROFILE_CONFIG_KEY = 'secureZoneServiceConfiguration';
 const PROVIDER_CAPABILITIES_KEY = 'secureZoneProviderCapabilities';
+const ACTIVE_SERVICE_TYPE = 'maintenance_report';
+const FUTURE_SERVICE_TYPES = [
+  'future_healthcare',
+  'future_legal',
+  'future_ict',
+  'future_agriculture',
+  'future_education',
+  'future_security',
+  'future_property',
+  'future_architecture_engineering',
+  'future_cleaning_home',
+  'future_government',
+];
+const KNOWN_SERVICE_TYPES = [ACTIVE_SERVICE_TYPE, ...FUTURE_SERVICE_TYPES];
 
 @Injectable()
 export class PlatformConfigurationService {
@@ -44,12 +58,15 @@ export class PlatformConfigurationService {
     const serviceConfiguration = organizationId
       ? await this.getServiceConfiguration(user, organizationId)
       : this.defaultServiceConfiguration();
+    const configurationValidation =
+      this.validateServiceConfigurationRecord(serviceConfiguration);
 
     return {
       platformName: 'SecureZone Platform',
-      activeProductionService: 'maintenance_report',
+      activeProductionService: ACTIVE_SERVICE_TYPE,
       activeProductionModule: 'maintenance',
       serviceConfiguration,
+      configurationValidation,
       providerCapabilities: this.getProviderCapabilities(),
       analyticsContracts: this.getAnalyticsContracts(),
       guardMode: 'non_blocking',
@@ -111,7 +128,14 @@ export class PlatformConfigurationService {
   async getServiceConfiguration(
     user: PlatformUser,
     organizationId?: string,
-  ): Promise<TenantServiceConfiguration & { organizationId?: string }> {
+  ): Promise<
+    TenantServiceConfiguration & {
+      organizationId?: string;
+      validation: ReturnType<
+        PlatformConfigurationService['validateServiceConfigurationRecord']
+      >;
+    }
+  > {
     const targetOrganizationId =
       organizationId ?? this.requireOrganizationScope(user);
     await this.assertCanAccessOrganization(user, targetOrganizationId);
@@ -128,6 +152,12 @@ export class PlatformConfigurationService {
       ...this.mergeServiceConfiguration(
         profileData[PROFILE_CONFIG_KEY],
         organization.enabledModules,
+      ),
+      validation: this.validateServiceConfigurationRecord(
+        this.mergeServiceConfiguration(
+          profileData[PROFILE_CONFIG_KEY],
+          organization.enabledModules,
+        ),
       ),
     };
   }
@@ -170,13 +200,240 @@ export class PlatformConfigurationService {
       enabledServices: nextConfiguration.enabledServices,
       defaultService: nextConfiguration.defaultService,
       serviceVisibility: nextConfiguration.serviceVisibility,
+      validation: this.validateServiceConfigurationInput(
+        {
+          ...this.asRecord(profileData[PROFILE_CONFIG_KEY]),
+          ...dto,
+        },
+        existing.enabledModules,
+      ),
     });
+    const merged = this.mergeServiceConfiguration(
+      updatedProfile[PROFILE_CONFIG_KEY],
+      updated.enabledModules,
+    );
     return {
       organizationId: updated.id,
-      ...this.mergeServiceConfiguration(
-        updatedProfile[PROFILE_CONFIG_KEY],
-        updated.enabledModules,
+      ...merged,
+      validation: this.validateServiceConfigurationRecord(merged),
+    };
+  }
+
+  async validateTenantConfiguration(
+    user: PlatformUser,
+    organizationId?: string,
+  ) {
+    const targetOrganizationId =
+      organizationId ?? this.requireOrganizationScope(user);
+    await this.assertCanAccessOrganization(user, targetOrganizationId);
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: targetOrganizationId },
+      select: { id: true, enabledModules: true, profileData: true },
+    });
+    if (!organization) throw new NotFoundException('Organization not found');
+    const profileData = this.asRecord(organization.profileData);
+    const rawConfiguration = this.asRecord(profileData[PROFILE_CONFIG_KEY]);
+    const merged = this.mergeServiceConfiguration(
+      rawConfiguration,
+      organization.enabledModules,
+    );
+    return {
+      organizationId: organization.id,
+      validation: this.validateServiceConfigurationInput(
+        rawConfiguration,
+        organization.enabledModules,
       ),
+      normalizedConfiguration: merged,
+    };
+  }
+
+  async getRuntimeReadiness(user: PlatformUser, organizationId?: string) {
+    const targetOrganizationId =
+      organizationId ?? this.resolveOrganizationId(user);
+    if (targetOrganizationId) {
+      await this.assertCanAccessOrganization(user, targetOrganizationId);
+    }
+
+    const where = targetOrganizationId
+      ? { organizationId: targetOrganizationId }
+      : {};
+    const organization = targetOrganizationId
+      ? await this.prisma.organization.findUnique({
+          where: { id: targetOrganizationId },
+          select: {
+            id: true,
+            name: true,
+            enabledModules: true,
+            profileData: true,
+            subscriptionPlan: true,
+            billingStatus: true,
+            status: true,
+          },
+        })
+      : null;
+    if (targetOrganizationId && !organization) {
+      throw new NotFoundException('Organization not found');
+    }
+
+    const profileData = this.asRecord(organization?.profileData);
+    const serviceConfiguration = this.mergeServiceConfiguration(
+      profileData[PROFILE_CONFIG_KEY],
+      organization?.enabledModules,
+    );
+    const validation =
+      this.validateServiceConfigurationRecord(serviceConfiguration);
+
+    const [
+      providerCount,
+      activeProviderCount,
+      verifiedProviderCount,
+      reportCount,
+      activeReportCount,
+      kycPendingCount,
+      evidenceRecordCount,
+      recentConfigurationEvents,
+      recentCapabilityEvents,
+    ] = await Promise.all([
+      this.prisma.user.count({ where: { ...where, role: UserRole.PROVIDER } }),
+      this.prisma.user.count({
+        where: { ...where, role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
+      }),
+      this.prisma.user.count({
+        where: {
+          ...where,
+          role: UserRole.PROVIDER,
+          identityVerificationLevel: { gt: 0 },
+        },
+      }),
+      this.prisma.report.count({ where }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          status: { in: ['PENDING', 'ASSIGNED', 'IN_PROGRESS'] },
+        },
+      }),
+      this.prisma.kycSubmission.count({
+        where: {
+          user: where,
+          status: { in: ['SUBMITTED', 'UNDER_REVIEW'] },
+        },
+      }),
+      this.prisma.evidenceRecord.count({ where }),
+      this.prisma.demoAuditLog.count({
+        where: { action: 'Tenant Service Configuration Updated' },
+      }),
+      this.prisma.demoAuditLog.count({
+        where: {
+          action: {
+            in: [
+              'Provider Capabilities Assigned',
+              'Provider Capability Deactivated',
+              'Provider Capability Removed',
+            ],
+          },
+        },
+      }),
+    ]);
+
+    const checks = [
+      this.readinessCheck(
+        'tenant',
+        organization?.status === 'SUSPENDED' ? 'warning' : 'ready',
+        organization
+          ? `Tenant ${organization.name} is ${organization.status}.`
+          : 'Super Admin global readiness view.',
+      ),
+      this.readinessCheck(
+        'module',
+        serviceConfiguration.enabledServices.includes(ACTIVE_SERVICE_TYPE)
+          ? 'ready'
+          : 'warning',
+        'Maintenance Services is the only operational production service.',
+      ),
+      this.readinessCheck(
+        'configuration',
+        validation.valid ? 'ready' : 'warning',
+        validation.valid
+          ? 'Tenant service configuration is complete enough for runtime presentation.'
+          : `${validation.issues.length} configuration issue(s) detected.`,
+        validation,
+      ),
+      this.readinessCheck(
+        'provider',
+        activeProviderCount > 0 ? 'ready' : 'warning',
+        `${activeProviderCount}/${providerCount} providers are active.`,
+        {
+          providerCount,
+          activeProviderCount,
+          verifiedProviderCount,
+        },
+      ),
+      this.readinessCheck(
+        'trust',
+        kycPendingCount > 0 ? 'attention' : 'ready',
+        `${kycPendingCount} KYC submission(s) pending review.`,
+      ),
+      this.readinessCheck(
+        'subscription',
+        organization?.billingStatus === 'PAST_DUE' ||
+          organization?.billingStatus === 'SUSPENDED'
+          ? 'warning'
+          : 'ready',
+        organization
+          ? `${organization.subscriptionPlan} / ${organization.billingStatus}`
+          : 'Global subscription readiness is informational.',
+      ),
+    ];
+
+    const summary = {
+      ready: checks.filter((item) => item.status === 'ready').length,
+      warning: checks.filter((item) => item.status === 'warning').length,
+      attention: checks.filter((item) => item.status === 'attention').length,
+      informationalOnly: true,
+      enforcementMode: 'non_blocking',
+    };
+
+    return {
+      organizationId: organization?.id ?? null,
+      generatedAt: new Date().toISOString(),
+      activeProductionService: ACTIVE_SERVICE_TYPE,
+      activeProductionModule: 'maintenance',
+      futureModulesOperational: false,
+      serviceConfiguration,
+      checks,
+      summary,
+      runtimeSignals: {
+        reportCount,
+        activeReportCount,
+        evidenceRecordCount,
+        recentConfigurationEvents,
+        recentCapabilityEvents,
+      },
+    };
+  }
+
+  async getPlatformAuditHistory(user: PlatformUser) {
+    if (user.role !== UserRole.SUPER_ADMIN && user.role !== 'SUPER_ADMIN') {
+      if (!user.organizationId) {
+        throw new ForbiddenException('No organization scope');
+      }
+    }
+    const actions = [
+      'Tenant Service Configuration Updated',
+      'Provider Capabilities Assigned',
+      'Provider Capability Deactivated',
+      'Provider Capability Removed',
+    ];
+    const items = await this.prisma.demoAuditLog.findMany({
+      where: { action: { in: actions } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    return {
+      total: items.length,
+      items,
+      actions,
+      note: 'Audit history reuses the existing audit log store; organization-specific filtering can be expanded when audit metadata is standardized.',
     };
   }
 
@@ -294,6 +551,24 @@ export class PlatformConfigurationService {
         .length,
       inactiveCount: assignments.filter((item) => item.status === 'INACTIVE')
         .length,
+      futureApprovalCount: assignments.filter(
+        (item) =>
+          catalog.get(item.id)?.metadataOnly === true ||
+          item.approvalWorkflow === 'placeholder',
+      ).length,
+      verificationSummary: {
+        requiredLevels: assignments
+          .map((item) => catalog.get(item.id)?.verificationRequirement ?? 0)
+          .sort((a, b) => b - a),
+        highestRequiredLevel: assignments.reduce(
+          (highest, item) =>
+            Math.max(
+              highest,
+              catalog.get(item.id)?.verificationRequirement ?? 0,
+            ),
+          0,
+        ),
+      },
     };
   }
 
@@ -325,7 +600,7 @@ export class PlatformConfigurationService {
     const enabledServices = this.normalizeEnabledServices(enabledModules);
     return {
       enabledServices,
-      defaultService: 'maintenance_report',
+      defaultService: ACTIVE_SERVICE_TYPE,
       serviceOrdering: enabledServices,
       serviceVisibility: Object.fromEntries(
         enabledServices.map((service) => [service, true]),
@@ -349,7 +624,7 @@ export class PlatformConfigurationService {
       record.enabledServices ?? base.enabledServices,
     );
     if (!enabledServices.includes('maintenance_report')) {
-      enabledServices.unshift('maintenance_report');
+      enabledServices.unshift(ACTIVE_SERVICE_TYPE);
     }
     return {
       enabledServices,
@@ -377,11 +652,125 @@ export class PlatformConfigurationService {
   private normalizeEnabledServices(value: unknown): string[] {
     const items = Array.isArray(value)
       ? value.map((item) => item?.toString().trim()).filter(Boolean)
-      : ['maintenance_report'];
+      : [ACTIVE_SERVICE_TYPE];
     const normalized = [...new Set(items as string[])];
-    return normalized.includes('maintenance_report')
+    return normalized.includes(ACTIVE_SERVICE_TYPE)
       ? normalized
-      : ['maintenance_report', ...normalized];
+      : [ACTIVE_SERVICE_TYPE, ...normalized];
+  }
+
+  private validateServiceConfigurationInput(
+    rawConfiguration: unknown,
+    enabledModules: unknown,
+  ) {
+    const raw = this.asRecord(rawConfiguration);
+    const merged = this.mergeServiceConfiguration(raw, enabledModules);
+    const issues = [
+      ...this.duplicateIssues('enabledServices', raw.enabledServices),
+      ...this.duplicateIssues('serviceOrdering', raw.serviceOrdering),
+      ...this.unknownServiceIssues('enabledServices', raw.enabledServices),
+      ...this.unknownServiceIssues('serviceOrdering', raw.serviceOrdering),
+    ];
+    const warnings = [
+      ...this.missingDefaultWarnings(merged),
+      ...this.visibilityWarnings(merged),
+    ];
+    return {
+      valid: issues.length === 0,
+      issues,
+      warnings,
+      knownServices: KNOWN_SERVICE_TYPES,
+      guardMode: 'non_blocking',
+    };
+  }
+
+  private validateServiceConfigurationRecord(
+    configuration: TenantServiceConfiguration,
+  ) {
+    const issues = [
+      ...this.unknownServiceIssues(
+        'enabledServices',
+        configuration.enabledServices,
+      ),
+      ...this.unknownServiceIssues(
+        'serviceOrdering',
+        configuration.serviceOrdering,
+      ),
+    ];
+    const warnings = [
+      ...this.missingDefaultWarnings(configuration),
+      ...this.visibilityWarnings(configuration),
+    ];
+    return {
+      valid: issues.length === 0,
+      issues,
+      warnings,
+      knownServices: KNOWN_SERVICE_TYPES,
+      guardMode: 'non_blocking',
+    };
+  }
+
+  private duplicateIssues(field: string, value: unknown) {
+    if (!Array.isArray(value)) return [];
+    const normalized = value.map((item) => item?.toString().trim());
+    const duplicates = normalized.filter(
+      (item, index) => item && normalized.indexOf(item) !== index,
+    );
+    return [...new Set(duplicates)].map((service) => ({
+      code: 'duplicate_service',
+      field,
+      service,
+      message: `${field} contains duplicate service '${service}'.`,
+    }));
+  }
+
+  private unknownServiceIssues(field: string, value: unknown) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => item?.toString().trim())
+      .filter((item): item is string => Boolean(item))
+      .filter((service) => !KNOWN_SERVICE_TYPES.includes(service))
+      .map((service) => ({
+        code: 'unknown_service',
+        field,
+        service,
+        message: `${field} contains unknown service '${service}'.`,
+      }));
+  }
+
+  private missingDefaultWarnings(configuration: TenantServiceConfiguration) {
+    if (configuration.enabledServices.includes(configuration.defaultService)) {
+      return [];
+    }
+    return [
+      {
+        code: 'default_service_not_enabled',
+        field: 'defaultService',
+        service: configuration.defaultService,
+        message: 'Default service should also be enabled.',
+      },
+    ];
+  }
+
+  private visibilityWarnings(configuration: TenantServiceConfiguration) {
+    return configuration.enabledServices
+      .filter((service) => configuration.serviceVisibility[service] !== true)
+      .map((service) => ({
+        code: 'enabled_service_hidden',
+        field: 'serviceVisibility',
+        service,
+        message:
+          'Enabled service is hidden from runtime presentation. This is allowed but should be intentional.',
+      }));
+  }
+
+  private readinessCheck(
+    key: string,
+    status: 'ready' | 'warning' | 'attention',
+    message: string,
+    details: Record<string, unknown> = {},
+  ) {
+    return { key, status, message, details };
   }
 
   private async getProviderForCapabilities(providerId: string) {

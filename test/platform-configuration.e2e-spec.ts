@@ -152,6 +152,69 @@ describe('Platform Configuration (e2e)', () => {
     });
   });
 
+  it('reports non-blocking configuration validation and runtime readiness', async () => {
+    const { organization, token } = await createContext();
+
+    const updateRes = await request(app.getHttpServer())
+      .patch(`/api/platform/service-configuration/${organization.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        enabledServices: [
+          'maintenance_report',
+          'future_healthcare',
+          'future_healthcare',
+          'unknown_future_runtime',
+        ],
+        serviceOrdering: ['unknown_future_runtime', 'maintenance_report'],
+        serviceVisibility: {
+          maintenance_report: true,
+          future_healthcare: false,
+        },
+      });
+
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.validation).toMatchObject({
+      valid: false,
+      guardMode: 'non_blocking',
+    });
+    expect(updateRes.body.validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'unknown_service' }),
+      ]),
+    );
+
+    const validationRes = await request(app.getHttpServer())
+      .get(`/api/platform/configuration-validation/${organization.id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(validationRes.status).toBe(200);
+    expect(validationRes.body.validation.valid).toBe(false);
+    expect(validationRes.body.validation.knownServices).toContain(
+      'maintenance_report',
+    );
+
+    const readinessRes = await request(app.getHttpServer())
+      .get(`/api/platform/readiness/${organization.id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(readinessRes.status).toBe(200);
+    expect(readinessRes.body).toMatchObject({
+      activeProductionService: 'maintenance_report',
+      activeProductionModule: 'maintenance',
+      futureModulesOperational: false,
+    });
+    expect(readinessRes.body.summary).toMatchObject({
+      informationalOnly: true,
+      enforcementMode: 'non_blocking',
+    });
+    expect(readinessRes.body.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'configuration', status: 'warning' }),
+        expect.objectContaining({ key: 'module' }),
+      ]),
+    );
+  });
+
   it('assigns deactivates and removes provider capabilities as metadata', async () => {
     const { provider, token } = await createContext();
 
@@ -165,6 +228,8 @@ describe('Platform Configuration (e2e)', () => {
     expect(
       assignRes.body.assignments.map((item: { id: string }) => item.id),
     ).toEqual(expect.arrayContaining(['electrical', 'medical']));
+    expect(assignRes.body.futureApprovalCount).toBeGreaterThanOrEqual(1);
+    expect(assignRes.body.verificationSummary.highestRequiredLevel).toBe(3);
 
     const inactiveRes = await request(app.getHttpServer())
       .patch(

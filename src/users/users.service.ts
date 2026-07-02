@@ -145,11 +145,7 @@ export class UsersService {
     return updated;
   }
 
-  async resetPassword(
-    id: string,
-    dto: { password?: unknown },
-    user: JwtUser,
-  ) {
+  async resetPassword(id: string, dto: { password?: unknown }, user: JwtUser) {
     const existing = await this.getUser(id, user);
     if (
       user.role !== UserRole.SUPER_ADMIN &&
@@ -224,7 +220,8 @@ export class UsersService {
     }
 
     const organizationId = this.resolveInvitationOrganization(dto, user);
-    const email = typeof dto.email === 'string' ? dto.email.toLowerCase().trim() : null;
+    const email =
+      typeof dto.email === 'string' ? dto.email.toLowerCase().trim() : null;
     const phone = typeof dto.phone === 'string' ? dto.phone.trim() : null;
     const fullName =
       typeof dto.fullName === 'string' && dto.fullName.trim()
@@ -238,7 +235,9 @@ export class UsersService {
     const duplicateFilters = [
       email ? { email } : null,
       phone ? { phone } : null,
-    ].filter((value): value is { email: string } | { phone: string } => value !== null);
+    ].filter(
+      (value): value is { email: string } | { phone: string } => value !== null,
+    );
     const existing = await this.prisma.user.findFirst({
       where: { OR: duplicateFilters },
     });
@@ -329,7 +328,8 @@ export class UsersService {
       throw new ForbiddenException('User is not a pending provider request');
     }
     const providerId =
-      existing.providerId ?? `PRV-${new Date().getFullYear()}-${randomUUID().slice(0, 6).toUpperCase()}`;
+      existing.providerId ??
+      `PRV-${new Date().getFullYear()}-${randomUUID().slice(0, 6).toUpperCase()}`;
     const updated = await this.prisma.user.update({
       where: { id },
       data: {
@@ -407,18 +407,23 @@ export class UsersService {
   }
 
   private parseInvitableRole(raw: unknown) {
-    const value = String(raw ?? '').trim().toUpperCase();
+    const value = String(raw ?? '')
+      .trim()
+      .toUpperCase();
     if (!Object.values(UserRole).includes(value as UserRole)) {
       throw new ForbiddenException('Invalid role');
     }
     return value as UserRole;
   }
 
-  private resolveInvitationOrganization(dto: Record<string, unknown>, user: JwtUser) {
+  private resolveInvitationOrganization(
+    dto: Record<string, unknown>,
+    user: JwtUser,
+  ) {
     if (user.role === UserRole.SUPER_ADMIN) {
       return typeof dto.organizationId === 'string' && dto.organizationId.trim()
         ? dto.organizationId.trim()
-        : user.organizationId ?? null;
+        : (user.organizationId ?? null);
     }
     if (!user.organizationId) {
       throw new ForbiddenException('No organization assigned');
@@ -437,6 +442,7 @@ export class UsersService {
       accountStatus: true,
       serviceCategories: true,
       coverageAreas: true,
+      profileData: true,
       subscriptionPlan: true,
       providerEngagementType: true,
       createdAt: true,

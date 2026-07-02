@@ -53,6 +53,39 @@ export class PlatformConfigurationController {
     return this.platform.getAnalyticsContracts();
   }
 
+  @Get('readiness')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getRuntimeReadiness(@Req() req: Request) {
+    return this.platform.getRuntimeReadiness(req.user ?? {});
+  }
+
+  @Get('readiness/:organizationId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getOrganizationRuntimeReadiness(
+    @Param('organizationId') organizationId: string,
+    @Req() req: Request,
+  ) {
+    return this.platform.getRuntimeReadiness(req.user ?? {}, organizationId);
+  }
+
+  @Get('configuration-validation/:organizationId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  validateTenantConfiguration(
+    @Param('organizationId') organizationId: string,
+    @Req() req: Request,
+  ) {
+    return this.platform.validateTenantConfiguration(
+      req.user ?? {},
+      organizationId,
+    );
+  }
+
+  @Get('audit-history')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getPlatformAuditHistory(@Req() req: Request) {
+    return this.platform.getPlatformAuditHistory(req.user ?? {});
+  }
+
   @Get('service-configuration')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   getOwnServiceConfiguration(@Req() req: Request) {
