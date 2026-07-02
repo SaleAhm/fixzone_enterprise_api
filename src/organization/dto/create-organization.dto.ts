@@ -2,6 +2,7 @@ import {
   IsEmail,
   IsEnum,
   IsInt,
+  IsArray,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -86,4 +87,9 @@ export class CreateOrganizationDto {
   @IsOptional()
   @IsObject()
   profileData?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  enabledModules?: string[];
 }

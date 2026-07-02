@@ -12,6 +12,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { PlatformModulesService } from '../platform-modules/platform-modules.service';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 
@@ -26,7 +27,10 @@ type JwtUser = {
 
 @Injectable()
 export class OrganizationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly platformModules: PlatformModulesService,
+  ) {}
 
   async create(dto: CreateOrganizationDto, user: JwtUser) {
     this.assertSuperAdmin(user);
@@ -39,6 +43,7 @@ export class OrganizationService {
     const organization = await this.prisma.organization.create({
       data: this.buildOrganizationData(dto, {
         name,
+        enabledModules: this.platformModules.toJson(dto.enabledModules),
       }) as Prisma.OrganizationUncheckedCreateInput,
     });
 
@@ -259,7 +264,10 @@ export class OrganizationService {
 
   private buildOrganizationData(
     dto: Partial<CreateOrganizationDto | UpdateOrganizationDto>,
-    required?: Pick<Prisma.OrganizationUncheckedCreateInput, 'name'>,
+    required?: Pick<
+      Prisma.OrganizationUncheckedCreateInput,
+      'name' | 'enabledModules'
+    >,
   ): Record<string, unknown> {
     const data: Record<string, unknown> = {
       ...(required ?? {}),
@@ -304,6 +312,9 @@ export class OrganizationService {
     }
     if (dto.profileData)
       data.profileData = dto.profileData as Prisma.InputJsonValue;
+    if (dto.enabledModules !== undefined) {
+      data.enabledModules = this.platformModules.toJson(dto.enabledModules);
+    }
 
     return data;
   }
@@ -359,6 +370,7 @@ export class OrganizationService {
       allowedProviders?: number | null;
       allowedReportsPerMonth?: number | null;
       allowedStorageMb?: number | null;
+      enabledModules?: Prisma.JsonValue | null;
     };
 
     return {
@@ -383,6 +395,9 @@ export class OrganizationService {
         reportsPerMonth: org.allowedReportsPerMonth,
         storageMb: org.allowedStorageMb,
       },
+      moduleSummary: this.platformModules.organizationModuleSummary(
+        org.enabledModules,
+      ),
     };
   }
 
@@ -420,6 +435,7 @@ export class OrganizationService {
       'allowedProviders',
       'allowedReportsPerMonth',
       'allowedStorageMb',
+      'enabledModules',
     ] as const;
     if (restricted.some((field) => dto[field] !== undefined)) {
       throw new ForbiddenException(

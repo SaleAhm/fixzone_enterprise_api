@@ -108,6 +108,8 @@ describe('Organization Management (e2e)', () => {
     createdOrgIds.push(createRes.body.id);
     expect(createRes.body.subscriptionPlan).toBe('PROFESSIONAL');
     expect(createRes.body.quotas.users).toBe(100);
+    expect(createRes.body.enabledModules).toEqual(['maintenance']);
+    expect(createRes.body.moduleSummary.maintenanceActive).toBe(true);
 
     const updateRes = await request(app.getHttpServer())
       .patch(`/api/organizations/${createRes.body.id}`)
@@ -131,6 +133,87 @@ describe('Organization Management (e2e)', () => {
 
     expect(billingRes.status).toBe(200);
     expect(billingRes.body.planCatalog.length).toBeGreaterThan(0);
+  });
+
+  it('exposes the platform module registry as read-only metadata', async () => {
+    const platformOrg = await createOrganization('Module Registry Platform');
+    const superAdmin = await createUser({
+      email: 'module-registry-super@test.com',
+      fullName: 'Module Registry Super Admin',
+      role: UserRole.SUPER_ADMIN,
+      organizationId: platformOrg.id,
+    });
+    const token = await signToken(superAdmin);
+
+    const registryRes = await request(app.getHttpServer())
+      .get('/api/platform-modules')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(registryRes.status).toBe(200);
+    expect(registryRes.body.platformName).toBe('SecureZone Platform');
+    expect(registryRes.body.activeProductionModuleKey).toBe('maintenance');
+    expect(registryRes.body.modules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: 'maintenance',
+          moduleName: 'FixZone',
+          activeProduction: true,
+          metadataOnly: false,
+        }),
+        expect.objectContaining({
+          key: 'healthcare',
+          activeProduction: false,
+          metadataOnly: true,
+        }),
+      ]),
+    );
+  });
+
+  it('normalizes organization module enablement without enabling future workflows', async () => {
+    const platformOrg = await createOrganization('Module Enablement Platform');
+    const superAdmin = await createUser({
+      email: 'module-enable-super@test.com',
+      fullName: 'Module Enablement Super Admin',
+      role: UserRole.SUPER_ADMIN,
+      organizationId: platformOrg.id,
+    });
+    const token = await signToken(superAdmin);
+
+    const createRes = await request(app.getHttpServer())
+      .post('/api/organizations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Phase 4A Tenant',
+        enabledModules: ['healthcare', 'unknown_future_module'],
+      });
+
+    expect(createRes.status).toBe(201);
+    createdOrgIds.push(createRes.body.id);
+    expect(createRes.body.enabledModules).toEqual([
+      'maintenance',
+      'healthcare',
+    ]);
+    expect(createRes.body.moduleSummary.maintenanceActive).toBe(true);
+    expect(createRes.body.moduleSummary.activeProductionModuleKeys).toEqual([
+      'maintenance',
+    ]);
+    expect(createRes.body.moduleSummary.metadataOnlyModuleKeys).toEqual([
+      'healthcare',
+    ]);
+
+    const updateRes = await request(app.getHttpServer())
+      .patch(`/api/organizations/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ enabledModules: ['legal'] });
+
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.enabledModules).toEqual(['maintenance', 'legal']);
+    expect(updateRes.body.moduleSummary.activeProductionModuleKeys).toEqual([
+      'maintenance',
+    ]);
+    expect(updateRes.body.moduleSummary.metadataOnlyModuleKeys).toEqual([
+      'legal',
+    ]);
   });
 
   it('scopes organization reads for Org Admins', async () => {
