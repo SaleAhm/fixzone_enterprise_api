@@ -9,6 +9,7 @@ import { mkdir, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { TrustService } from '../trust/trust.service';
 import { AssignProviderDto } from './dto/assign-provider.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
@@ -41,7 +42,10 @@ export class ReportService {
     process.env.ASSIGNMENT_TIMEOUT_MINUTES || 30,
   );
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly trustService?: TrustService,
+  ) {}
 
   // ===================== CREATE =====================
 
@@ -240,7 +244,8 @@ export class ReportService {
 
     if (!report) throw new NotFoundException('Report not found');
 
-    if (this.isSuperAdmin(user)) return this.withEnterpriseReportDetails(report);
+    if (this.isSuperAdmin(user))
+      return this.withEnterpriseReportDetails(report);
 
     const sameOrg =
       user.organizationId && report.organizationId === user.organizationId;
@@ -287,7 +292,7 @@ export class ReportService {
     const result = await this.expireOverdueAssignments({
       organizationId: this.isSuperAdmin(user)
         ? undefined
-        : user.organizationId ?? undefined,
+        : (user.organizationId ?? undefined),
       actor: user,
     });
     return {
@@ -297,7 +302,11 @@ export class ReportService {
     };
   }
 
-  async cancelAssignment(reportId: string, reason: string | undefined, user: JwtUser) {
+  async cancelAssignment(
+    reportId: string,
+    reason: string | undefined,
+    user: JwtUser,
+  ) {
     if (
       !this.isAdmin(user) &&
       !this.isDispatch(user) &&
@@ -310,7 +319,10 @@ export class ReportService {
       where: { id: reportId },
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (!this.isSuperAdmin(user) && report.organizationId !== user.organizationId) {
+    if (
+      !this.isSuperAdmin(user) &&
+      report.organizationId !== user.organizationId
+    ) {
       throw new ForbiddenException('Wrong org');
     }
     if (!report.assignedProviderId || report.status === ReportStatus.PENDING) {
@@ -318,7 +330,8 @@ export class ReportService {
     }
 
     const previousProviderId = report.assignedProviderId;
-    const cleanReason = reason?.trim() || 'Assignment cancelled by administrator';
+    const cleanReason =
+      reason?.trim() || 'Assignment cancelled by administrator';
     const updated = await this.prisma.report.update({
       where: { id: reportId },
       data: {
@@ -491,7 +504,8 @@ export class ReportService {
       type: 'assignment',
       title: 'New assignment',
       message: `You have been assigned "${updated.title}". Accept before ${
-        updated.assignmentDeadlineAt?.toISOString() ?? 'the timeout window expires'
+        updated.assignmentDeadlineAt?.toISOString() ??
+        'the timeout window expires'
       }.`,
     });
     await this.audit('Report Assigned', user, {
@@ -585,6 +599,19 @@ export class ReportService {
 
     if (!report) throw new NotFoundException('Report not found');
     if (this.isProvider(user)) await this.assertActiveProvider(userId);
+    if (
+      this.isProvider(user) &&
+      dto.status === ReportStatus.IN_PROGRESS &&
+      this.trustService
+    ) {
+      await this.trustService.assertProviderJobAcceptanceAllowed({
+        id: userId,
+        role: user.role,
+        organizationId: user.organizationId,
+        email: user.email,
+        fullName: user.fullName,
+      });
+    }
 
     this.assertStatusTransitionAllowed(report, dto.status, user, userId);
 
@@ -1034,7 +1061,9 @@ export class ReportService {
         assignedCount: p.assignedReports.length,
         completedJobs: completed.length,
         averageRating:
-          rated.length === 0 ? 0 : Number((ratingTotal / rated.length).toFixed(2)),
+          rated.length === 0
+            ? 0
+            : Number((ratingTotal / rated.length).toFixed(2)),
         ratingCount: rated.length,
         averageResponseHours: Number(avgResponseHours.toFixed(2)),
         recentReviews: rated
@@ -1148,7 +1177,9 @@ export class ReportService {
     };
   }
 
-  private async withEnterpriseReportDetails<T extends { id: string }>(report: T) {
+  private async withEnterpriseReportDetails<T extends { id: string }>(
+    report: T,
+  ) {
     const [timeline, notifications] = await Promise.all([
       (this.prisma as any).reportActivity?.findMany
         ? (this.prisma as any).reportActivity.findMany({

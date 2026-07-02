@@ -28,6 +28,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       where: { id: payload.sub },
       select: {
         id: true,
+        secureZoneId: true,
         email: true,
         phone: true,
         firebaseUid: true,
@@ -41,6 +42,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         coverageAreas: true,
         profileData: true,
         subscriptionPlan: true,
+        identityVerificationStatus: true,
+        identityVerificationLevel: true,
+        trustScore: true,
+        identityType: true,
         createdAt: true,
         organization: {
           select: {
@@ -63,6 +68,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       userId: user.id, // ✅ backward compatibility
       sub: user.id, // ✅ JWT standard
       email: user.email,
+      secureZoneId: user.secureZoneId,
       phone: user.phone,
       firebaseUid: user.firebaseUid,
       fullName: user.fullName,
@@ -75,6 +81,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       coverageAreas: user.coverageAreas,
       profileData: user.profileData,
       subscriptionPlan: user.subscriptionPlan,
+      identityVerificationStatus: user.identityVerificationStatus,
+      identityVerificationLevel: user.identityVerificationLevel,
+      trustScore: user.trustScore,
+      identityType: user.identityType,
       organization: user.organization,
     };
   }

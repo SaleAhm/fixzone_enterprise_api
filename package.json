@@ -20,6 +20,7 @@
     "test:rules:static": "node test/security-rules.static-test.cjs",
     "test:rules": "firebase emulators:exec --only firestore \"node test/security-rules.behavior-test.cjs\"",
     "seed": "prisma db seed",
+    "identity:backfill": "ts-node scripts/backfill-securezone-identity.ts",
     "seed:firebase-provider": "ts-node scripts/seed-firebase-provider.ts",
     "seed:reset": "prisma migrate reset --force"
   },

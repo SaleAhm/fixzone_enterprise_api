@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { Prisma, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { TrustService } from '../trust/trust.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -21,7 +22,13 @@ type AuthUser = Pick<
   | 'organizationId'
   | 'providerId'
   | 'accountStatus'
->;
+> & {
+  secureZoneId?: string | null;
+  identityVerificationStatus?: string;
+  identityVerificationLevel?: number;
+  trustScore?: number;
+  identityType?: string;
+};
 
 @Injectable()
 export class AuthService {
@@ -31,6 +38,7 @@ export class AuthService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly trustService: TrustService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -84,7 +92,7 @@ export class AuthService {
       }
     }
 
-    const user = await this.prisma.user.create({
+    let user = await this.prisma.user.create({
       data: {
         fullName: dto.fullName.trim(),
         email: dto.email ? dto.email.toLowerCase().trim() : null,
@@ -102,13 +110,19 @@ export class AuthService {
         organizationId: true,
         providerId: true,
         accountStatus: true,
+        secureZoneId: true,
       },
     });
+
+    user = await this.trustService.ensureIdentity(user.id);
 
     return this.issueTokens(user);
   }
 
-  async login(dto: LoginDto) {
+  async login(
+    dto: LoginDto,
+    context?: { ipAddress?: string | null; userAgent?: string | null },
+  ) {
     if (!dto.email && !dto.phone) {
       throw new BadRequestException('Email or phone is required');
     }
@@ -132,6 +146,13 @@ export class AuthService {
         phone: dto.phone?.trim() ?? null,
         reason: 'user_not_found',
       });
+      await this.trustService.recordLogin({
+        email: dto.email,
+        success: false,
+        failureReason: 'user_not_found',
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+      });
       throw new UnauthorizedException('User not found');
     }
 
@@ -145,6 +166,14 @@ export class AuthService {
         email: user.email,
         reason: 'invalid_password',
       });
+      await this.trustService.recordLogin({
+        userId: user.id,
+        email: user.email,
+        success: false,
+        failureReason: 'invalid_password',
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+      });
       throw new UnauthorizedException('Incorrect password');
     }
 
@@ -153,6 +182,14 @@ export class AuthService {
         email: user.email,
         role: user.role,
         accountStatus: user.accountStatus,
+      });
+      await this.trustService.recordLogin({
+        userId: user.id,
+        email: user.email,
+        success: false,
+        failureReason: `account_${user.accountStatus.toLowerCase()}`,
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
       });
       throw new UnauthorizedException(
         user.accountStatus === 'PENDING_INVITE'
@@ -177,6 +214,14 @@ export class AuthService {
           actualProviderId: user.providerId,
           role: user.role,
         });
+        await this.trustService.recordLogin({
+          userId: user.id,
+          email: user.email,
+          success: false,
+          failureReason: 'provider_id_mismatch',
+          ipAddress: context?.ipAddress,
+          userAgent: context?.userAgent,
+        });
         throw new UnauthorizedException('Invalid provider credentials');
       }
     }
@@ -184,6 +229,14 @@ export class AuthService {
     await this.audit('Login', user.id, {
       email: user.email,
       role: user.role,
+    });
+    const identityUser = await this.trustService.ensureIdentity(user.id);
+    await this.trustService.recordLogin({
+      userId: user.id,
+      email: user.email,
+      success: true,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
     });
 
     return this.issueTokens({
@@ -195,6 +248,11 @@ export class AuthService {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      secureZoneId: identityUser.secureZoneId,
+      identityVerificationStatus: identityUser.identityVerificationStatus,
+      identityVerificationLevel: identityUser.identityVerificationLevel,
+      trustScore: identityUser.trustScore,
+      identityType: identityUser.identityType,
     });
   }
 
@@ -258,6 +316,7 @@ export class AuthService {
       data,
       select: {
         id: true,
+        secureZoneId: true,
         email: true,
         phone: true,
         firebaseUid: true,
@@ -271,6 +330,10 @@ export class AuthService {
         coverageAreas: true,
         profileData: true,
         subscriptionPlan: true,
+        identityVerificationStatus: true,
+        identityVerificationLevel: true,
+        trustScore: true,
+        identityType: true,
         createdAt: true,
         organization: {
           select: {
@@ -291,6 +354,7 @@ export class AuthService {
 
     return {
       id: updated.id,
+      secureZoneId: updated.secureZoneId,
       userId: updated.id,
       sub: updated.id,
       email: updated.email,
@@ -306,6 +370,10 @@ export class AuthService {
       coverageAreas: updated.coverageAreas,
       profileData: updated.profileData,
       subscriptionPlan: updated.subscriptionPlan,
+      identityVerificationStatus: updated.identityVerificationStatus,
+      identityVerificationLevel: updated.identityVerificationLevel,
+      trustScore: updated.trustScore,
+      identityType: updated.identityType,
       organization: updated.organization,
     };
   }
@@ -392,6 +460,7 @@ export class AuthService {
           },
           select: {
             id: true,
+            secureZoneId: true,
             email: true,
             phone: true,
             fullName: true,
@@ -399,6 +468,10 @@ export class AuthService {
             organizationId: true,
             providerId: true,
             accountStatus: true,
+            identityVerificationStatus: true,
+            identityVerificationLevel: true,
+            trustScore: true,
+            identityType: true,
           },
         })
       : await this.prisma.user.create({
@@ -412,6 +485,7 @@ export class AuthService {
           },
           select: {
             id: true,
+            secureZoneId: true,
             email: true,
             phone: true,
             fullName: true,
@@ -419,10 +493,16 @@ export class AuthService {
             organizationId: true,
             providerId: true,
             accountStatus: true,
+            identityVerificationStatus: true,
+            identityVerificationLevel: true,
+            trustScore: true,
+            identityType: true,
           },
         });
 
-    return this.issueTokens(user);
+    const identityUser = await this.trustService.ensureIdentity(user.id);
+
+    return this.issueTokens({ ...user, ...identityUser });
   }
 
   async issueTokensForOnboarding(user: AuthUser) {
@@ -509,6 +589,7 @@ export class AuthService {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      secureZoneId: user.secureZoneId,
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
@@ -526,6 +607,11 @@ export class AuthService {
         organizationId: user.organizationId,
         providerId: user.providerId,
         accountStatus: user.accountStatus,
+        secureZoneId: user.secureZoneId,
+        identityVerificationStatus: user.identityVerificationStatus,
+        identityVerificationLevel: user.identityVerificationLevel,
+        trustScore: user.trustScore,
+        identityType: user.identityType,
       },
       accessToken,
     };
