@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { User, UserRole } from '@prisma/client';
+import { Prisma, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { LoginDto } from './dto/login.dto';
@@ -167,7 +167,10 @@ export class AuthService {
 
     const requestedProviderId = dto.providerId?.trim();
     if (requestedProviderId) {
-      if (user.role !== UserRole.PROVIDER || user.providerId !== requestedProviderId) {
+      if (
+        user.role !== UserRole.PROVIDER ||
+        user.providerId !== requestedProviderId
+      ) {
         await this.audit('Provider Login ID Mismatch', user.id, {
           email: user.email,
           requestedProviderId,
@@ -193,6 +196,118 @@ export class AuthService {
       providerId: user.providerId,
       accountStatus: user.accountStatus,
     });
+  }
+
+  async updateMe(user: AuthUser, dto: Record<string, unknown>) {
+    const data: Prisma.UserUpdateInput = {};
+
+    if (typeof dto.fullName === 'string' && dto.fullName.trim().length >= 2) {
+      data.fullName = dto.fullName.trim();
+    }
+
+    if (typeof dto.phone === 'string') {
+      data.phone = dto.phone.trim() || null;
+    }
+
+    const profileData: Record<string, unknown> = {};
+    for (const key of [
+      'address',
+      'state',
+      'lga',
+      'preferredLanguage',
+      'emergencyContact',
+    ]) {
+      const value = dto[key];
+      if (typeof value === 'string') {
+        profileData[key] = value.trim() || null;
+      }
+    }
+
+    const notificationPreferences = dto.notificationPreferences;
+    if (
+      notificationPreferences &&
+      typeof notificationPreferences === 'object' &&
+      !Array.isArray(notificationPreferences)
+    ) {
+      profileData.notificationPreferences = notificationPreferences;
+    }
+
+    if (Object.keys(profileData).length > 0) {
+      const existing = await this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { profileData: true },
+      });
+      const existingProfile =
+        existing?.profileData &&
+        typeof existing.profileData === 'object' &&
+        !Array.isArray(existing.profileData)
+          ? (existing.profileData as Record<string, unknown>)
+          : {};
+      data.profileData = {
+        ...existingProfile,
+        ...profileData,
+      } as Prisma.InputJsonValue;
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException('No supported profile fields provided');
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data,
+      select: {
+        id: true,
+        email: true,
+        phone: true,
+        firebaseUid: true,
+        fullName: true,
+        role: true,
+        organizationId: true,
+        providerId: true,
+        accountStatus: true,
+        providerEngagementType: true,
+        serviceCategories: true,
+        coverageAreas: true,
+        profileData: true,
+        subscriptionPlan: true,
+        createdAt: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            subscriptionPlan: true,
+            billingStatus: true,
+          },
+        },
+      },
+    });
+
+    await this.audit('Profile Updated', user.id, {
+      role: user.role,
+      changes: Object.keys(data),
+    });
+
+    return {
+      id: updated.id,
+      userId: updated.id,
+      sub: updated.id,
+      email: updated.email,
+      phone: updated.phone,
+      firebaseUid: updated.firebaseUid,
+      fullName: updated.fullName,
+      role: updated.role,
+      organizationId: updated.organizationId,
+      providerId: updated.providerId,
+      accountStatus: updated.accountStatus,
+      providerEngagementType: updated.providerEngagementType,
+      serviceCategories: updated.serviceCategories,
+      coverageAreas: updated.coverageAreas,
+      profileData: updated.profileData,
+      subscriptionPlan: updated.subscriptionPlan,
+      organization: updated.organization,
+    };
   }
 
   async firebaseLogin(dto: FirebaseLoginDto) {

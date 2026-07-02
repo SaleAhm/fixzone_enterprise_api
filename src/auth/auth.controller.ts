@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
@@ -31,6 +39,12 @@ export class AuthController {
   @Get('me')
   me(@Req() req: { user: any }) {
     return req.user;
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('me')
+  updateMe(@Req() req: { user: any }, @Body() dto: Record<string, unknown>) {
+    return this.authService.updateMe(req.user, dto);
   }
 
   // 🔒 Admin only (ORG_ADMIN or SUPER_ADMIN)

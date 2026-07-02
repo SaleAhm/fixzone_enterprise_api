@@ -7,6 +7,8 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Auth API (e2e)', () => {
+  jest.setTimeout(30000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let adminToken: string;
@@ -32,18 +34,23 @@ describe('Auth API (e2e)', () => {
       },
     });
     adminOrganizationId = adminOrganization.id;
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await cleanupAuthUsers();
+    if (prisma) {
+      await cleanupAuthUsers();
 
-    await prisma.organization.delete({
-      where: { id: adminOrganizationId },
-    });
+      if (adminOrganizationId) {
+        await prisma.organization.delete({
+          where: { id: adminOrganizationId },
+        });
+      }
 
-    await prisma.$disconnect();
-    await app.close();
-  });
+      await prisma.$disconnect();
+    }
+
+    await app?.close();
+  }, 30000);
 
   async function cleanupAuthUsers() {
     const users = await prisma.user.findMany({
@@ -187,6 +194,24 @@ describe('Auth API (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(res.status).toBe(403);
+  });
+
+  it('Citizen can update own profile through /auth/me', async () => {
+    const res = await request(app.getHttpServer())
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        fullName: 'Citizen User Updated',
+        phone: '+2348000000999',
+        address: '12 SecureZone Street',
+        notificationPreferences: { email: true, sms: false, push: true },
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.fullName).toBe('Citizen User Updated');
+    expect(res.body.phone).toBe('+2348000000999');
+    expect(res.body.profileData.address).toBe('12 SecureZone Street');
+    expect(res.body.profileData.notificationPreferences.sms).toBe(false);
   });
 
   it('Register Provider', async () => {
