@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 
 export const ACTIVE_PRODUCTION_MODULE_KEY = 'maintenance';
 
@@ -27,6 +28,37 @@ export type OrganizationModuleSummary = {
   activeModules: PlatformModuleDefinition[];
   metadataOnlyModules: PlatformModuleDefinition[];
   maintenanceActive: boolean;
+};
+
+export type ModuleAccessRequirement = {
+  moduleKey: string;
+  requiredRoles?: UserRole[];
+  requiredVerificationLevel?: number;
+  requiredSubscriptionPlans?: string[];
+  requiresOrganization?: boolean;
+  hiddenWhenDenied?: boolean;
+};
+
+export type ModuleAccessUser = {
+  sub?: string;
+  id?: string;
+  role?: UserRole | string;
+  organizationId?: string | null;
+  identityVerificationLevel?: number | null;
+  subscriptionPlan?: string | null;
+  organization?: {
+    subscriptionPlan?: string | null;
+  } | null;
+};
+
+export type ModuleAccessResult = {
+  moduleKey: string;
+  state: 'allowed' | 'locked' | 'hidden';
+  allowed: boolean;
+  visible: boolean;
+  reason: string;
+  requirements: ModuleAccessRequirement;
+  module?: PlatformModuleDefinition;
 };
 
 const PLATFORM_MODULES: PlatformModuleDefinition[] = [
@@ -353,6 +385,8 @@ const PLATFORM_MODULES: PlatformModuleDefinition[] = [
 export class PlatformModulesService {
   private readonly registry = PLATFORM_MODULES;
 
+  constructor(private readonly prisma: PrismaService) {}
+
   listModules() {
     return {
       platformName: 'SecureZone Platform',
@@ -403,6 +437,107 @@ export class PlatformModulesService {
     };
   }
 
+  async evaluateAccess(
+    user: ModuleAccessUser,
+    requirement: ModuleAccessRequirement,
+  ): Promise<ModuleAccessResult> {
+    const module = this.registry.find(
+      (item) => item.key === requirement.moduleKey,
+    );
+
+    if (!module) {
+      return this.denied(requirement, 'hidden', 'Module does not exist.');
+    }
+
+    if (module.metadataOnly || !module.activeProduction) {
+      return this.denied(
+        requirement,
+        'locked',
+        'This service module is metadata-only and has no active workflow yet.',
+        module,
+      );
+    }
+
+    const role = user.role?.toString() as UserRole | undefined;
+    if (
+      requirement.requiredRoles?.length &&
+      (!role || !requirement.requiredRoles.includes(role))
+    ) {
+      return this.denied(
+        requirement,
+        requirement.hiddenWhenDenied ? 'hidden' : 'locked',
+        'User role is not allowed for this module area.',
+        module,
+      );
+    }
+
+    if (requirement.requiresOrganization && role !== UserRole.SUPER_ADMIN) {
+      if (!user.organizationId) {
+        return this.denied(
+          requirement,
+          'locked',
+          'Organization workspace is required for this module area.',
+          module,
+        );
+      }
+
+      const organization = await this.prisma.organization.findUnique({
+        where: { id: user.organizationId },
+        select: { enabledModules: true, subscriptionPlan: true },
+      });
+      const enabledModuleKeys = this.normalizeEnabledModules(
+        organization?.enabledModules,
+      );
+      if (!enabledModuleKeys.includes(module.key)) {
+        return this.denied(
+          requirement,
+          'locked',
+          'This module is not enabled for the organization.',
+          module,
+        );
+      }
+    }
+
+    const requiredLevel = requirement.requiredVerificationLevel;
+    if (
+      typeof requiredLevel === 'number' &&
+      (user.identityVerificationLevel ?? 0) < requiredLevel
+    ) {
+      return this.denied(
+        requirement,
+        'locked',
+        'Additional identity verification will be required for this module.',
+        module,
+      );
+    }
+
+    if (requirement.requiredSubscriptionPlans?.length) {
+      const userPlan =
+        user.subscriptionPlan ?? user.organization?.subscriptionPlan;
+      if (
+        !userPlan ||
+        !requirement.requiredSubscriptionPlans.includes(userPlan)
+      ) {
+        return this.denied(
+          requirement,
+          'locked',
+          'A higher subscription entitlement will be required for this module.',
+          module,
+        );
+      }
+    }
+
+    return {
+      moduleKey: module.key,
+      state: 'allowed',
+      allowed: true,
+      visible: true,
+      reason: 'Access allowed.',
+      requirements: requirement,
+      module,
+    };
+  }
+
   private extractKeys(value: unknown): string[] {
     if (Array.isArray(value)) {
       return value
@@ -421,5 +556,22 @@ export class PlatformModulesService {
     }
 
     return [ACTIVE_PRODUCTION_MODULE_KEY];
+  }
+
+  private denied(
+    requirement: ModuleAccessRequirement,
+    state: 'locked' | 'hidden',
+    reason: string,
+    module?: PlatformModuleDefinition,
+  ): ModuleAccessResult {
+    return {
+      moduleKey: requirement.moduleKey,
+      state,
+      allowed: false,
+      visible: state !== 'hidden',
+      reason,
+      requirements: requirement,
+      module,
+    };
   }
 }

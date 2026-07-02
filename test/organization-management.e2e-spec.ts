@@ -169,6 +169,54 @@ describe('Organization Management (e2e)', () => {
     );
   });
 
+  it('evaluates module access without enforcing future workflows', async () => {
+    const platformOrg = await createOrganization('Module Access Platform');
+    const superAdmin = await createUser({
+      email: 'module-access-super@test.com',
+      fullName: 'Module Access Super Admin',
+      role: UserRole.SUPER_ADMIN,
+      organizationId: platformOrg.id,
+    });
+    const token = await signToken(superAdmin);
+
+    const maintenanceRes = await request(app.getHttpServer())
+      .get('/api/platform-modules/access/maintenance')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(maintenanceRes.status).toBe(200);
+    expect(maintenanceRes.body).toMatchObject({
+      moduleKey: 'maintenance',
+      state: 'allowed',
+      allowed: true,
+      visible: true,
+    });
+
+    const futureRes = await request(app.getHttpServer())
+      .get('/api/platform-modules/access/healthcare')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(futureRes.status).toBe(200);
+    expect(futureRes.body).toMatchObject({
+      moduleKey: 'healthcare',
+      state: 'locked',
+      allowed: false,
+      visible: true,
+    });
+    expect(futureRes.body.reason).toContain('metadata-only');
+
+    const missingRes = await request(app.getHttpServer())
+      .get('/api/platform-modules/access/not_a_module')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(missingRes.status).toBe(200);
+    expect(missingRes.body).toMatchObject({
+      moduleKey: 'not_a_module',
+      state: 'hidden',
+      allowed: false,
+      visible: false,
+    });
+  });
+
   it('normalizes organization module enablement without enabling future workflows', async () => {
     const platformOrg = await createOrganization('Module Enablement Platform');
     const superAdmin = await createUser({
