@@ -9,6 +9,7 @@ import { DemoDataModule } from './demo-data/demo-data.module';
 import { PlatformToolsModule } from './platform-tools/platform-tools.module';
 import { PlatformModulesModule } from './platform-modules/platform-modules.module';
 import { EnterpriseServicesModule } from './enterprise-services/enterprise-services.module';
+import { PlatformConfigurationModule } from './platform-configuration/platform-configuration.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { TrustModule } from './trust/trust.module';
 import { AppController } from './app.controller';
@@ -26,6 +27,7 @@ import { AppService } from './app.service';
     PlatformToolsModule,
     PlatformModulesModule,
     EnterpriseServicesModule,
+    PlatformConfigurationModule,
     OnboardingModule,
     TrustModule,
   ],
