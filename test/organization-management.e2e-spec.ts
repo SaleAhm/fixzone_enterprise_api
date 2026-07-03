@@ -217,6 +217,60 @@ describe('Organization Management (e2e)', () => {
     });
   });
 
+  it('builds a platform access profile with available and locked modules', async () => {
+    const platformOrg = await createOrganization('Platform Access Profile Org');
+    const citizen = await createUser({
+      email: 'platform-access-citizen@test.com',
+      fullName: 'Platform Access Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: platformOrg.id,
+    });
+    await prisma.user.update({
+      where: { id: citizen.id },
+      data: {
+        identityVerificationLevel: 0,
+        trustScore: 0,
+      },
+    });
+    const token = await signToken(citizen);
+
+    const profileRes = await request(app.getHttpServer())
+      .get('/api/platform-modules/access-profile')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(profileRes.status).toBe(200);
+    expect(profileRes.body.platformName).toBe('SecureZone Platform');
+    expect(profileRes.body.identity.currentTrustLabel).toBe('Basic Account');
+    expect(profileRes.body.subscription.plan).toBe('FREE');
+    expect(profileRes.body.modules.available).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          moduleKey: 'maintenance',
+          allowed: true,
+          state: 'allowed',
+        }),
+      ]),
+    );
+    expect(profileRes.body.modules.locked).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          moduleKey: 'property_facilities',
+          allowed: false,
+          state: 'locked',
+        }),
+      ]),
+    );
+    expect(profileRes.body.activationJourney).toMatchObject({
+      audience: 'citizen',
+      operational: true,
+    });
+    expect(profileRes.body.notes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('only active production service'),
+      ]),
+    );
+  });
+
   it('normalizes organization module enablement without enabling future workflows', async () => {
     const platformOrg = await createOrganization('Module Enablement Platform');
     const superAdmin = await createUser({

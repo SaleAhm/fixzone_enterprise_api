@@ -25,6 +25,18 @@ export class PlatformModulesController {
     return this.platformModulesService.listModules();
   }
 
+  @Get('access-profile')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  getAccessProfile(@Req() req: Request) {
+    return this.platformModulesService.getAccessProfile(req.user ?? {});
+  }
+
   @Get('access/:moduleKey')
   @Roles(
     UserRole.SUPER_ADMIN,

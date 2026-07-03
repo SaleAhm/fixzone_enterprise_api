@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import {
+  AccountStatus,
+  PlatformEntitlementPlan,
+  Prisma,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export const ACTIVE_PRODUCTION_MODULE_KEY = 'maintenance';
@@ -75,6 +80,53 @@ export type ModuleAccessResult = {
   reason: string;
   requirements: ModuleAccessRequirement;
   module?: PlatformModuleDefinition;
+};
+
+export type PlatformAccessProfile = {
+  platformName: 'SecureZone Platform';
+  generatedAt: string;
+  identity: {
+    userId: string | null;
+    role: string | null;
+    accountStatus: string | null;
+    secureZoneId: string | null;
+    currentTrustLevel: number;
+    currentTrustLabel: string;
+    verificationStatus: string | null;
+    trustScore: number;
+    nextVerificationStep: string;
+    verificationRecommendations: string[];
+  };
+  subscription: {
+    plan: PlatformEntitlementPlan;
+    displayName: string;
+    source: 'user_entitlement' | 'default';
+    summary: Record<string, unknown>;
+    upgradeSuggestions: string[];
+  };
+  organization: {
+    id: string | null;
+    name: string | null;
+    status: string | null;
+    subscriptionPlan: string | null;
+    billingStatus: string | null;
+    enabledModuleKeys: string[];
+  };
+  modules: {
+    available: ModuleAccessResult[];
+    locked: ModuleAccessResult[];
+    disabled: ModuleAccessResult[];
+    all: ModuleAccessResult[];
+  };
+  entitlementSummary: Record<string, unknown>;
+  activationJourney: {
+    audience: 'citizen' | 'provider' | 'organization' | 'internal_admin';
+    currentStage: string;
+    operational: boolean;
+    stages: { key: string; label: string; complete: boolean }[];
+    message: string;
+  };
+  notes: string[];
 };
 
 const PLATFORM_MODULES: PlatformModuleDefinition[] = [
@@ -466,6 +518,157 @@ export class PlatformModulesService {
     };
   }
 
+  async getAccessProfile(
+    user: ModuleAccessUser,
+  ): Promise<PlatformAccessProfile> {
+    const userId = user.sub ?? user.id ?? null;
+    const dbUser = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          include: {
+            organization: {
+              select: {
+                id: true,
+                name: true,
+                status: true,
+                enabledModules: true,
+                subscriptionPlan: true,
+                billingStatus: true,
+                allowedReportsPerMonth: true,
+                allowedProviders: true,
+                allowedUsers: true,
+                allowedStorageMb: true,
+              },
+            },
+            entitlement: true,
+          },
+        })
+      : null;
+    const entitlement = dbUser?.entitlement ?? null;
+    const plan = entitlement?.plan ?? PlatformEntitlementPlan.FREE;
+    const organizationEnabledModules = this.normalizeEnabledModules(
+      dbUser?.organization?.enabledModules,
+    );
+    const accessUser: ModuleAccessUser = {
+      id: userId ?? undefined,
+      role: dbUser?.role ?? user.role,
+      organizationId: dbUser?.organizationId ?? user.organizationId ?? null,
+      identityVerificationLevel:
+        dbUser?.identityVerificationLevel ??
+        user.identityVerificationLevel ??
+        0,
+      subscriptionPlan: plan,
+      organization: {
+        subscriptionPlan:
+          dbUser?.organization?.subscriptionPlan ??
+          user.organization?.subscriptionPlan ??
+          null,
+      },
+    };
+
+    const all = await Promise.all(
+      this.registry.map((module) =>
+        this.evaluateAccess(accessUser, {
+          moduleKey: module.key,
+          requiredRoles: this.supportedUserRolesForModule(module),
+          requiredVerificationLevel: module.requiredVerificationLevel ?? 0,
+          requiredSubscriptionPlans:
+            module.requiredSubscriptionPlans?.length &&
+            module.key !== ACTIVE_PRODUCTION_MODULE_KEY
+              ? module.requiredSubscriptionPlans
+              : [],
+          requiresOrganization: false,
+        }),
+      ),
+    );
+
+    const currentTrustLevel = dbUser?.identityVerificationLevel ?? 0;
+    const verificationRecommendations =
+      this.verificationRecommendations(currentTrustLevel);
+    const upgradeSuggestions = this.upgradeSuggestions(plan, all);
+
+    return {
+      platformName: 'SecureZone Platform',
+      generatedAt: new Date().toISOString(),
+      identity: {
+        userId,
+        role: (dbUser?.role ?? user.role ?? null)?.toString() ?? null,
+        accountStatus:
+          (dbUser?.accountStatus ?? null)?.toString() ??
+          (userId ? AccountStatus.ACTIVE : null),
+        secureZoneId: dbUser?.secureZoneId ?? null,
+        currentTrustLevel,
+        currentTrustLabel: this.trustLevelLabel(currentTrustLevel),
+        verificationStatus:
+          dbUser?.identityVerificationStatus?.toString() ?? null,
+        trustScore: dbUser?.trustScore ?? 0,
+        nextVerificationStep:
+          verificationRecommendations[0] ?? 'Trust progression complete.',
+        verificationRecommendations,
+      },
+      subscription: {
+        plan,
+        displayName: this.planDisplayName(plan),
+        source: entitlement ? 'user_entitlement' : 'default',
+        summary: {
+          canAccessServiceModule:
+            entitlement?.canAccessServiceModule ?? true,
+          canUsePremiumProvider:
+            entitlement?.canUsePremiumProvider ?? false,
+          canOpenDispute: entitlement?.canOpenDispute ?? true,
+          canUploadEvidence: entitlement?.canUploadEvidence ?? true,
+          canUsePrioritySupport:
+            entitlement?.canUsePrioritySupport ?? false,
+          requiredVerificationLevel:
+            entitlement?.requiredVerificationLevel ?? 0,
+          monthlyRequests: dbUser?.organization?.allowedReportsPerMonth ?? null,
+          providerJobLimit: dbUser?.organization?.allowedProviders ?? null,
+          teamLimit: dbUser?.organization?.allowedUsers ?? null,
+          storageQuotaMb: dbUser?.organization?.allowedStorageMb ?? null,
+          aiAccess: false,
+          analyticsLevel:
+            plan === PlatformEntitlementPlan.FREE ? 'basic' : 'advanced',
+          premiumCapabilities:
+            plan === PlatformEntitlementPlan.FREE ? [] : ['priority_workflows'],
+        },
+        upgradeSuggestions,
+      },
+      organization: {
+        id: dbUser?.organization?.id ?? dbUser?.organizationId ?? null,
+        name: dbUser?.organization?.name ?? null,
+        status: dbUser?.organization?.status?.toString() ?? null,
+        subscriptionPlan:
+          dbUser?.organization?.subscriptionPlan?.toString() ?? null,
+        billingStatus: dbUser?.organization?.billingStatus?.toString() ?? null,
+        enabledModuleKeys: organizationEnabledModules,
+      },
+      modules: {
+        available: all.filter((item) => item.allowed),
+        locked: all.filter((item) => item.state === 'locked'),
+        disabled: all.filter((item) => item.state === 'hidden'),
+        all,
+      },
+      entitlementSummary: {
+        identityAndSubscriptionAreIndependent: true,
+        identityAnswers: 'Who is this user?',
+        subscriptionAnswers: 'What capabilities does this user have?',
+        supportedPlans: [
+          'FREE',
+          'PERSONAL_PLUS',
+          'PROFESSIONAL',
+          'ENTERPRISE',
+          'GOVERNMENT',
+        ],
+      },
+      activationJourney: this.activationJourneyForUser(dbUser),
+      notes: [
+        'Maintenance Services / FixZone is the only active production service.',
+        'Future modules are metadata, readiness or pilot-only until explicitly activated by platform governance.',
+        'This profile is additive and does not alter existing FixZone report workflows.',
+      ],
+    };
+  }
+
   normalizeEnabledModules(value: unknown): string[] {
     const rawKeys = this.extractKeys(value);
     const validKeys = new Set(this.registry.map((module) => module.key));
@@ -606,6 +809,230 @@ export class PlatformModulesService {
       reason: 'Access allowed.',
       requirements: requirement,
       module,
+    };
+  }
+
+  private supportedUserRolesForModule(module: PlatformModuleDefinition) {
+    if (module.key === ACTIVE_PRODUCTION_MODULE_KEY) {
+      return [
+        UserRole.SUPER_ADMIN,
+        UserRole.ORG_ADMIN,
+        UserRole.DISPATCH_OFFICER,
+        UserRole.PROVIDER,
+        UserRole.CITIZEN,
+      ];
+    }
+    return [
+      UserRole.SUPER_ADMIN,
+      UserRole.ORG_ADMIN,
+      UserRole.DISPATCH_OFFICER,
+      UserRole.PROVIDER,
+      UserRole.CITIZEN,
+    ];
+  }
+
+  private trustLevelLabel(level: number) {
+    if (level >= 7) return 'Enterprise Verified';
+    if (level >= 6) return 'Professional Verified';
+    if (level >= 4) return 'Biometric Verified';
+    if (level >= 3) return 'Government ID Verified';
+    if (level >= 2) return 'Phone Verified';
+    if (level >= 1) return 'Email Verified';
+    return 'Basic Account';
+  }
+
+  private verificationRecommendations(level: number) {
+    const steps = [
+      { level: 1, message: 'Verify email to strengthen account recovery.' },
+      { level: 2, message: 'Verify phone for secure notifications and OTP.' },
+      {
+        level: 3,
+        message: 'Submit government ID for higher-trust workflows.',
+      },
+      {
+        level: 4,
+        message: 'Complete biometric verification for sensitive workflows.',
+      },
+      {
+        level: 6,
+        message:
+          'Submit professional or business evidence for provider and enterprise workflows.',
+      },
+      {
+        level: 7,
+        message:
+          'Complete enterprise verification for organization-level trust.',
+      },
+    ];
+    return steps
+      .filter((step) => level < step.level)
+      .map((step) => step.message);
+  }
+
+  private planDisplayName(plan: PlatformEntitlementPlan) {
+    const labels: Record<PlatformEntitlementPlan, string> = {
+      FREE: 'Free',
+      VERIFIED: 'Verified',
+      PERSONAL_PLUS: 'Plus',
+      PROFESSIONAL: 'Professional',
+      BUSINESS: 'Business',
+      ENTERPRISE: 'Enterprise',
+      GOVERNMENT: 'Government',
+    };
+    return labels[plan] ?? plan;
+  }
+
+  private upgradeSuggestions(
+    plan: PlatformEntitlementPlan,
+    access: ModuleAccessResult[],
+  ) {
+    const suggestions = new Set<string>();
+    if (plan === PlatformEntitlementPlan.FREE) {
+      suggestions.add(
+        'Upgrade to Plus or Professional for future premium workflows.',
+      );
+    }
+    for (const item of access) {
+      const plans = item.module?.requiredSubscriptionPlans ?? [];
+      if (plans.length && !item.allowed) {
+        suggestions.add(
+          `${item.module?.displayName ?? item.moduleKey} will require ${plans.join(
+            ', ',
+          )}.`,
+        );
+      }
+    }
+    return [...suggestions];
+  }
+
+  private activationJourneyForUser(
+    user: {
+      role: UserRole;
+      accountStatus: AccountStatus;
+      identityVerificationLevel: number;
+      organization?: {
+        status: string;
+        billingStatus: string;
+      } | null;
+    } | null,
+  ): PlatformAccessProfile['activationJourney'] {
+    if (!user) {
+      return {
+        audience: 'citizen',
+        currentStage: 'anonymous',
+        operational: false,
+        stages: [],
+        message: 'Sign in to view your SecureZone access profile.',
+      };
+    }
+
+    if (user.role === UserRole.PROVIDER || user.role === UserRole.PENDING_PROVIDER) {
+      const identity = user.identityVerificationLevel >= 3;
+      const professional = user.identityVerificationLevel >= 6;
+      const approved =
+        user.role === UserRole.PROVIDER &&
+        user.accountStatus === AccountStatus.ACTIVE;
+      const stages = [
+        { key: 'registered', label: 'Registered', complete: true },
+        {
+          key: 'identity_verification',
+          label: 'Identity Verification',
+          complete: identity,
+        },
+        {
+          key: 'security_review',
+          label: 'Security Review',
+          complete: identity,
+        },
+        {
+          key: 'professional_validation',
+          label: 'Professional Validation',
+          complete: professional,
+        },
+        {
+          key: 'capability_review',
+          label: 'Capability Review',
+          complete: professional,
+        },
+        { key: 'approval', label: 'Approval', complete: approved },
+        { key: 'free_plan', label: 'Free Plan', complete: approved },
+      ];
+      return {
+        audience: 'provider',
+        currentStage:
+          stages.find((stage) => !stage.complete)?.key ?? 'operational',
+        operational: approved,
+        stages,
+        message: approved
+          ? 'Provider account is approved for current Maintenance workflows.'
+          : 'Provider activation is pending review before approved jobs are received.',
+      };
+    }
+
+    if (user.role === UserRole.ORG_ADMIN || user.role === UserRole.DISPATCH_OFFICER) {
+      const legal = user.organization?.status === 'ACTIVE';
+      const representative = user.identityVerificationLevel >= 3;
+      const compliance = user.organization?.billingStatus !== 'SUSPENDED';
+      const approved = legal && representative && compliance;
+      const stages = [
+        { key: 'registration', label: 'Registration', complete: true },
+        { key: 'legal_validation', label: 'Legal Validation', complete: legal },
+        {
+          key: 'representative_verification',
+          label: 'Representative Verification',
+          complete: representative,
+        },
+        {
+          key: 'compliance_review',
+          label: 'Compliance Review',
+          complete: compliance,
+        },
+        { key: 'approval', label: 'Approval', complete: approved },
+        { key: 'free_plan', label: 'Free Plan', complete: approved },
+      ];
+      return {
+        audience: 'organization',
+        currentStage:
+          stages.find((stage) => !stage.complete)?.key ?? 'operational',
+        operational: approved,
+        stages,
+        message: approved
+          ? 'Organization workspace is operational for enabled Maintenance workflows.'
+          : 'Organization activation requires validation and compliance review.',
+      };
+    }
+
+    if (user.role === UserRole.SUPER_ADMIN) {
+      return {
+        audience: 'internal_admin',
+        currentStage: 'authorized',
+        operational: true,
+        stages: [
+          { key: 'authorized', label: 'Authorized Staff', complete: true },
+        ],
+        message: 'Internal administration access is governed by RBAC.',
+      };
+    }
+
+    return {
+      audience: 'citizen',
+      currentStage: 'basic_account',
+      operational: user.accountStatus === AccountStatus.ACTIVE,
+      stages: [
+        { key: 'registered', label: 'Registered', complete: true },
+        {
+          key: 'dashboard',
+          label: 'Dashboard, profile, notifications and settings',
+          complete: true,
+        },
+        {
+          key: 'maintenance',
+          label: 'Municipal Maintenance / FixZone',
+          complete: true,
+        },
+      ],
+      message:
+        'Basic citizen accounts can use Municipal Maintenance on the Free plan. Future modules unlock through trust and subscription requirements.',
     };
   }
 
