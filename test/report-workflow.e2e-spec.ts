@@ -30,6 +30,17 @@ describe('Report Workflow (e2e)', () => {
   });
 
   afterEach(async () => {
+    if (createdReportIds.length > 0 || createdUserIds.length > 0) {
+      await prisma.notification.deleteMany({
+        where: {
+          OR: [
+            { reportId: { in: [...createdReportIds] } },
+            { userId: { in: [...createdUserIds] } },
+          ],
+        },
+      });
+    }
+
     if (createdReportIds.length > 0) {
       await prisma.report.deleteMany({
         where: { id: { in: [...createdReportIds] } },
@@ -72,6 +83,7 @@ describe('Report Workflow (e2e)', () => {
     fullName: string;
     role: UserRole;
     organizationId?: string | null;
+    providerId?: string | null;
   }) {
     const user = await prisma.user.create({
       data,
@@ -197,6 +209,190 @@ describe('Report Workflow (e2e)', () => {
         'PROVIDER_STARTED_WORK',
         'PROVIDER_SUBMITTED_COMPLETION',
         'REPORT_CLOSED',
+      ]),
+    );
+  });
+
+  it('orchestrates provider completion, citizen review notification and rating', async () => {
+    const org = await createOrganization('Workflow Orchestration Org');
+    const admin = await createUser({
+      email: 'wf-admin-orchestrator@test.com',
+      fullName: 'Workflow Admin Orchestrator',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-orchestrator@test.com',
+      fullName: 'Workflow Provider Orchestrator',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+      providerId: 'PRV-WF-001',
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-orchestrator@test.com',
+      fullName: 'Workflow Citizen Orchestrator',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF orchestrated completion',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+
+    const adminToken = await signToken(admin);
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+
+    const engineRes = await request(app.getHttpServer())
+      .get('/api/business-logic/workflow-engine')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(engineRes.status).toBe(200);
+    expect(engineRes.body).toMatchObject({
+      activeProductionModule: 'maintenance',
+      futureModulesOperational: false,
+    });
+
+    const completedRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionNote: 'Repairs completed and area cleaned.',
+      });
+
+    expect(completedRes.status).toBe(200);
+    expect(completedRes.body.status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+
+    const citizenNotifications = await request(app.getHttpServer())
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(citizenNotifications.status).toBe(200);
+    expect(citizenNotifications.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reportId: report.id,
+          type: 'completion_review',
+          read: false,
+        }),
+      ]),
+    );
+
+    const confirmRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Looks good.' });
+
+    expect(confirmRes.status).toBe(201);
+    expect(confirmRes.body).toMatchObject({
+      status: ReportStatus.CLOSED,
+      citizenRating: 5,
+      citizenFeedback: 'Looks good.',
+    });
+
+    const providerNotifications = await request(app.getHttpServer())
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${providerToken}`);
+
+    expect(providerNotifications.status).toBe(200);
+    expect(providerNotifications.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reportId: report.id,
+          type: 'completion_confirmed',
+        }),
+      ]),
+    );
+
+    const audit = await prisma.complianceAuditLog.findMany({
+      where: {
+        entityId: report.id,
+        action: { startsWith: 'Workflow' },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    expect(audit.map((item) => item.action)).toEqual(
+      expect.arrayContaining([
+        'Workflow Provider Completed Report',
+        'Workflow Citizen Confirmed Completion',
+      ]),
+    );
+  });
+
+  it('orchestrates citizen rejection of provider-completed work', async () => {
+    const org = await createOrganization('Workflow Rejection Org');
+    const provider = await createUser({
+      email: 'wf-provider-reject@test.com',
+      fullName: 'Workflow Provider Reject',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+      providerId: 'PRV-WF-002',
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-reject@test.com',
+      fullName: 'Workflow Citizen Reject',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const admin = await createUser({
+      email: 'wf-admin-reject@test.com',
+      fullName: 'Workflow Admin Reject',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF rejected completion',
+      status: ReportStatus.COMPLETED_BY_PROVIDER,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+
+    const citizenToken = await signToken(citizen);
+    const providerToken = await signToken(provider);
+    const adminToken = await signToken(admin);
+
+    const rejectRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/reject-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ reason: 'Drainage is still blocked near the entrance.' });
+
+    expect(rejectRes.status).toBe(201);
+    expect(rejectRes.body).toMatchObject({
+      status: ReportStatus.ASSIGNED,
+      completionRejectionReason:
+        'Drainage is still blocked near the entrance.',
+    });
+
+    const providerNotifications = await request(app.getHttpServer())
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${providerToken}`);
+
+    expect(providerNotifications.status).toBe(200);
+    expect(providerNotifications.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reportId: report.id,
+          type: 'completion_rejected',
+        }),
+      ]),
+    );
+
+    const adminNotifications = await request(app.getHttpServer())
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(adminNotifications.status).toBe(200);
+    expect(adminNotifications.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reportId: report.id,
+          type: 'completion_review_requested',
+        }),
       ]),
     );
   });

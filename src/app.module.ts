@@ -12,6 +12,7 @@ import { EnterpriseServicesModule } from './enterprise-services/enterprise-servi
 import { PlatformConfigurationModule } from './platform-configuration/platform-configuration.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { TrustModule } from './trust/trust.module';
+import { BusinessLogicModule } from './business-logic/business-logic.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -30,6 +31,7 @@ import { AppService } from './app.service';
     PlatformConfigurationModule,
     OnboardingModule,
     TrustModule,
+    BusinessLogicModule,
   ],
   controllers: [AppController],
   providers: [AppService],

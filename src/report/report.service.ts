@@ -10,6 +10,7 @@ import { join } from 'path';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TrustService } from '../trust/trust.service';
+import { WorkflowOrchestratorService } from '../business-logic/workflow-orchestrator.service';
 import { AssignProviderDto } from './dto/assign-provider.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
@@ -45,6 +46,7 @@ export class ReportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly trustService?: TrustService,
+    private readonly workflowOrchestrator?: WorkflowOrchestratorService,
   ) {}
 
   // ===================== CREATE =====================
@@ -630,7 +632,24 @@ export class ReportService {
       include: this.includeRelations(),
     });
 
-    await this.notifyStatusChange(updated);
+    if (dto.status === ReportStatus.COMPLETED_BY_PROVIDER) {
+      await this.workflowOrchestrator?.providerCompletedReport({
+        reportId,
+        organizationId: updated.organizationId,
+        actorId: userId,
+        actorRole: user.role,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? null,
+        citizenId: updated.citizenId,
+        metadata: {
+          completionNote: dto.completionNote?.trim() || null,
+          completionImagePath: dto.completionImagePath?.trim() || null,
+        },
+      });
+    } else {
+      await this.notifyStatusChange(updated);
+    }
     await this.audit('Report Status Changed', user, {
       targetType: 'Report',
       targetId: reportId,
@@ -817,6 +836,20 @@ export class ReportService {
         metadata: { rating: dto.rating ?? null },
       },
     );
+    await this.workflowOrchestrator?.citizenConfirmedCompletion({
+      reportId,
+      organizationId: updated.organizationId,
+      actorId: this.getUserId(user),
+      actorRole: user.role,
+      fromStatus: report.status,
+      toStatus: updated.status,
+      providerId: updated.assignedProviderId ?? null,
+      citizenId: updated.citizenId,
+      metadata: {
+        rating: dto.rating ?? null,
+        feedback: dto.feedback?.trim() || null,
+      },
+    });
     return updated;
   }
 
@@ -858,6 +891,17 @@ export class ReportService {
       type: 'completion_review_requested',
       title: 'Citizen requested review',
       message: `Citizen marked "${updated.title}" as still incomplete.`,
+    });
+    await this.workflowOrchestrator?.citizenRejectedCompletion({
+      reportId,
+      organizationId: updated.organizationId,
+      actorId: this.getUserId(user),
+      actorRole: user.role,
+      fromStatus: report.status,
+      toStatus: updated.status,
+      providerId: updated.assignedProviderId ?? null,
+      citizenId: updated.citizenId,
+      metadata: { reason: dto.reason.trim() },
     });
     return updated;
   }
