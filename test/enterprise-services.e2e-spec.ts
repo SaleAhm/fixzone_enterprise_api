@@ -81,14 +81,23 @@ describe('Enterprise Services Framework (e2e)', () => {
     expect(res.body.framework).toBe('SecureZone Enterprise Service Framework');
     expect(res.body.activeModuleKey).toBe('maintenance');
     expect(res.body.activeServiceType).toBe('maintenance_report');
-    expect(res.body.serviceDefinitions).toEqual([
-      expect.objectContaining({
-        moduleKey: 'maintenance',
-        serviceType: 'maintenance_report',
-        activeImplementation: true,
-        metadataOnly: false,
-      }),
-    ]);
+    expect(res.body.serviceDefinitions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          moduleKey: 'maintenance',
+          serviceType: 'maintenance_report',
+          activeImplementation: true,
+          metadataOnly: false,
+        }),
+        expect.objectContaining({
+          moduleKey: 'property_facilities',
+          serviceType: 'property_facilities_request',
+          activeImplementation: false,
+          metadataOnly: true,
+          rolloutStage: 'PILOT',
+        }),
+      ]),
+    );
   });
 
   it('exposes provider capabilities as metadata without creating workflows', async () => {
@@ -103,13 +112,22 @@ describe('Enterprise Services Framework (e2e)', () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: 'electrical',
-          moduleKeys: ['maintenance'],
+          moduleKeys: expect.arrayContaining([
+            'maintenance',
+            'property_facilities',
+          ]),
           metadataOnly: false,
         }),
         expect.objectContaining({
           key: 'medical',
           moduleKeys: ['healthcare'],
           metadataOnly: true,
+        }),
+        expect.objectContaining({
+          key: 'property_management',
+          moduleKeys: ['property_facilities'],
+          metadataOnly: true,
+          rolloutStage: 'PILOT',
         }),
       ]),
     );

@@ -39,6 +39,7 @@ type TenantServiceConfiguration = {
 const PROFILE_CONFIG_KEY = 'secureZoneServiceConfiguration';
 const PROVIDER_CAPABILITIES_KEY = 'secureZoneProviderCapabilities';
 const ACTIVE_SERVICE_TYPE = 'maintenance_report';
+const PROPERTY_FACILITIES_SERVICE_TYPE = 'property_facilities_request';
 const FUTURE_SERVICE_TYPES = [
   'future_healthcare',
   'future_legal',
@@ -47,6 +48,7 @@ const FUTURE_SERVICE_TYPES = [
   'future_education',
   'future_security',
   'future_property',
+  PROPERTY_FACILITIES_SERVICE_TYPE,
   'future_architecture_engineering',
   'future_cleaning_home',
   'future_government',
@@ -88,6 +90,38 @@ export class PlatformConfigurationService {
       this.capability('plumbing', 'Plumbing', 'Maintenance', false, 0),
       this.capability('mechanical', 'Mechanical', 'Maintenance', false, 0),
       this.capability('civil_works', 'Civil Works', 'Maintenance', false, 0),
+      this.capability(
+        'property_management',
+        'Property Management',
+        'Property / Facilities Pilot',
+        true,
+        1,
+        'PILOT',
+      ),
+      this.capability(
+        'facilities',
+        'Facilities',
+        'Property / Facilities Pilot',
+        true,
+        1,
+        'PILOT',
+      ),
+      this.capability(
+        'cleaning',
+        'Cleaning',
+        'Property / Facilities Pilot',
+        true,
+        1,
+        'PILOT',
+      ),
+      this.capability(
+        'inspection',
+        'Inspection',
+        'Property / Facilities Pilot',
+        true,
+        1,
+        'PILOT',
+      ),
       this.capability(
         'architecture',
         'Architecture',
@@ -156,13 +190,26 @@ export class PlatformConfigurationService {
           activationAllowed: true,
           note: 'FixZone Maintenance is the only operational production service.',
         },
-        ...FUTURE_SERVICE_TYPES.map((serviceType) => ({
-          moduleKey: serviceType.replace(/^future_/, ''),
+        ...FUTURE_SERVICE_TYPES.filter(
+          (serviceType) => serviceType !== 'future_property',
+        ).map((serviceType) => ({
+          moduleKey:
+            serviceType === PROPERTY_FACILITIES_SERVICE_TYPE
+              ? 'property_facilities'
+              : serviceType.replace(/^future_/, ''),
           serviceType,
-          stage: 'INTERNAL',
+          stage:
+            serviceType === PROPERTY_FACILITIES_SERVICE_TYPE ||
+            serviceType === 'future_property'
+              ? 'PILOT'
+              : 'INTERNAL',
           operational: false,
           activationAllowed: false,
-          note: 'Future module metadata only; business workflow is not active.',
+          note:
+            serviceType === PROPERTY_FACILITIES_SERVICE_TYPE ||
+            serviceType === 'future_property'
+              ? 'Property / Facilities reference module metadata only; user workflows are not exposed.'
+              : 'Future module metadata only; business workflow is not active.',
         })),
       ],
       activationGates: [
@@ -749,6 +796,7 @@ export class PlatformConfigurationService {
     category: string,
     metadataOnly: boolean,
     verificationRequirement: number,
+    rolloutStage?: string,
   ) {
     return {
       id,
@@ -756,7 +804,7 @@ export class PlatformConfigurationService {
       description: `${name} provider capability metadata for SecureZone services.`,
       category,
       status: metadataOnly ? 'METADATA_ONLY' : 'ACTIVE',
-      rolloutStage: metadataOnly ? 'INTERNAL' : 'PRODUCTION',
+      rolloutStage: rolloutStage ?? (metadataOnly ? 'INTERNAL' : 'PRODUCTION'),
       verificationRequirement,
       futureCertification: true,
       futureLicensing: true,

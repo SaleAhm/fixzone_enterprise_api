@@ -17,6 +17,8 @@ export type ProviderCapabilityDefinition = {
   description: string;
   moduleKeys: string[];
   metadataOnly: boolean;
+  rolloutStage?: string;
+  verificationRequirement?: number;
 };
 
 export type ServiceDefinition = {
@@ -26,6 +28,9 @@ export type ServiceDefinition = {
   description: string;
   activeImplementation: boolean;
   metadataOnly: boolean;
+  rolloutStage?: string;
+  visibility?: string;
+  organizationAvailability?: string;
   serviceCategories: string[];
   lifecycle: ServiceLifecycleStage[];
   assignmentStrategy: AssignmentStrategyDefinition;

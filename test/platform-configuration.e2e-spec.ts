@@ -319,6 +319,12 @@ describe('Platform Configuration (e2e)', () => {
           stage: 'INTERNAL',
           operational: false,
         }),
+        expect.objectContaining({
+          moduleKey: 'property_facilities',
+          serviceType: 'property_facilities_request',
+          stage: 'PILOT',
+          operational: false,
+        }),
       ]),
     );
     expect(res.body.activationGates.length).toBeGreaterThan(0);

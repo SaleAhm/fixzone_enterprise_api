@@ -28,6 +28,13 @@ export type PlatformModuleDefinition = {
     | 'DEPRECATED'
     | 'RETIRED';
   rolloutDescription?: string;
+  icon?: string;
+  color?: string;
+  visibility?: string;
+  organizationAvailability?: string;
+  providerCapabilityRequirements?: string[];
+  requiredVerificationLevel?: number;
+  requiredSubscriptionPlans?: string[];
 };
 
 export type OrganizationModuleSummary = {
@@ -127,6 +134,19 @@ const PLATFORM_MODULES: PlatformModuleDefinition[] = [
     ],
     activeProduction: true,
     metadataOnly: false,
+    rolloutStage: 'PRODUCTION',
+    rolloutDescription: 'Operational production service.',
+    icon: 'construction',
+    color: '#138A7F',
+    visibility: 'production',
+    organizationAvailability: 'enabled_by_default',
+    providerCapabilityRequirements: [
+      'electrical',
+      'civil_works',
+      'plumbing_water',
+    ],
+    requiredVerificationLevel: 0,
+    requiredSubscriptionPlans: [],
   },
   {
     key: 'healthcare',
@@ -307,7 +327,7 @@ const PLATFORM_MODULES: PlatformModuleDefinition[] = [
     displayName: 'Property / Facilities',
     moduleName: 'Property / Facilities',
     description:
-      'Future property operations, facilities requests, inspections and vendor coordination workflows.',
+      'Pilot reference module for property operations, facilities requests, inspections, cleaning, tenant issues and vendor coordination.',
     serviceCategories: ['Facilities', 'Inspection', 'Tenant Request', 'Vendor'],
     clientRoles: ['Tenant', 'Property Owner'],
     professionalRoles: ['Facility Manager', 'Vendor', 'Property Admin'],
@@ -324,6 +344,25 @@ const PLATFORM_MODULES: PlatformModuleDefinition[] = [
     billingFeatureFlags: ['properties', 'units', 'vendors'],
     activeProduction: false,
     metadataOnly: true,
+    rolloutStage: 'PILOT',
+    rolloutDescription:
+      'Controlled reference-module metadata only; normal user workflows are not exposed.',
+    icon: 'domain',
+    color: '#2563EB',
+    visibility: 'admin_internal',
+    organizationAvailability: 'opt_in_metadata_only',
+    providerCapabilityRequirements: [
+      'property_management',
+      'facilities',
+      'cleaning',
+      'plumbing_water',
+      'electrical',
+      'civil_works',
+      'security',
+      'inspection',
+    ],
+    requiredVerificationLevel: 1,
+    requiredSubscriptionPlans: ['PROFESSIONAL', 'GOVERNMENT', 'ENTERPRISE'],
   },
   {
     key: 'cleaning_home',
@@ -416,6 +455,8 @@ export class PlatformModulesService {
         production: modules.filter(
           (module) => module.rolloutStage === 'PRODUCTION',
         ).length,
+        pilot: modules.filter((module) => module.rolloutStage === 'PILOT')
+          .length,
         internal: modules.filter((module) => module.rolloutStage === 'INTERNAL')
           .length,
         planned: modules.filter((module) => module.rolloutStage === 'PLANNED')
@@ -592,6 +633,7 @@ export class PlatformModulesService {
     module: PlatformModuleDefinition,
   ): PlatformModuleDefinition {
     const production = module.key === ACTIVE_PRODUCTION_MODULE_KEY;
+    if (module.rolloutStage) return module;
     return {
       ...module,
       rolloutStage: production ? 'PRODUCTION' : 'INTERNAL',
