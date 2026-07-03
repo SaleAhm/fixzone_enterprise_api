@@ -123,16 +123,19 @@ export class AuthService {
     dto: LoginDto,
     context?: { ipAddress?: string | null; userAgent?: string | null },
   ) {
-    if (!dto.email && !dto.phone) {
-      throw new BadRequestException('Email or phone is required');
+    if (!dto.email && !dto.phone && !dto.providerId) {
+      throw new BadRequestException('Email, phone or provider ID is required');
     }
 
-    const orFilters = [
-      dto.email ? { email: dto.email.toLowerCase().trim() } : null,
-      dto.phone ? { phone: dto.phone.trim() } : null,
-    ].filter(
-      (value): value is { email: string } | { phone: string } => value !== null,
-    );
+    const orFilters = dto.email || dto.phone
+      ? [
+          dto.email ? { email: dto.email.toLowerCase().trim() } : null,
+          dto.phone ? { phone: dto.phone.trim() } : null,
+        ].filter(
+          (value): value is { email: string } | { phone: string } =>
+            value !== null,
+        )
+      : [{ providerId: dto.providerId!.trim() }];
 
     const user = await this.prisma.user.findFirst({
       where: {

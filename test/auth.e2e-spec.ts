@@ -372,6 +372,51 @@ describe('Auth API (e2e)', () => {
     }
   });
 
+  it('allows documented provider1 demo credentials by email or provider ID', async () => {
+    const passwordHash = await bcrypt.hash('Password123!', 10);
+    await prisma.user.upsert({
+      where: { email: 'provider1@fixzone.ng' },
+      update: {
+        passwordHash,
+        role: 'PROVIDER',
+        providerId: 'PRV-2024-001',
+        accountStatus: 'ACTIVE',
+        organizationId: adminOrganizationId,
+      },
+      create: {
+        fullName: 'Demo Provider One',
+        email: 'provider1@fixzone.ng',
+        passwordHash,
+        role: 'PROVIDER',
+        providerId: 'PRV-2024-001',
+        accountStatus: 'ACTIVE',
+        organizationId: adminOrganizationId,
+      },
+    });
+
+    const emailLogin = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider1@fixzone.ng',
+        password: 'Password123!',
+      });
+
+    expect(emailLogin.status).toBe(201);
+    expect(emailLogin.body.user.role).toBe('PROVIDER');
+    expect(emailLogin.body.user.providerId).toBe('PRV-2024-001');
+
+    const providerIdLogin = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        providerId: 'PRV-2024-001',
+        password: 'Password123!',
+      });
+
+    expect(providerIdLogin.status).toBe(201);
+    expect(providerIdLogin.body.user.email).toBe('provider1@fixzone.ng');
+    expect(providerIdLogin.body.user.providerId).toBe('PRV-2024-001');
+  });
+
   it('newly registered provider can log in and never stores plaintext password', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/auth/register')
