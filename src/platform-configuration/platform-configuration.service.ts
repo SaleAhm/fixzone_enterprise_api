@@ -23,6 +23,10 @@ type AuditHistoryQuery = {
   limit?: string;
 };
 
+type ModuleReadinessQuery = {
+  organizationId?: string;
+};
+
 type TenantServiceConfiguration = {
   enabledServices: string[];
   defaultService: string;
@@ -566,6 +570,261 @@ export class PlatformConfigurationService {
     };
   }
 
+  async getModuleReadiness(
+    user: PlatformUser,
+    moduleKey: string,
+    query: ModuleReadinessQuery = {},
+  ) {
+    const normalizedModuleKey = moduleKey.trim();
+    const targetOrganizationId =
+      query.organizationId?.trim() || this.resolveOrganizationId(user);
+    if (targetOrganizationId) {
+      await this.assertCanAccessOrganization(user, targetOrganizationId);
+    }
+
+    const framework = this.enterpriseServices.listFramework();
+    const serviceDefinition = framework.serviceDefinitions.find(
+      (definition) => definition.moduleKey === normalizedModuleKey,
+    );
+    const rolloutModule = this.getRolloutGovernance().modules.find(
+      (item) => item.moduleKey === normalizedModuleKey,
+    );
+    const runtimeReadiness = await this.getRuntimeReadiness(
+      user,
+      targetOrganizationId ?? undefined,
+    );
+    const providerCoverage = await this.moduleProviderCapabilityCoverage(
+      normalizedModuleKey,
+      serviceDefinition?.providerCapabilityRequirements ?? [],
+      targetOrganizationId ?? undefined,
+    );
+    const checks = [
+      this.moduleCheck(
+        'module_registered',
+        Boolean(rolloutModule),
+        rolloutModule
+          ? 'Module is registered in rollout governance.'
+          : 'Module is not registered in rollout governance.',
+        !rolloutModule,
+      ),
+      this.moduleCheck(
+        'service_definition_complete',
+        Boolean(serviceDefinition),
+        serviceDefinition
+          ? 'Enterprise service definition is registered.'
+          : 'Enterprise service definition is missing.',
+        !serviceDefinition,
+      ),
+      this.moduleCheck(
+        'provider_capabilities_available',
+        providerCoverage.missingDefinitions.length === 0,
+        providerCoverage.missingDefinitions.length === 0
+          ? 'Provider capability definitions are available.'
+          : `${providerCoverage.missingDefinitions.length} provider capability definition(s) are missing.`,
+        providerCoverage.missingDefinitions.length > 0,
+        providerCoverage,
+      ),
+      this.moduleCheck(
+        'provider_capability_coverage',
+        providerCoverage.missingAssignments.length === 0,
+        providerCoverage.missingAssignments.length === 0
+          ? 'Provider capability coverage is present.'
+          : `${providerCoverage.missingAssignments.length} required capability assignment(s) have no provider coverage yet.`,
+        false,
+        providerCoverage,
+      ),
+      this.moduleCheck(
+        'trust_requirements',
+        (serviceDefinition?.requiredVerificationLevel ?? 0) >= 0,
+        `Verification requirement level ${
+          serviceDefinition?.requiredVerificationLevel ?? 0
+        } is defined.`,
+      ),
+      this.moduleCheck(
+        'subscription_requirements',
+        Boolean(serviceDefinition),
+        serviceDefinition?.requiredSubscriptionPlans.length
+          ? `Subscription placeholders configured: ${serviceDefinition.requiredSubscriptionPlans.join(
+              ', ',
+            )}.`
+          : 'No subscription requirement configured.',
+      ),
+      this.moduleCheck(
+        'organization_eligibility',
+        Boolean(targetOrganizationId) || user.role === UserRole.SUPER_ADMIN,
+        targetOrganizationId
+          ? 'Organization scope is available for eligibility evaluation.'
+          : 'Global Super Admin readiness view.',
+      ),
+      this.moduleCheck(
+        'rollout_stage',
+        rolloutModule?.stage === 'PILOT' ||
+          rolloutModule?.stage === 'PRODUCTION',
+        rolloutModule
+          ? `Rollout stage is ${rolloutModule.stage}.`
+          : 'Rollout stage is missing.',
+        !rolloutModule,
+        rolloutModule ?? {},
+      ),
+      this.moduleCheck(
+        'runtime_health',
+        runtimeReadiness.summary.overallHealth !== 'warning',
+        `Platform runtime health is ${runtimeReadiness.summary.overallHealth}.`,
+        false,
+        runtimeReadiness.summary,
+      ),
+      this.moduleCheck(
+        'configuration_completeness',
+        true,
+        'Configuration validation is available and non-blocking.',
+        false,
+        {
+          validationEndpoint: targetOrganizationId
+            ? `/api/platform/configuration-validation/${targetOrganizationId}`
+            : null,
+        },
+      ),
+      this.moduleCheck(
+        'deployment_readiness',
+        true,
+        'Deployment validation commands are defined in the operations runbooks.',
+      ),
+    ];
+
+    const blockingItems = checks.filter((check) => check.blocking);
+    const warnings = checks.filter((check) => !check.passed && !check.blocking);
+    const readinessScore = this.moduleReadinessScore(checks);
+    const readinessState = blockingItems.length
+      ? 'not_ready'
+      : warnings.length
+        ? 'ready_with_warnings'
+        : 'ready';
+
+    const snapshot = {
+      moduleKey: normalizedModuleKey,
+      serviceType: serviceDefinition?.serviceType ?? null,
+      rolloutStage: rolloutModule?.stage ?? 'UNKNOWN',
+      activationEnabled: false,
+      activationDisabledReason:
+        normalizedModuleKey === 'maintenance'
+          ? 'Maintenance is already the production service.'
+          : 'Pilot activation remains disabled until governance approval.',
+      generatedAt: new Date().toISOString(),
+      readinessScore,
+      readinessState,
+      blockingItems,
+      warnings,
+      checks,
+      providerCoverage,
+      serviceDefinition: serviceDefinition ?? null,
+      runtimeSummary: runtimeReadiness.summary,
+      informationalOnly: true,
+    };
+
+    await this.audit('Module Readiness Evaluated', user, {
+      moduleKey: normalizedModuleKey,
+      organizationId: targetOrganizationId ?? null,
+      readinessScore,
+      readinessState,
+      blockingItems: blockingItems.map((item) => item.key),
+      warnings: warnings.map((item) => item.key),
+    });
+
+    return snapshot;
+  }
+
+  async getModuleActivationGovernance(
+    user: PlatformUser,
+    moduleKey: string,
+    query: ModuleReadinessQuery = {},
+  ) {
+    const readiness = await this.getModuleReadiness(user, moduleKey, query);
+    const checklist = [
+      this.activationItem(
+        'architecture_approval',
+        'Architecture decision approved',
+        readiness.moduleKey === 'property_facilities',
+      ),
+      this.activationItem(
+        'service_definition',
+        'Enterprise service definition complete',
+        Boolean(readiness.serviceDefinition),
+      ),
+      this.activationItem(
+        'provider_capabilities',
+        'Provider capability definitions and coverage reviewed',
+        readiness.providerCoverage.missingDefinitions.length === 0,
+      ),
+      this.activationItem(
+        'trust_policy',
+        'Trust and verification requirements reviewed',
+        Boolean(readiness.serviceDefinition),
+      ),
+      this.activationItem(
+        'subscription_policy',
+        'Subscription and entitlement placeholders reviewed',
+        Boolean(readiness.serviceDefinition),
+      ),
+      this.activationItem(
+        'runtime_health',
+        'Runtime health reviewed',
+        readiness.runtimeSummary.overallHealth !== 'warning',
+      ),
+      this.activationItem(
+        'rollback_readiness',
+        'Rollback and incident response runbooks available',
+        true,
+      ),
+      this.activationItem(
+        'validation',
+        'Backend, Flutter and documentation validation required before activation',
+        false,
+      ),
+      this.activationItem(
+        'approval',
+        'Executive/platform owner approval required',
+        false,
+      ),
+    ];
+
+    return {
+      moduleKey: readiness.moduleKey,
+      serviceType: readiness.serviceType,
+      rolloutStage: readiness.rolloutStage,
+      activationEnabled: false,
+      activationState: 'disabled',
+      activationDisabledReason:
+        'Phase 5C evaluates readiness only; activation is intentionally disabled.',
+      readiness,
+      checklist,
+      pilotChecklist: checklist,
+      productionChecklist: [
+        ...checklist,
+        this.activationItem(
+          'pilot_complete',
+          'Pilot acceptance criteria completed',
+          false,
+        ),
+        this.activationItem(
+          'production_support',
+          'Production support and SLA ownership assigned',
+          false,
+        ),
+      ],
+      rollbackReadiness: {
+        available: true,
+        runbook: 'docs/INCIDENT_RESPONSE_GUIDE.md',
+        activationRollbackRequired: false,
+      },
+      dependencyChecks: {
+        maintenanceUnaffected: true,
+        reportMigrationRequired: false,
+        schemaMigrationRequired: false,
+        userWorkflowExposed: false,
+      },
+    };
+  }
+
   async getPlatformHealthSummary(user: PlatformUser) {
     const readiness = await this.getRuntimeReadiness(user);
     const summary = readiness.summary as Record<string, unknown>;
@@ -604,6 +863,7 @@ export class PlatformConfigurationService {
       'Provider Capabilities Assigned',
       'Provider Capability Deactivated',
       'Provider Capability Removed',
+      'Module Readiness Evaluated',
     ];
     const requestedAction = query.action?.trim();
     const limit = Math.min(
@@ -991,6 +1251,103 @@ export class PlatformConfigurationService {
     details: Record<string, unknown> = {},
   ) {
     return { key, status, message, details };
+  }
+
+  private moduleCheck(
+    key: string,
+    passed: boolean,
+    message: string,
+    blocking = false,
+    details: Record<string, unknown> = {},
+  ) {
+    return {
+      key,
+      passed,
+      status: passed ? 'ready' : blocking ? 'blocking' : 'warning',
+      blocking: !passed && blocking,
+      message,
+      details,
+    };
+  }
+
+  private moduleReadinessScore(
+    checks: Array<{ passed: boolean; blocking: boolean }>,
+  ) {
+    if (!checks.length) return 0;
+    const score = checks.reduce((total, check) => {
+      if (check.passed) return total + 100;
+      if (check.blocking) return total + 25;
+      return total + 70;
+    }, 0);
+    return Math.round(score / checks.length);
+  }
+
+  private activationItem(key: string, label: string, passed: boolean) {
+    return {
+      key,
+      label,
+      passed,
+      required: true,
+      status: passed ? 'complete' : 'pending',
+    };
+  }
+
+  private async moduleProviderCapabilityCoverage(
+    moduleKey: string,
+    requiredCapabilities: string[],
+    organizationId?: string,
+  ) {
+    const catalog = this.enterpriseServices.listProviderCapabilities();
+    const catalogKeys = new Set(catalog.map((capability) => capability.key));
+    const moduleCatalog = catalog.filter((capability) =>
+      capability.moduleKeys.includes(moduleKey),
+    );
+    const missingDefinitions = requiredCapabilities.filter(
+      (capability) => !catalogKeys.has(capability),
+    );
+    const providers = await this.prisma.user.findMany({
+      where: {
+        role: UserRole.PROVIDER,
+        ...(organizationId ? { organizationId } : {}),
+      },
+      select: { id: true, fullName: true, profileData: true },
+    });
+    const assignedByCapability = new Map<string, number>();
+    for (const provider of providers) {
+      const assignments = this.readProviderCapabilityAssignments(
+        this.asRecord(provider.profileData),
+      );
+      for (const assignment of assignments) {
+        if (assignment.status === 'INACTIVE') continue;
+        assignedByCapability.set(
+          assignment.id,
+          (assignedByCapability.get(assignment.id) ?? 0) + 1,
+        );
+      }
+    }
+    const missingAssignments = requiredCapabilities.filter(
+      (capability) => !assignedByCapability.has(capability),
+    );
+
+    return {
+      moduleKey,
+      providerCount: providers.length,
+      catalogCount: moduleCatalog.length,
+      requiredCapabilities,
+      availableDefinitions: requiredCapabilities.filter((capability) =>
+        catalogKeys.has(capability),
+      ),
+      missingDefinitions,
+      assignedByCapability: Object.fromEntries(assignedByCapability.entries()),
+      missingAssignments,
+      coveragePercent: requiredCapabilities.length
+        ? Math.round(
+            ((requiredCapabilities.length - missingAssignments.length) /
+              requiredCapabilities.length) *
+              100,
+          )
+        : 100,
+    };
   }
 
   private healthScore(

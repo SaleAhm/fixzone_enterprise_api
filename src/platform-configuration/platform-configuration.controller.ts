@@ -78,6 +78,32 @@ export class PlatformConfigurationController {
     return this.platform.getRolloutGovernance();
   }
 
+  @Get('module-readiness/:moduleKey')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getModuleReadiness(
+    @Param('moduleKey') moduleKey: string,
+    @Req() req: Request,
+    @Query('organizationId') organizationId?: string,
+  ) {
+    return this.platform.getModuleReadiness(req.user ?? {}, moduleKey, {
+      organizationId,
+    });
+  }
+
+  @Get('module-activation-governance/:moduleKey')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getModuleActivationGovernance(
+    @Param('moduleKey') moduleKey: string,
+    @Req() req: Request,
+    @Query('organizationId') organizationId?: string,
+  ) {
+    return this.platform.getModuleActivationGovernance(
+      req.user ?? {},
+      moduleKey,
+      { organizationId },
+    );
+  }
+
   @Get('readiness/:organizationId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   getOrganizationRuntimeReadiness(

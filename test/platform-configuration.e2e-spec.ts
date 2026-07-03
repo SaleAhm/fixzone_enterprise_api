@@ -329,4 +329,58 @@ describe('Platform Configuration (e2e)', () => {
     );
     expect(res.body.activationGates.length).toBeGreaterThan(0);
   });
+
+  it('evaluates module readiness and activation governance without enabling activation', async () => {
+    const { organization, token } = await createContext();
+
+    const readiness = await request(app.getHttpServer())
+      .get('/api/platform/module-readiness/property_facilities')
+      .query({ organizationId: organization.id })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(readiness.status).toBe(200);
+    expect(readiness.body).toMatchObject({
+      moduleKey: 'property_facilities',
+      serviceType: 'property_facilities_request',
+      rolloutStage: 'PILOT',
+      activationEnabled: false,
+      informationalOnly: true,
+    });
+    expect(readiness.body.readinessScore).toBeGreaterThan(0);
+    expect(readiness.body.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'module_registered' }),
+        expect.objectContaining({ key: 'service_definition_complete' }),
+        expect.objectContaining({ key: 'provider_capabilities_available' }),
+        expect.objectContaining({ key: 'provider_capability_coverage' }),
+        expect.objectContaining({ key: 'rollout_stage' }),
+      ]),
+    );
+
+    const governance = await request(app.getHttpServer())
+      .get('/api/platform/module-activation-governance/property_facilities')
+      .query({ organizationId: organization.id })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(governance.status).toBe(200);
+    expect(governance.body).toMatchObject({
+      moduleKey: 'property_facilities',
+      serviceType: 'property_facilities_request',
+      rolloutStage: 'PILOT',
+      activationEnabled: false,
+      activationState: 'disabled',
+    });
+    expect(governance.body.dependencyChecks).toMatchObject({
+      maintenanceUnaffected: true,
+      reportMigrationRequired: false,
+      schemaMigrationRequired: false,
+      userWorkflowExposed: false,
+    });
+    expect(governance.body.checklist).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'architecture_approval' }),
+        expect.objectContaining({ key: 'approval', passed: false }),
+      ]),
+    );
+  });
 });
