@@ -16,6 +16,13 @@ type PlatformUser = {
   organizationId?: string | null;
 };
 
+type AuditHistoryQuery = {
+  action?: string;
+  organizationId?: string;
+  groupBy?: string;
+  limit?: string;
+};
+
 type TenantServiceConfiguration = {
   enabledServices: string[];
   defaultService: string;
@@ -69,6 +76,7 @@ export class PlatformConfigurationService {
       configurationValidation,
       providerCapabilities: this.getProviderCapabilities(),
       analyticsContracts: this.getAnalyticsContracts(),
+      rolloutGovernance: this.getRolloutGovernance(),
       guardMode: 'non_blocking',
       futureModulesUsable: false,
     };
@@ -96,6 +104,76 @@ export class PlatformConfigurationService {
       this.capability('property', 'Property', 'Future Services', true, 1),
       this.capability('education', 'Education', 'Future Services', true, 1),
     ];
+  }
+
+  getRolloutGovernance() {
+    return {
+      activeProductionService: ACTIVE_SERVICE_TYPE,
+      activeProductionModule: 'maintenance',
+      stages: [
+        {
+          key: 'EXPERIMENTAL',
+          label: 'Experimental',
+          description: 'Exploratory internal concept; not tenant-facing.',
+        },
+        {
+          key: 'INTERNAL',
+          label: 'Internal',
+          description: 'Metadata/configuration only; no operational workflow.',
+        },
+        {
+          key: 'PILOT',
+          label: 'Pilot',
+          description: 'Limited controlled rollout after acceptance gates.',
+        },
+        {
+          key: 'BETA',
+          label: 'Beta',
+          description: 'Broader pre-production rollout with monitoring.',
+        },
+        {
+          key: 'PRODUCTION',
+          label: 'Production',
+          description: 'Operational production service.',
+        },
+        {
+          key: 'DEPRECATED',
+          label: 'Deprecated',
+          description: 'Operational but scheduled for replacement/removal.',
+        },
+        {
+          key: 'RETIRED',
+          label: 'Retired',
+          description: 'No longer operational.',
+        },
+      ],
+      modules: [
+        {
+          moduleKey: 'maintenance',
+          serviceType: ACTIVE_SERVICE_TYPE,
+          stage: 'PRODUCTION',
+          operational: true,
+          activationAllowed: true,
+          note: 'FixZone Maintenance is the only operational production service.',
+        },
+        ...FUTURE_SERVICE_TYPES.map((serviceType) => ({
+          moduleKey: serviceType.replace(/^future_/, ''),
+          serviceType,
+          stage: 'INTERNAL',
+          operational: false,
+          activationAllowed: false,
+          note: 'Future module metadata only; business workflow is not active.',
+        })),
+      ],
+      activationGates: [
+        'Architecture decision approved',
+        'Tenant configuration validated',
+        'Provider capability requirements defined',
+        'Trust and entitlement policy approved',
+        'Audit and incident runbooks completed',
+        'Backend, Flutter and e2e validation passed',
+      ],
+    };
   }
 
   getAnalyticsContracts() {
@@ -287,6 +365,7 @@ export class PlatformConfigurationService {
       providerCount,
       activeProviderCount,
       verifiedProviderCount,
+      providerCapabilityAssignedCount,
       reportCount,
       activeReportCount,
       kycPendingCount,
@@ -305,6 +384,7 @@ export class PlatformConfigurationService {
           identityVerificationLevel: { gt: 0 },
         },
       }),
+      this.providerCapabilityAssignedCount(where),
       this.prisma.report.count({ where }),
       this.prisma.report.count({
         where: {
@@ -360,12 +440,35 @@ export class PlatformConfigurationService {
       ),
       this.readinessCheck(
         'provider',
-        activeProviderCount > 0 ? 'ready' : 'warning',
-        `${activeProviderCount}/${providerCount} providers are active.`,
+        activeProviderCount > 0 && providerCapabilityAssignedCount > 0
+          ? 'ready'
+          : 'warning',
+        `${activeProviderCount}/${providerCount} providers are active; ${providerCapabilityAssignedCount} have capability metadata.`,
         {
           providerCount,
           activeProviderCount,
           verifiedProviderCount,
+          providerCapabilityAssignedCount,
+        },
+      ),
+      this.readinessCheck(
+        'service',
+        serviceConfiguration.defaultService === ACTIVE_SERVICE_TYPE
+          ? 'ready'
+          : 'attention',
+        `Default service is ${serviceConfiguration.defaultService}. Maintenance remains the only operational destination.`,
+        {
+          enabledServices: serviceConfiguration.enabledServices,
+          serviceOrdering: serviceConfiguration.serviceOrdering,
+        },
+      ),
+      this.readinessCheck(
+        'deployment',
+        'ready',
+        'Runtime deployment checks are available through Platform Tools health.',
+        {
+          healthEndpoint: '/api/platform-tools/health',
+          readinessEndpoint: '/api/platform/readiness',
         },
       ),
       this.readinessCheck(
@@ -389,6 +492,9 @@ export class PlatformConfigurationService {
       ready: checks.filter((item) => item.status === 'ready').length,
       warning: checks.filter((item) => item.status === 'warning').length,
       attention: checks.filter((item) => item.status === 'attention').length,
+      healthScore: this.healthScore(checks),
+      overallHealth: this.overallHealth(checks),
+      riskIndicators: this.riskIndicators(checks),
       informationalOnly: true,
       enforcementMode: 'non_blocking',
     };
@@ -408,11 +514,39 @@ export class PlatformConfigurationService {
         evidenceRecordCount,
         recentConfigurationEvents,
         recentCapabilityEvents,
+        providerCapabilityAssignedCount,
       },
     };
   }
 
-  async getPlatformAuditHistory(user: PlatformUser) {
+  async getPlatformHealthSummary(user: PlatformUser) {
+    const readiness = await this.getRuntimeReadiness(user);
+    const summary = readiness.summary as Record<string, unknown>;
+    return {
+      generatedAt: new Date().toISOString(),
+      platformName: 'SecureZone Platform',
+      overallHealth: summary.overallHealth,
+      healthScore: summary.healthScore,
+      riskIndicators: summary.riskIndicators,
+      readinessSummary: summary,
+      checks: readiness.checks,
+      operationalService: {
+        moduleKey: 'maintenance',
+        serviceType: ACTIVE_SERVICE_TYPE,
+        rolloutStage: 'PRODUCTION',
+      },
+      futureModules: {
+        operational: false,
+        rolloutStage: 'INTERNAL',
+        note: 'Future service modules remain metadata/configuration only.',
+      },
+    };
+  }
+
+  async getPlatformAuditHistory(
+    user: PlatformUser,
+    query: AuditHistoryQuery = {},
+  ) {
     if (user.role !== UserRole.SUPER_ADMIN && user.role !== 'SUPER_ADMIN') {
       if (!user.organizationId) {
         throw new ForbiddenException('No organization scope');
@@ -424,16 +558,53 @@ export class PlatformConfigurationService {
       'Provider Capability Deactivated',
       'Provider Capability Removed',
     ];
+    const requestedAction = query.action?.trim();
+    const limit = Math.min(
+      Math.max(Number.parseInt(query.limit ?? '50', 10) || 50, 1),
+      200,
+    );
+    const organizationScope =
+      user.role === UserRole.SUPER_ADMIN || user.role === 'SUPER_ADMIN'
+        ? query.organizationId?.trim()
+        : user.organizationId;
     const items = await this.prisma.demoAuditLog.findMany({
-      where: { action: { in: actions } },
+      where: {
+        action: requestedAction ? requestedAction : { in: actions },
+      },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      take: 200,
     });
+    const filtered = organizationScope
+      ? items.filter((item) => {
+          const metadata = this.asRecord(item.metadata);
+          return metadata.organizationId === organizationScope;
+        })
+      : items;
+    const limited = filtered.slice(0, limit);
     return {
-      total: items.length,
-      items,
+      total: filtered.length,
+      items: limited,
       actions,
-      note: 'Audit history reuses the existing audit log store; organization-specific filtering can be expanded when audit metadata is standardized.',
+      filters: {
+        action: requestedAction ?? null,
+        organizationId: organizationScope ?? null,
+        groupBy: query.groupBy ?? null,
+        limit,
+      },
+      grouped:
+        query.groupBy === 'action'
+          ? this.groupAuditItems(limited, 'action')
+          : query.groupBy === 'actor'
+            ? this.groupAuditItems(limited, 'actorUserId')
+            : null,
+      timeline: limited.map((item) => ({
+        id: item.id,
+        action: item.action,
+        actorUserId: item.actorUserId,
+        createdAt: item.createdAt,
+        metadata: item.metadata,
+      })),
+      note: 'Audit history reuses the existing audit log store and remains informational.',
     };
   }
 
@@ -585,6 +756,7 @@ export class PlatformConfigurationService {
       description: `${name} provider capability metadata for SecureZone services.`,
       category,
       status: metadataOnly ? 'METADATA_ONLY' : 'ACTIVE',
+      rolloutStage: metadataOnly ? 'INTERNAL' : 'PRODUCTION',
       verificationRequirement,
       futureCertification: true,
       futureLicensing: true,
@@ -771,6 +943,69 @@ export class PlatformConfigurationService {
     details: Record<string, unknown> = {},
   ) {
     return { key, status, message, details };
+  }
+
+  private healthScore(
+    checks: Array<{ status: 'ready' | 'warning' | 'attention' }>,
+  ) {
+    if (!checks.length) return 0;
+    const score = checks.reduce((total, check) => {
+      if (check.status === 'ready') return total + 100;
+      if (check.status === 'attention') return total + 75;
+      return total + 45;
+    }, 0);
+    return Math.round(score / checks.length);
+  }
+
+  private overallHealth(
+    checks: Array<{ status: 'ready' | 'warning' | 'attention' }>,
+  ) {
+    const score = this.healthScore(checks);
+    if (score >= 90) return 'healthy';
+    if (score >= 70) return 'attention';
+    return 'warning';
+  }
+
+  private riskIndicators(
+    checks: Array<{
+      key: string;
+      status: 'ready' | 'warning' | 'attention';
+      message: string;
+    }>,
+  ) {
+    return checks
+      .filter((check) => check.status !== 'ready')
+      .map((check) => ({
+        key: check.key,
+        severity: check.status === 'warning' ? 'medium' : 'low',
+        message: check.message,
+      }));
+  }
+
+  private async providerCapabilityAssignedCount(
+    where: Record<string, unknown>,
+  ) {
+    const providers = await this.prisma.user.findMany({
+      where: { ...where, role: UserRole.PROVIDER },
+      select: { profileData: true },
+    });
+    return providers.filter(
+      (provider) =>
+        this.readProviderCapabilityAssignments(
+          this.asRecord(provider.profileData),
+        ).length > 0,
+    ).length;
+  }
+
+  private groupAuditItems(
+    items: Array<{ action: string; actorUserId: string }>,
+    field: 'action' | 'actorUserId',
+  ) {
+    return items.reduce<Record<string, number>>((groups, item) => {
+      const key = item[field] || 'unknown';
+      groups[key] = (groups[key] ?? 0) + 1;
+      return groups;
+    }, {});
   }
 
   private async getProviderForCapabilities(providerId: string) {

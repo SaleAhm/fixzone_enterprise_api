@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -59,6 +60,24 @@ export class PlatformConfigurationController {
     return this.platform.getRuntimeReadiness(req.user ?? {});
   }
 
+  @Get('health-summary')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  getPlatformHealthSummary(@Req() req: Request) {
+    return this.platform.getPlatformHealthSummary(req.user ?? {});
+  }
+
+  @Get('rollout-governance')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  getRolloutGovernance() {
+    return this.platform.getRolloutGovernance();
+  }
+
   @Get('readiness/:organizationId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   getOrganizationRuntimeReadiness(
@@ -82,8 +101,19 @@ export class PlatformConfigurationController {
 
   @Get('audit-history')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
-  getPlatformAuditHistory(@Req() req: Request) {
-    return this.platform.getPlatformAuditHistory(req.user ?? {});
+  getPlatformAuditHistory(
+    @Req() req: Request,
+    @Query('action') action?: string,
+    @Query('organizationId') organizationId?: string,
+    @Query('groupBy') groupBy?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.platform.getPlatformAuditHistory(req.user ?? {}, {
+      action,
+      organizationId,
+      groupBy,
+      limit,
+    });
   }
 
   @Get('service-configuration')

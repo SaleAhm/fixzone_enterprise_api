@@ -207,12 +207,28 @@ describe('Platform Configuration (e2e)', () => {
       informationalOnly: true,
       enforcementMode: 'non_blocking',
     });
+    expect(readinessRes.body.summary.healthScore).toBeGreaterThan(0);
+    expect(readinessRes.body.summary.overallHealth).toBeDefined();
     expect(readinessRes.body.checks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ key: 'configuration', status: 'warning' }),
         expect.objectContaining({ key: 'module' }),
+        expect.objectContaining({ key: 'service' }),
+        expect.objectContaining({ key: 'deployment' }),
       ]),
     );
+
+    const healthRes = await request(app.getHttpServer())
+      .get('/api/platform/health-summary')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(healthRes.status).toBe(200);
+    expect(healthRes.body.operationalService).toMatchObject({
+      moduleKey: 'maintenance',
+      serviceType: 'maintenance_report',
+      rolloutStage: 'PRODUCTION',
+    });
+    expect(healthRes.body.futureModules.operational).toBe(false);
   });
 
   it('assigns deactivates and removes provider capabilities as metadata', async () => {
@@ -268,5 +284,43 @@ describe('Platform Configuration (e2e)', () => {
         'Provider Capability Removed',
       ]),
     );
+
+    const auditHistory = await request(app.getHttpServer())
+      .get('/api/platform/audit-history')
+      .query({ action: 'Provider Capabilities Assigned', groupBy: 'action' })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(auditHistory.status).toBe(200);
+    expect(auditHistory.body.filters.action).toBe(
+      'Provider Capabilities Assigned',
+    );
+    expect(auditHistory.body.grouped).toMatchObject({
+      'Provider Capabilities Assigned': expect.any(Number),
+    });
+  });
+
+  it('exposes rollout governance metadata without activating future modules', async () => {
+    const { token } = await createContext();
+
+    const res = await request(app.getHttpServer())
+      .get('/api/platform/rollout-governance')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.modules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          moduleKey: 'maintenance',
+          stage: 'PRODUCTION',
+          operational: true,
+        }),
+        expect.objectContaining({
+          serviceType: 'future_healthcare',
+          stage: 'INTERNAL',
+          operational: false,
+        }),
+      ]),
+    );
+    expect(res.body.activationGates.length).toBeGreaterThan(0);
   });
 });

@@ -19,6 +19,15 @@ export type PlatformModuleDefinition = {
   billingFeatureFlags: string[];
   activeProduction: boolean;
   metadataOnly: boolean;
+  rolloutStage?:
+    | 'PLANNED'
+    | 'INTERNAL'
+    | 'PILOT'
+    | 'BETA'
+    | 'PRODUCTION'
+    | 'DEPRECATED'
+    | 'RETIRED';
+  rolloutDescription?: string;
 };
 
 export type OrganizationModuleSummary = {
@@ -388,11 +397,31 @@ export class PlatformModulesService {
   constructor(private readonly prisma: PrismaService) {}
 
   listModules() {
+    const modules = this.registry.map((module) => this.withRollout(module));
     return {
       platformName: 'SecureZone Platform',
       activeProductionModuleKey: ACTIVE_PRODUCTION_MODULE_KEY,
       activeProductionModuleKeys: [ACTIVE_PRODUCTION_MODULE_KEY],
-      modules: this.registry,
+      rolloutStages: [
+        'PLANNED',
+        'INTERNAL',
+        'PILOT',
+        'BETA',
+        'PRODUCTION',
+        'DEPRECATED',
+        'RETIRED',
+      ],
+      modules,
+      rolloutSummary: {
+        production: modules.filter(
+          (module) => module.rolloutStage === 'PRODUCTION',
+        ).length,
+        internal: modules.filter((module) => module.rolloutStage === 'INTERNAL')
+          .length,
+        planned: modules.filter((module) => module.rolloutStage === 'PLANNED')
+          .length,
+        futureModulesOperational: false,
+      },
     };
   }
 
@@ -416,6 +445,7 @@ export class PlatformModulesService {
     const enabledModuleKeys = this.normalizeEnabledModules(value);
     const enabledModules = enabledModuleKeys
       .map((key) => this.registry.find((module) => module.key === key))
+      .map((module) => (module ? this.withRollout(module) : module))
       .filter((module): module is PlatformModuleDefinition => Boolean(module));
 
     const activeModules = enabledModules.filter(
@@ -556,6 +586,19 @@ export class PlatformModulesService {
     }
 
     return [ACTIVE_PRODUCTION_MODULE_KEY];
+  }
+
+  private withRollout(
+    module: PlatformModuleDefinition,
+  ): PlatformModuleDefinition {
+    const production = module.key === ACTIVE_PRODUCTION_MODULE_KEY;
+    return {
+      ...module,
+      rolloutStage: production ? 'PRODUCTION' : 'INTERNAL',
+      rolloutDescription: production
+        ? 'Operational production service.'
+        : 'Metadata/configuration only; not operational.',
+    };
   }
 
   private denied(
