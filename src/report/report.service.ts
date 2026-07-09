@@ -1,14 +1,14 @@
 import {
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
-import { mkdir, writeFile } from 'fs/promises';
-import { join } from 'path';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { UploadSecurityService } from '../security/upload-security.service';
 import { TrustService } from '../trust/trust.service';
 import { WorkflowOrchestratorService } from '../business-logic/workflow-orchestrator.service';
 import { AssignProviderDto } from './dto/assign-provider.dto';
@@ -47,6 +47,9 @@ export class ReportService {
     private readonly prisma: PrismaService,
     private readonly trustService?: TrustService,
     private readonly workflowOrchestrator?: WorkflowOrchestratorService,
+    @Optional()
+    @Inject(UploadSecurityService)
+    private readonly uploadSecurity?: UploadSecurityService,
   ) {}
 
   // ===================== CREATE =====================
@@ -702,17 +705,12 @@ export class ReportService {
       );
     }
 
-    const image = Buffer.from(dto.imageBase64, 'base64');
-
-    if (image.length === 0 || image.length > 5 * 1024 * 1024) {
-      throw new ForbiddenException('Invalid completion image size');
-    }
-
-    const saved = await this.saveImage({
-      image,
+    const saved = await this.getUploadSecurity().saveBase64Image({
+      imageBase64: dto.imageBase64,
       contentType: dto.contentType,
       folder: 'report-completion',
       reportId,
+      invalidSizeMessage: 'Invalid completion image size',
     });
 
     await this.audit('Provider Completion Evidence Uploaded', user, {
@@ -760,17 +758,12 @@ export class ReportService {
       throw new ForbiddenException('Not your report');
     }
 
-    const image = Buffer.from(dto.imageBase64, 'base64');
-
-    if (image.length === 0 || image.length > 5 * 1024 * 1024) {
-      throw new ForbiddenException('Invalid report image size');
-    }
-
-    const saved = await this.saveImage({
-      image,
+    const saved = await this.getUploadSecurity().saveBase64Image({
+      imageBase64: dto.imageBase64,
       contentType: dto.contentType,
       folder: 'report-evidence',
       reportId,
+      invalidSizeMessage: 'Invalid report image size',
     });
 
     const updated = await this.prisma.report.update({
@@ -1541,36 +1534,12 @@ export class ReportService {
     });
   }
 
-  private async saveImage(params: {
-    image: Buffer;
-    contentType: string;
-    folder: string;
-    reportId: string;
-  }) {
-    const extensionByContentType: Record<string, string> = {
-      'image/jpeg': 'jpg',
-      'image/png': 'png',
-      'image/webp': 'webp',
-    };
-    const extension = extensionByContentType[params.contentType];
-    const fileName = `${Date.now()}-${randomUUID()}.${extension}`;
-    const relativePath = join(params.folder, params.reportId, fileName);
-    const uploadRoot = join(process.cwd(), 'uploads');
-    const targetDir = join(uploadRoot, params.folder, params.reportId);
-    const targetPath = join(uploadRoot, relativePath);
-
-    await mkdir(targetDir, { recursive: true });
-    await writeFile(targetPath, params.image);
-
-    const imagePath = relativePath.replace(/\\/g, '/');
-    return {
-      imagePath,
-      imageUrl: `/uploads/${imagePath}`,
-    };
-  }
-
   private isSuperAdmin(user: JwtUser) {
     return user.role === UserRole.SUPER_ADMIN;
+  }
+
+  private getUploadSecurity() {
+    return this.uploadSecurity ?? new UploadSecurityService();
   }
 
   private isAdmin(user: JwtUser) {

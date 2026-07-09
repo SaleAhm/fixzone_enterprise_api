@@ -8,7 +8,18 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
   configureApp(app);
-  app.use('/uploads', express.static(join(process.cwd(), 'uploads')));
+  app.use(
+    '/uploads',
+    express.static(join(process.cwd(), 'uploads'), {
+      dotfiles: 'deny',
+      index: false,
+      setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+      },
+    }),
+  );
 
   await app.listen(process.env.PORT ?? 3000);
 }
