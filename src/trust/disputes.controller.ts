@@ -16,6 +16,10 @@ import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { CreateDisputeMessageDto } from './dto/create-dispute-message.dto';
 import { UpdateDisputeStatusDto } from './dto/update-dispute-status.dto';
 import { AssignDisputeDto } from './dto/assign-dispute.dto';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { TrustService } from './trust.service';
 import type { TrustUser } from './trust.service';
 
@@ -32,6 +36,7 @@ export class DisputesController {
     UserRole.DISPATCH_OFFICER,
     UserRole.SUPER_ADMIN,
   )
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   create(@CurrentUser() user: TrustUser, @Body() dto: CreateDisputeDto) {
     return this.trust.createDispute(user, dto);
   }
@@ -50,6 +55,7 @@ export class DisputesController {
 
   @Get('admin/disputes')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   admin(
     @CurrentUser() user: TrustUser,
     @Query() query: Record<string, string | undefined>,
@@ -77,6 +83,7 @@ export class DisputesController {
     UserRole.DISPATCH_OFFICER,
     UserRole.SUPER_ADMIN,
   )
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   message(
     @CurrentUser() user: TrustUser,
     @Param('id') id: string,
@@ -87,6 +94,7 @@ export class DisputesController {
 
   @Post('admin/disputes/:id/status')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   status(
     @CurrentUser() user: TrustUser,
     @Param('id') id: string,
@@ -97,6 +105,7 @@ export class DisputesController {
 
   @Post('admin/disputes/:id/assign')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   assign(
     @CurrentUser() user: TrustUser,
     @Param('id') id: string,
@@ -107,12 +116,14 @@ export class DisputesController {
 
   @Post('admin/disputes/:id/escalate')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   escalate(@CurrentUser() user: TrustUser, @Param('id') id: string) {
     return this.trust.escalateDispute(user, id);
   }
 
   @Post('admin/disputes/escalate-overdue')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   escalateOverdue(@CurrentUser() user: TrustUser) {
     return this.trust.escalateOverdueDisputes(user);
   }

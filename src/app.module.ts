@@ -13,6 +13,7 @@ import { PlatformConfigurationModule } from './platform-configuration/platform-c
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { TrustModule } from './trust/trust.module';
 import { BusinessLogicModule } from './business-logic/business-logic.module';
+import { RateLimitModule } from './security/rate-limit.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -32,6 +33,7 @@ import { AppService } from './app.service';
     OnboardingModule,
     TrustModule,
     BusinessLogicModule,
+    RateLimitModule,
   ],
   controllers: [AppController],
   providers: [AppService],

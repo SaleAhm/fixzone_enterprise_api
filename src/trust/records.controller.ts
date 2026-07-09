@@ -5,6 +5,10 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CreateEvidenceDto } from './dto/create-evidence.dto';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { TrustService } from './trust.service';
 import type { TrustUser } from './trust.service';
 
@@ -21,6 +25,7 @@ export class RecordsController {
     UserRole.DISPATCH_OFFICER,
     UserRole.SUPER_ADMIN,
   )
+  @EnterpriseRateLimit(RateLimitTier.Upload)
   create(@CurrentUser() user: TrustUser, @Body() dto: CreateEvidenceDto) {
     return this.trust.createEvidence(user, dto);
   }

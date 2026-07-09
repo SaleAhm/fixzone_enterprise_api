@@ -12,6 +12,10 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { UsersService } from './users.service';
 
 type CurrentAuthUser = {
@@ -32,24 +36,28 @@ export class UsersController {
 
   @Get('admin')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getUsers(@CurrentUser() user: CurrentAuthUser) {
     return this.usersService.getUsers(user);
   }
 
   @Get('admin/recent')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getRecentUsers(@CurrentUser() user: CurrentAuthUser) {
     return this.usersService.getRecentUsers(user);
   }
 
   @Get('admin/invitations')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getInvitations(@CurrentUser() user: CurrentAuthUser) {
     return this.usersService.getInvitations(user);
   }
 
   @Post('admin/invitations')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   inviteUser(
     @Body() dto: Record<string, unknown>,
     @CurrentUser() user: CurrentAuthUser,
@@ -59,6 +67,7 @@ export class UsersController {
 
   @Post('admin/invitations/:id/revoke')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   revokeInvitation(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,
@@ -68,12 +77,14 @@ export class UsersController {
 
   @Get('admin/:id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getUser(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.getUser(id, user);
   }
 
   @Patch('admin/:id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   updateUser(
     @Param('id') id: string,
     @Body() dto: Record<string, unknown>,
@@ -84,18 +95,21 @@ export class UsersController {
 
   @Patch('admin/:id/suspend')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   suspendUser(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.setUserStatus(id, 'SUSPENDED', user);
   }
 
   @Patch('admin/:id/activate')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   activateUser(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.setUserStatus(id, 'ACTIVE', user);
   }
 
   @Post('admin/:id/reset-password')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   resetPassword(
     @Param('id') id: string,
     @Body() dto: { password?: unknown },
@@ -106,6 +120,7 @@ export class UsersController {
 
   @Post('admin/:id/resend-invitation')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   resendInvitation(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,
@@ -115,6 +130,7 @@ export class UsersController {
 
   @Post('admin/:id/approve-provider')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   approveProviderRequest(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,
@@ -124,6 +140,7 @@ export class UsersController {
 
   @Post('admin/:id/reject-provider')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   rejectProviderRequest(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,

@@ -15,17 +15,23 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register')
+  @EnterpriseRateLimit(RateLimitTier.Registration)
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
   @Post('login')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
   login(@Body() dto: LoginDto, @Req() req: any) {
     return this.authService.login(dto, {
       ipAddress: req.ip ?? req.headers?.['x-forwarded-for']?.toString(),
@@ -34,6 +40,7 @@ export class AuthController {
   }
 
   @Post('firebase-login')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
   firebaseLogin(@Body() dto: FirebaseLoginDto) {
     return this.authService.firebaseLogin(dto);
   }
@@ -46,6 +53,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Patch('me')
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   updateMe(@Req() req: { user: any }, @Body() dto: Record<string, unknown>) {
     return this.authService.updateMe(req.user, dto);
   }

@@ -15,6 +15,10 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { MaintenanceModeDto } from './dto/maintenance-mode.dto';
 import { PlatformToolsService } from './platform-tools.service';
 
@@ -30,6 +34,7 @@ export class PlatformToolsController {
   constructor(private readonly platformTools: PlatformToolsService) {}
 
   @Get('maintenance/public')
+  @EnterpriseRateLimit(RateLimitTier.PublicRead)
   maintenancePublic() {
     return this.platformTools.getMaintenance();
   }
@@ -37,6 +42,7 @@ export class PlatformToolsController {
   @Get('health')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   health(@CurrentUser() user: CurrentAuthUser) {
     return this.platformTools.systemHealth(user);
   }
@@ -44,6 +50,7 @@ export class PlatformToolsController {
   @Post('backups')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   createBackup(@CurrentUser() user: CurrentAuthUser) {
     return this.platformTools.createBackup(user);
   }
@@ -58,6 +65,7 @@ export class PlatformToolsController {
   @Get('backups/:id/download')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   async downloadBackup(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,
@@ -78,6 +86,7 @@ export class PlatformToolsController {
   @Post('backups/:id/restore')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   restoreBackup(
     @Param('id') id: string,
     @Body('confirm') confirm: boolean,
@@ -89,6 +98,7 @@ export class PlatformToolsController {
   @Delete('backups/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   deleteBackup(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.platformTools.deleteBackup(id, user);
   }
@@ -103,6 +113,7 @@ export class PlatformToolsController {
   @Post('maintenance')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   setMaintenance(
     @Body() dto: MaintenanceModeDto,
     @CurrentUser() user: CurrentAuthUser,
@@ -120,6 +131,7 @@ export class PlatformToolsController {
   @Post('cache/clear')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   clearCache(
     @Body('scope') scope: string,
     @CurrentUser() user: CurrentAuthUser,
@@ -130,6 +142,7 @@ export class PlatformToolsController {
   @Get('audit')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   audit(
     @Query() query: Record<string, string>,
     @CurrentUser() user: CurrentAuthUser,
@@ -151,6 +164,7 @@ export class PlatformToolsController {
   @Get('audit/export')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   async exportAudit(
     @CurrentUser() user: CurrentAuthUser,
     @Res() res: Response,

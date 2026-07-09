@@ -15,6 +15,10 @@ import type { Request } from 'express';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { UpdateProviderCapabilitiesDto } from './dto/update-provider-capabilities.dto';
 import { UpdateServiceConfigurationDto } from './dto/update-service-configuration.dto';
 import { PlatformConfigurationService } from './platform-configuration.service';
@@ -50,18 +54,21 @@ export class PlatformConfigurationController {
 
   @Get('analytics-contracts')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getAnalyticsContracts() {
     return this.platform.getAnalyticsContracts();
   }
 
   @Get('readiness')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getRuntimeReadiness(@Req() req: Request) {
     return this.platform.getRuntimeReadiness(req.user ?? {});
   }
 
   @Get('health-summary')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getPlatformHealthSummary(@Req() req: Request) {
     return this.platform.getPlatformHealthSummary(req.user ?? {});
   }
@@ -80,6 +87,7 @@ export class PlatformConfigurationController {
 
   @Get('module-readiness/:moduleKey')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getModuleReadiness(
     @Param('moduleKey') moduleKey: string,
     @Req() req: Request,
@@ -92,6 +100,7 @@ export class PlatformConfigurationController {
 
   @Get('module-activation-governance/:moduleKey')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getModuleActivationGovernance(
     @Param('moduleKey') moduleKey: string,
     @Req() req: Request,
@@ -106,6 +115,7 @@ export class PlatformConfigurationController {
 
   @Get('readiness/:organizationId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getOrganizationRuntimeReadiness(
     @Param('organizationId') organizationId: string,
     @Req() req: Request,
@@ -115,6 +125,7 @@ export class PlatformConfigurationController {
 
   @Get('configuration-validation/:organizationId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   validateTenantConfiguration(
     @Param('organizationId') organizationId: string,
     @Req() req: Request,
@@ -127,6 +138,7 @@ export class PlatformConfigurationController {
 
   @Get('audit-history')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getPlatformAuditHistory(
     @Req() req: Request,
     @Query('action') action?: string,
@@ -144,12 +156,14 @@ export class PlatformConfigurationController {
 
   @Get('service-configuration')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getOwnServiceConfiguration(@Req() req: Request) {
     return this.platform.getServiceConfiguration(req.user ?? {});
   }
 
   @Get('service-configuration/:organizationId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getServiceConfiguration(
     @Param('organizationId') organizationId: string,
     @Req() req: Request,
@@ -162,6 +176,7 @@ export class PlatformConfigurationController {
 
   @Patch('service-configuration/:organizationId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   updateServiceConfiguration(
     @Param('organizationId') organizationId: string,
     @Body() dto: UpdateServiceConfigurationDto,
@@ -176,6 +191,7 @@ export class PlatformConfigurationController {
 
   @Get('providers/:providerId/capabilities')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getProviderCapabilitySummary(
     @Param('providerId') providerId: string,
     @Req() req: Request,
@@ -188,6 +204,7 @@ export class PlatformConfigurationController {
 
   @Post('providers/:providerId/capabilities')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   assignProviderCapabilities(
     @Param('providerId') providerId: string,
     @Body() dto: UpdateProviderCapabilitiesDto,
@@ -202,6 +219,7 @@ export class PlatformConfigurationController {
 
   @Patch('providers/:providerId/capabilities/:capabilityId/inactive')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   deactivateProviderCapability(
     @Param('providerId') providerId: string,
     @Param('capabilityId') capabilityId: string,
@@ -216,6 +234,7 @@ export class PlatformConfigurationController {
 
   @Delete('providers/:providerId/capabilities/:capabilityId')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   removeProviderCapability(
     @Param('providerId') providerId: string,
     @Param('capabilityId') capabilityId: string,

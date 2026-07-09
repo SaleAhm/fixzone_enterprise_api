@@ -14,6 +14,10 @@ import { UserRole } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { OrganizationService } from './organization.service';
@@ -34,6 +38,7 @@ export class OrganizationController {
 
   @Post()
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   create(@Body() dto: CreateOrganizationDto, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.create(dto, user);
@@ -41,6 +46,7 @@ export class OrganizationController {
 
   @Get()
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   findAll(@Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.findAll(user);
@@ -55,6 +61,7 @@ export class OrganizationController {
 
   @Get('billing/overview')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getBillingOverview(@Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getBillingOverview(user);
@@ -62,6 +69,7 @@ export class OrganizationController {
 
   @Get(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getById(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getById(id, user);
@@ -69,6 +77,7 @@ export class OrganizationController {
 
   @Patch(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateOrganizationDto,
@@ -80,6 +89,7 @@ export class OrganizationController {
 
   @Post(':id/activate')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   activate(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.setStatus(id, 'ACTIVE', user);
@@ -87,6 +97,7 @@ export class OrganizationController {
 
   @Post(':id/suspend')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   suspend(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.setStatus(id, 'SUSPENDED', user);
@@ -94,6 +105,7 @@ export class OrganizationController {
 
   @Delete(':id')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   archive(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.setStatus(id, 'ARCHIVED', user);
@@ -101,6 +113,7 @@ export class OrganizationController {
 
   @Get(':id/users')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getUsers(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getUsers(id, user);
@@ -108,6 +121,7 @@ export class OrganizationController {
 
   @Get(':id/providers')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getProviders(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getProviders(id, user);
@@ -115,6 +129,7 @@ export class OrganizationController {
 
   @Get(':id/reports')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getReports(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getReports(id, user);
@@ -122,6 +137,7 @@ export class OrganizationController {
 
   @Get(':id/billing')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getBilling(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getBilling(id, user);

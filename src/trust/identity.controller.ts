@@ -15,6 +15,10 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { SubmitKycDto } from './dto/submit-kyc.dto';
 import { ReviewKycDto } from './dto/review-kyc.dto';
 import { TrustEnforcementSettingsDto } from './dto/trust-enforcement-settings.dto';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { TrustService } from './trust.service';
 import type { TrustUser } from './trust.service';
 
@@ -43,6 +47,7 @@ export class IdentityController {
     UserRole.DISPATCH_OFFICER,
     UserRole.SUPER_ADMIN,
   )
+  @EnterpriseRateLimit(RateLimitTier.Upload)
   submitKyc(@CurrentUser() user: TrustUser, @Body() dto: SubmitKycDto) {
     return this.trust.submitKyc(user, dto);
   }
@@ -61,12 +66,14 @@ export class IdentityController {
 
   @Get('admin/identity/kyc-submissions')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   adminKyc(@CurrentUser() user: TrustUser) {
     return this.trust.getAdminKycSubmissions(user);
   }
 
   @Post('admin/identity/kyc-submissions/:id/review')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   reviewKyc(
     @CurrentUser() user: TrustUser,
     @Param('id') id: string,
@@ -77,6 +84,7 @@ export class IdentityController {
 
   @Get('admin/audit/compliance')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   audit(
     @CurrentUser() user: TrustUser,
     @Query() query: Record<string, string | undefined>,
@@ -86,6 +94,7 @@ export class IdentityController {
 
   @Get('admin/trust/summary')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   trustSummary(@CurrentUser() user: TrustUser) {
     return this.trust.getAdminTrustSummary(user);
   }
@@ -98,6 +107,7 @@ export class IdentityController {
 
   @Post('admin/trust/enforcement-settings')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   updateEnforcementSettings(
     @CurrentUser() user: TrustUser,
     @Body() dto: TrustEnforcementSettingsDto,

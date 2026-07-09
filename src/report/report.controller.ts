@@ -24,6 +24,10 @@ import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto'
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
 import { DispatchAiService } from './services/dispatch-ai.service';
 import { ReportService } from './report.service';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 
 type CurrentAuthUser = {
   id: string;
@@ -48,6 +52,7 @@ export class ReportController {
 
   @Post()
   @Roles(UserRole.CITIZEN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   createReport(
     @CurrentUser() user: CurrentAuthUser,
     @Body() dto: CreateReportDto,
@@ -95,6 +100,7 @@ export class ReportController {
 
   @Get('admin/dashboard/summary')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getDashboardSummary(
     @CurrentUser() user: CurrentAuthUser,
     @Query() query: AdminDashboardQueryDto,
@@ -104,30 +110,35 @@ export class ReportController {
 
   @Get('admin/dashboard/trends')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getReportTrends(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getReportTrends(user);
   }
 
   @Get('admin/dashboard/category-trends')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getCategoryTrends(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getCategoryTrends(user);
   }
 
   @Get('admin/dashboard/provider-performance')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getProviderPerformance(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getProviderPerformance(user);
   }
 
   @Get('admin/dashboard/advanced')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getAdvancedAnalytics(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getAdvancedAnalytics(user);
   }
 
   @Get('admin/dashboard/recent')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getRecentReports(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getRecentReports(user);
   }
@@ -173,6 +184,7 @@ export class ReportController {
 
   @Patch(':id/assign')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   assignProvider(
     @Param('id') id: string,
     @Body() dto: AssignProviderDto,
@@ -183,12 +195,14 @@ export class ReportController {
 
   @Post('admin/assignments/expire-overdue')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   expireOverdueAssignments(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.processOverdueAssignments(user);
   }
 
   @Post(':id/cancel-assignment')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   cancelAssignment(
     @Param('id') id: string,
     @Body() dto: { reason?: string },
@@ -199,6 +213,7 @@ export class ReportController {
 
   @Patch(':id/reassign')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   reassignProvider(
     @Param('id') id: string,
     @Body() dto: AssignProviderDto & { reason?: string },
@@ -214,6 +229,7 @@ export class ReportController {
     UserRole.DISPATCH_OFFICER,
     UserRole.PROVIDER,
   )
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateReportStatusDto,
@@ -224,6 +240,7 @@ export class ReportController {
 
   @Post(':id/completion-evidence')
   @Roles(UserRole.PROVIDER)
+  @EnterpriseRateLimit(RateLimitTier.Upload)
   uploadCompletionEvidence(
     @Param('id') id: string,
     @Body() dto: UploadCompletionEvidenceDto,
@@ -234,6 +251,7 @@ export class ReportController {
 
   @Post(':id/evidence')
   @Roles(UserRole.CITIZEN)
+  @EnterpriseRateLimit(RateLimitTier.Upload)
   uploadReportEvidence(
     @Param('id') id: string,
     @Body() dto: UploadReportEvidenceDto,
@@ -244,6 +262,7 @@ export class ReportController {
 
   @Post('provider/:id/reject')
   @Roles(UserRole.PROVIDER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   rejectProviderAssignment(
     @Param('id') id: string,
     @Body() dto: RejectAssignmentDto,
@@ -254,6 +273,7 @@ export class ReportController {
 
   @Post(':id/reject-assignment')
   @Roles(UserRole.PROVIDER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   rejectAssignmentPostAlias(
     @Param('id') id: string,
     @Body() dto: RejectAssignmentDto,
@@ -273,6 +293,7 @@ export class ReportController {
 
   @Post('citizen/:id/confirm-completion')
   @Roles(UserRole.CITIZEN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   confirmCitizenCompletionAlias(
     @Param('id') id: string,
     @Body() dto: CitizenConfirmCompletionDto,
@@ -283,6 +304,7 @@ export class ReportController {
 
   @Post('citizen/:id/reject-completion')
   @Roles(UserRole.CITIZEN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   rejectCitizenCompletionAlias(
     @Param('id') id: string,
     @Body() dto: CitizenRejectCompletionDto,
@@ -293,6 +315,7 @@ export class ReportController {
 
   @Patch(':id/citizen-confirm')
   @Roles(UserRole.CITIZEN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   confirmCompletion(
     @Param('id') id: string,
     @Body() dto: CitizenConfirmCompletionDto,
@@ -303,6 +326,7 @@ export class ReportController {
 
   @Patch(':id/citizen-reject')
   @Roles(UserRole.CITIZEN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   rejectCompletion(
     @Param('id') id: string,
     @Body() dto: CitizenRejectCompletionDto,
@@ -313,6 +337,7 @@ export class ReportController {
 
   @Patch(':id/recommend-provider')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   recommendProvider(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,
@@ -322,6 +347,7 @@ export class ReportController {
 
   @Patch(':id/auto-assign')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   autoAssignProvider(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,

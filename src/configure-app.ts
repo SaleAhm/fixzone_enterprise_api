@@ -42,6 +42,10 @@ class JsonExceptionFilter implements ExceptionFilter {
 }
 
 export function configureApp(app: INestApplication) {
+  if (process.env.TRUST_PROXY === 'true') {
+    app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  }
+
   app.use(express.json({ limit: '8mb' }));
   app.use(express.urlencoded({ extended: true, limit: '8mb' }));
 

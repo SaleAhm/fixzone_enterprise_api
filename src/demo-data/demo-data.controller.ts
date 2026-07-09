@@ -4,6 +4,10 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import {
+  EnterpriseRateLimit,
+  RateLimitTier,
+} from '../security/rate-limit.constants';
 import { DemoDataService } from './demo-data.service';
 import { GenerateDemoEnvironmentDto } from './dto/generate-demo-environment.dto';
 
@@ -27,6 +31,7 @@ export class DemoEnvironmentController {
 
   @Post('generate')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   generate(
     @CurrentUser() user: CurrentAuthUser,
     @Body() dto: GenerateDemoEnvironmentDto,
@@ -36,6 +41,7 @@ export class DemoEnvironmentController {
 
   @Post('reset')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   reset(
     @CurrentUser() user: CurrentAuthUser,
     @Body() dto: GenerateDemoEnvironmentDto,
@@ -45,6 +51,7 @@ export class DemoEnvironmentController {
 
   @Delete('purge')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   purge(@CurrentUser() user: CurrentAuthUser) {
     return this.demoDataService.purge(user);
   }
@@ -57,6 +64,7 @@ export class LegacyDemoDataController {
 
   @Post('seed')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   seed(
     @CurrentUser() user: CurrentAuthUser,
     @Body() dto: GenerateDemoEnvironmentDto,
@@ -66,6 +74,7 @@ export class LegacyDemoDataController {
 
   @Delete('purge')
   @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
   purge(@CurrentUser() user: CurrentAuthUser) {
     return this.demoDataService.purge(user);
   }
