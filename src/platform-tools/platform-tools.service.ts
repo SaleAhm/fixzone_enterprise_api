@@ -8,7 +8,7 @@ import { Prisma, ReportStatus, UserRole } from '@prisma/client';
 import { createReadStream } from 'fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'os';
-import { basename, join, resolve } from 'path';
+import { join, resolve } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaintenanceModeDto } from './dto/maintenance-mode.dto';
 

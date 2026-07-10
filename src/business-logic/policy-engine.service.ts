@@ -16,10 +16,13 @@ export class PolicyEngineService {
     }
   }
 
-  assertCitizenCanReviewCompletion(report: {
-    citizenId: string;
-    status: ReportStatus;
-  }, userId: string) {
+  assertCitizenCanReviewCompletion(
+    report: {
+      citizenId: string;
+      status: ReportStatus;
+    },
+    userId: string,
+  ) {
     if (report.citizenId !== userId) {
       throw new ForbiddenException('Not your report');
     }

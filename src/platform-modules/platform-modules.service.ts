@@ -611,14 +611,11 @@ export class PlatformModulesService {
         displayName: this.planDisplayName(plan),
         source: entitlement ? 'user_entitlement' : 'default',
         summary: {
-          canAccessServiceModule:
-            entitlement?.canAccessServiceModule ?? true,
-          canUsePremiumProvider:
-            entitlement?.canUsePremiumProvider ?? false,
+          canAccessServiceModule: entitlement?.canAccessServiceModule ?? true,
+          canUsePremiumProvider: entitlement?.canUsePremiumProvider ?? false,
           canOpenDispute: entitlement?.canOpenDispute ?? true,
           canUploadEvidence: entitlement?.canUploadEvidence ?? true,
-          canUsePrioritySupport:
-            entitlement?.canUsePrioritySupport ?? false,
+          canUsePrioritySupport: entitlement?.canUsePrioritySupport ?? false,
           requiredVerificationLevel:
             entitlement?.requiredVerificationLevel ?? 0,
           monthlyRequests: dbUser?.organization?.allowedReportsPerMonth ?? null,
@@ -926,7 +923,10 @@ export class PlatformModulesService {
       };
     }
 
-    if (user.role === UserRole.PROVIDER || user.role === UserRole.PENDING_PROVIDER) {
+    if (
+      user.role === UserRole.PROVIDER ||
+      user.role === UserRole.PENDING_PROVIDER
+    ) {
       const identity = user.identityVerificationLevel >= 3;
       const professional = user.identityVerificationLevel >= 6;
       const approved =
@@ -969,7 +969,10 @@ export class PlatformModulesService {
       };
     }
 
-    if (user.role === UserRole.ORG_ADMIN || user.role === UserRole.DISPATCH_OFFICER) {
+    if (
+      user.role === UserRole.ORG_ADMIN ||
+      user.role === UserRole.DISPATCH_OFFICER
+    ) {
       const legal = user.organization?.status === 'ACTIVE';
       const representative = user.identityVerificationLevel >= 3;
       const compliance = user.organization?.billingStatus !== 'SUSPENDED';

@@ -219,7 +219,12 @@ export class ReportController {
     @Body() dto: AssignProviderDto & { reason?: string },
     @CurrentUser() user: CurrentAuthUser,
   ) {
-    return this.reportService.reassignProvider(id, dto.providerId, dto.reason, user);
+    return this.reportService.reassignProvider(
+      id,
+      dto.providerId,
+      dto.reason,
+      user,
+    );
   }
 
   @Patch(':id/status')

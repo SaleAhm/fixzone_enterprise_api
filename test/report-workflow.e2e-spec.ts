@@ -364,8 +364,7 @@ describe('Report Workflow (e2e)', () => {
     expect(rejectRes.status).toBe(201);
     expect(rejectRes.body).toMatchObject({
       status: ReportStatus.ASSIGNED,
-      completionRejectionReason:
-        'Drainage is still blocked near the entrance.',
+      completionRejectionReason: 'Drainage is still blocked near the entrance.',
     });
 
     const providerNotifications = await request(app.getHttpServer())
@@ -399,12 +398,6 @@ describe('Report Workflow (e2e)', () => {
 
   it('rejects direct ASSIGNED to COMPLETED_BY_PROVIDER transitions', async () => {
     const org = await createOrganization('Workflow Org B');
-    const admin = await createUser({
-      email: 'wf-admin-direct@test.com',
-      fullName: 'Workflow Admin Direct',
-      role: UserRole.ORG_ADMIN,
-      organizationId: org.id,
-    });
     const provider = await createUser({
       email: 'wf-provider-direct@test.com',
       fullName: 'Workflow Provider Direct',

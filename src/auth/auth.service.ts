@@ -127,15 +127,16 @@ export class AuthService {
       throw new BadRequestException('Email, phone or provider ID is required');
     }
 
-    const orFilters = dto.email || dto.phone
-      ? [
-          dto.email ? { email: dto.email.toLowerCase().trim() } : null,
-          dto.phone ? { phone: dto.phone.trim() } : null,
-        ].filter(
-          (value): value is { email: string } | { phone: string } =>
-            value !== null,
-        )
-      : [{ providerId: dto.providerId!.trim() }];
+    const orFilters =
+      dto.email || dto.phone
+        ? [
+            dto.email ? { email: dto.email.toLowerCase().trim() } : null,
+            dto.phone ? { phone: dto.phone.trim() } : null,
+          ].filter(
+            (value): value is { email: string } | { phone: string } =>
+              value !== null,
+          )
+        : [{ providerId: dto.providerId!.trim() }];
 
     const user = await this.prisma.user.findFirst({
       where: {

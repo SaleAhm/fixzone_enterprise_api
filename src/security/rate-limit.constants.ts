@@ -30,7 +30,10 @@ export function rateLimitEnabled() {
   return process.env.RATE_LIMIT_ENABLED !== 'false';
 }
 
-export const rateLimitProfiles: Record<'global' | RateLimitTier, RateLimitProfile> = {
+export const rateLimitProfiles: Record<
+  'global' | RateLimitTier,
+  RateLimitProfile
+> = {
   global: {
     limit: envNumber('RATE_LIMIT_GLOBAL_LIMIT', 120),
     ttl: envNumber('RATE_LIMIT_GLOBAL_TTL_MS', minute),

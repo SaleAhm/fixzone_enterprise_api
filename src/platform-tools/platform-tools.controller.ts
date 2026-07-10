@@ -106,7 +106,7 @@ export class PlatformToolsController {
   @Get('maintenance')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
-  maintenance(@CurrentUser() user: CurrentAuthUser) {
+  maintenance() {
     return this.platformTools.getMaintenance();
   }
 
