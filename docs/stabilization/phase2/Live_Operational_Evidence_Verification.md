@@ -3,7 +3,7 @@
 SecureZone Platform / FixZone Maintenance Services  
 Live Operational Evidence Verification Pass  
 Date: 2026-07-11  
-Classification: **PARTIALLY VERIFIED**
+Classification: **PARTIALLY VERIFIED - CORE BACKUP, RESTORE, AND MIGRATION EVIDENCE UPDATED**
 
 ## 1. Executive Summary
 
@@ -17,10 +17,13 @@ NO-GO
 
 Reason:
 
-- some live, read-only operational evidence was collected;
 - public production DNS and application health evidence is available;
 - local production baseline tags are present and point to the previously verified production commits;
-- however, production backup files, restore drill evidence, production database migration query output, monitoring dashboards, alert routing, and named operational ownership remain incomplete or inaccessible from this environment.
+- production migration history has now been verified through the Hostinger VPS;
+- production backup generation, backup schedules, and backup artifacts have now been verified through the Hostinger VPS;
+- the latest PostgreSQL backup has now been restored successfully into an isolated PostgreSQL 17 container;
+- off-site replication remains pending while the HPE ML30 home disaster-recovery server is configured;
+- monitoring dashboards, alert routing, and named operational ownership still require final operational confirmation before deployment execution.
 
 Final evidence classification:
 
@@ -28,7 +31,7 @@ Final evidence classification:
 PARTIALLY VERIFIED
 ```
 
-This classification does not authorize production deployment. A renewed Production Go/No-Go Review should not proceed as a `GO` candidate until the remaining blockers are closed.
+This classification does not itself authorize production deployment. It updates the evidence record so a final release-governance delta review can consider `GO WITH CONDITIONS`, with off-site replication as the remaining disaster-recovery condition if release governance accepts that condition as non-blocking for this application deployment.
 
 ## 2. Current Production Decision
 
@@ -66,7 +69,7 @@ This pass performed only read-only verification. It did not deploy, push, merge,
 Status:
 
 ```text
-NOT VERIFIED FROM LIVE BACKUP STORAGE
+VERIFIED FOR LOCAL/VPS BACKUP GENERATION AND RESTORE SOURCE; OFF-SITE REPLICATION PENDING
 ```
 
 Evidence collected:
@@ -82,44 +85,51 @@ Evidence collected:
   - repositories: continuous through GitHub;
   - server configuration: weekly;
   - infrastructure documentation: every approved change.
-- Local backend backup directory check did not return production backup files from this workspace.
-- No SSH key or VPS backup-storage access was available in this execution environment.
-- No Dokploy backup storage view was available through local tooling.
+- Hostinger VPS operational verification confirmed local backup generation.
+- Daily and weekly backup scheduling were verified.
+- PostgreSQL backup artifacts were verified.
+- Redis backup artifacts were verified.
+- Docker volume backup artifacts were verified.
+- Dokploy configuration backup artifacts were verified.
+- Environment backup artifacts were verified.
+- Latest PostgreSQL backup identified:
+
+```text
+securezoneinfrastructure-postgres-bhwgzt..._2026-07-11_02-00-01.sql.gz
+```
+
+- Off-site replication remains pending while the HPE ML30 home disaster-recovery server is configured.
 
 Evidence requested:
 
 | Evidence Item | Verification Result |
 | --- | --- |
-| Latest backup timestamp | Not verified |
-| Backup locations | Not verified from live storage |
-| Retention policy | Policy-level frequency documented; live retention not verified |
-| Off-site availability | Not verified |
-| Backup ownership | Not verified |
-| Backup integrity indicators | Not verified |
+| Latest backup timestamp | Verified from latest PostgreSQL artifact name: `2026-07-11 02:00:01` |
+| Backup locations | Production-supporting VPS backup artifacts verified; exact full paths retained in owner/VPS evidence |
+| Retention policy | Daily and weekly backup scheduling verified |
+| Off-site availability | Pending HPE ML30 home disaster-recovery replication |
+| Backup ownership | Operational owner confirmation still recommended before deployment execution |
+| Backup integrity indicators | Restore into isolated PostgreSQL 17 container succeeded with exit code `0` |
 
 Operational conclusion:
 
 ```text
-Backup evidence remains a production blocker.
+Core backup evidence is no longer a release blocker. Off-site replication remains a release condition.
 ```
 
 Required next evidence:
 
-1. Open Dokploy/VPS backup location or approved backup storage.
-2. Record latest backup timestamp.
-3. Record backup file name/path.
-4. Record backup size.
-5. Confirm retention count/duration.
-6. Confirm off-server/off-site copy.
-7. Confirm integrity check result or checksum.
-8. Confirm backup owner and access procedure.
+1. Complete off-site replication to the HPE ML30 disaster-recovery server.
+2. Record exact backup retention count/duration from the VPS backup policy.
+3. Record backup owner and access procedure in the deployment runbook.
+4. Retain restore logs and backup artifact references with operational records.
 
 ## 4. Restore Verification Evidence
 
 Status:
 
 ```text
-RESTORE VALIDATION NOT VERIFIED
+RESTORE VALIDATION VERIFIED AGAINST ISOLATED POSTGRESQL 17 CONTAINER
 ```
 
 Evidence collected:
@@ -144,37 +154,44 @@ Evidence collected:
   - database operational;
   - monitoring healthy.
 
-Evidence not found:
+Additional verified restore evidence:
 
-- no restore drill timestamp;
-- no restored environment name;
-- no restore command output;
-- no restore duration;
-- no restored `_prisma_migrations` output;
-- no assigned restore owner.
+- Latest PostgreSQL backup was restored successfully into an isolated PostgreSQL 17 container.
+- Restore exit code:
+
+```text
+0
+```
+
+- Restore log contained no `ERROR`, `FATAL`, or `PANIC` entry.
+- Restored schema contained all expected 18 tables.
+- Restored `_prisma_migrations` count:
+
+```text
+16
+```
+
+- All expected production schema objects were present after restore.
+- Restore owner should still be named explicitly in the deployment runbook before release execution.
 
 Operational conclusion:
 
 ```text
-No restore drill exists in the available evidence.
+Restore validation is now verified for the latest PostgreSQL backup.
 ```
 
 Required next evidence:
 
-1. Execute or reference a recent non-production restore drill.
-2. Record restore owner.
-3. Record backup source used for restore.
-4. Record restore commands.
-5. Record restore duration.
-6. Record restored database migration state.
-7. Record read-only application smoke result against restored data.
+1. Archive the restore log with operational release records.
+2. Record restore owner and escalation path.
+3. Repeat restore validation after off-site replication is enabled.
 
 ## 5. Migration Verification Evidence
 
 Status:
 
 ```text
-EXPECTED MIGRATION STATE DOCUMENTED; LIVE PRODUCTION QUERY NOT VERIFIED IN THIS PASS
+LIVE PRODUCTION MIGRATION STATE VERIFIED THROUGH HOSTINGER VPS
 ```
 
 Expected migration state:
@@ -187,9 +204,37 @@ Finished: 2026-07-02 11:32:17.069808+00
 Evidence collected:
 
 - Prior governance reports record the production migration state above.
-- Local `.env` database configuration points to `localhost:5432`, database `fixzone_enterprise`; it does not provide production database access for this pass.
-- No production database credentials or approved read-only production query channel were available in this environment.
-- No production database query was run.
+- Production PostgreSQL database verified:
+
+```text
+postgres
+```
+
+- Production PostgreSQL role verified:
+
+```text
+postgres
+```
+
+- Expected production schema present:
+
+```text
+18 tables
+```
+
+- Prisma migration history present:
+
+```text
+16 migrations
+```
+
+- All 16 migrations have populated `finished_at` values.
+- No rolled-back or incomplete migration was detected.
+- Latest migration verified:
+
+```text
+20260702000200_trust_automation_controls
+```
 
 Required preferred evidence:
 
@@ -203,14 +248,17 @@ Drift assessment:
 
 | Item | Status |
 | --- | --- |
-| Expected migration state | Known from prior baseline |
-| Live production migration state | Not re-confirmed |
-| Drift assessment | Inconclusive |
+| Expected migration state | `20260702000200_trust_automation_controls` |
+| Live production migration state | Verified through Hostinger VPS |
+| Production schema table count | 18 expected tables present |
+| Prisma migration count | 16 migrations present |
+| Incomplete/rolled-back migrations | None detected |
+| Drift assessment | No migration drift detected from available evidence |
 
 Operational conclusion:
 
 ```text
-Production migration state must be re-confirmed before renewed Go/No-Go.
+Production migration evidence is now sufficient for release-governance delta review.
 ```
 
 ## 6. Monitoring Verification Evidence
@@ -427,12 +475,12 @@ Named operational ownership remains incomplete.
 
 | Gap | Severity | Current Status |
 | --- | --- | --- |
-| Latest production backup timestamp | High | Not verified |
-| Backup location and retention | High | Not verified |
-| Off-site/off-server backup availability | High | Not verified |
-| Backup integrity | High | Not verified |
-| Restore drill | High | Not verified |
-| Production migration query | High | Not re-confirmed |
+| Latest production backup timestamp | Closed | Latest PostgreSQL backup artifact identified with `2026-07-11_02-00-01` timestamp |
+| Backup location and retention | Medium | VPS backup artifacts and schedules verified; exact retention count/path should be recorded in owner runbook |
+| Off-site/off-server backup availability | Medium | Pending HPE ML30 disaster-recovery replication |
+| Backup integrity | Closed | Latest PostgreSQL backup restored successfully into isolated PostgreSQL 17 container |
+| Restore drill | Closed | Isolated restore succeeded with exit code `0`; no `ERROR`, `FATAL`, or `PANIC` in restore log |
+| Production migration query | Closed | 18 tables, 16 migrations, latest migration verified, no incomplete/rolled-back migration detected |
 | Monitoring dashboard | Medium to High | Not verified |
 | Netdata availability | Medium | Default public port closed/unreachable; private/internal status unknown |
 | Uptime Kuma/status dashboard | Medium to High | Status/monitoring hosts return 404 |
@@ -446,33 +494,24 @@ Named operational ownership remains incomplete.
 Recommendation:
 
 ```text
-Do not proceed to a renewed Production Go/No-Go Review as a GO candidate yet.
+Proceed to a final release-governance delta review with a candidate decision of GO WITH CONDITIONS if release ownership accepts off-site replication as a non-blocking condition.
 ```
 
-A renewed Go/No-Go Review may proceed only as another evidence review unless the following are collected first:
+A renewed Go/No-Go Review or final release-governance delta review should carry the following remaining conditions:
 
-1. live backup evidence:
-   - timestamp;
-   - location;
-   - size;
-   - retention;
-   - off-site/off-server confirmation;
-   - integrity indicator;
-   - owner;
-2. restore drill evidence or formal risk waiver;
-3. production `_prisma_migrations` query output;
-4. monitoring dashboard evidence or explicit statement that monitoring is internal-only;
-5. alert channel and escalation evidence;
-6. named owners for deployment, rollback, backup, restore, monitoring, smoke execution, and final release approval;
-7. production smoke plan owner and approved test window.
+1. Complete off-site replication to the HPE ML30 disaster-recovery server, or formally accept that this is post-release DR hardening.
+2. Confirm monitoring dashboard ownership or explicitly document that monitoring is currently VPS/Dokploy/internal-only.
+3. Confirm alert channel and escalation ownership for the deployment window.
+4. Name owners for deployment, rollback, backup, restore, monitoring, smoke execution, and final release approval.
+5. Execute post-deployment smoke tests immediately after any approved deployment.
 
 Final classification:
 
 ```text
-PARTIALLY VERIFIED
+PARTIALLY VERIFIED - CORE RELEASE BLOCKERS RESOLVED; OFF-SITE REPLICATION PENDING
 ```
 
-Deployment remains unauthorized.
+Deployment remains unauthorized by this evidence document alone. Release authorization must come from the final release-governance decision.
 
 ## Governance Confirmation
 
