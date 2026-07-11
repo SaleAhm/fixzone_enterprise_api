@@ -1,122 +1,217 @@
-# UI Batch C Interactive End-to-End Role Smoke Pass Report
+# UI Batch C Authenticated Closure Verification Report
 
 SecureZone Platform / FixZone Maintenance Services  
 Phase 2 UI Polish — Batch C  
-Date: 2026-07-10  
-Decision: **UI BATCH C COMPLETE WITH CONDITIONS**
+Date: 2026-07-11  
+Decision: **UI BATCH C CLOSED**
 
-## 1. Starting HEADs and Repository Status
+## 1. Executive Summary
 
-| Repository | Path | Branch | Starting HEAD | Starting status |
+UI Batch C final closure verification is complete.
+
+The remaining authenticated workflow scope was verified against local runtime only. No production URLs, production services, pushes, merges, tags, deployments, migrations, package updates, environment changes, website changes, infrastructure changes, or source-code edits were performed.
+
+Final result:
+
+- Dashboard and navigation smoke remained passed for Organization Admin, Super Admin, Provider, and Citizen.
+- Provider assignment/detail workflow passed.
+- Citizen report detail and completion-review workflow passed.
+- Notification list, open/read mutation, routing metadata, and cross-user authorization passed.
+- Evidence upload, persistence, and preview metadata passed for citizen evidence and provider completion evidence.
+- Tenant and role isolation passed at API authorization boundaries.
+- Full local end-to-end workflow passed: Citizen → Organization Admin → Provider → Citizen/Admin.
+- Automated Flutter and backend regression passed.
+
+## 2. Repository Baseline
+
+| Repository | Path | Branch | Baseline HEAD | Final status |
 | --- | --- | --- | --- | --- |
-| Backend API | `D:\Sale\SecureZoneProjects\fixzone_enterprise_api` | `phase-4-platform-expansion` | `ccef470ba0ea0ac4b6a918ff7393bde9686b6b67` | Clean |
-| Flutter App | `D:\Sale\SecureZoneProjects\fixzone` | `phase-4-platform-expansion` | `56e8b17c05388c774c02f26076702693179153d0` | Clean |
-| Website | `D:\Sale\SecureZoneProjects\securezone-digital-experience-platform` | `phase-1-website-stabilization` | `e0c40fd0a9903ce42fc5a3e3b756d7d5a113980a` | Clean |
-| Documentation Platform | `D:\Sale\SecureZoneProjects\securezone-platform` | `main` | `3b61871d669b2c1b68872df109726d90c5357853` | Pre-existing documentation changes present |
-
-The website and documentation platform repositories were not modified during Batch C.
-
-## 2. Final HEADs and Repository Status
-
-| Repository | Final branch | Final HEAD | Final status |
-| --- | --- | --- | --- |
-| Backend API | `phase-4-platform-expansion` | Updated by documentation commit | Batch C report committed |
-| Flutter App | `phase-4-platform-expansion` | `56e8b17c05388c774c02f26076702693179153d0` | Clean; no runtime code changes |
-| Website | `phase-1-website-stabilization` | `e0c40fd0a9903ce42fc5a3e3b756d7d5a113980a` | Clean; untouched |
-| Documentation Platform | `main` | `3b61871d669b2c1b68872df109726d90c5357853` | Pre-existing documentation changes preserved; untouched |
+| Backend API | `D:\Sale\SecureZoneProjects\fixzone_enterprise_api` | `phase-4-platform-expansion` | `117139c1789872dccefaf0092da3ca5a2a5b9e49` | Documentation file updated for closure |
+| Flutter App | `D:\Sale\SecureZoneProjects\fixzone` | `phase-4-platform-expansion` | `ab67d683dc7e31ddbeaf73d9db27b7aaaad4bf0b` | Clean; no source changes |
+| Website | `D:\Sale\SecureZoneProjects\securezone-digital-experience-platform` | `phase-1-website-stabilization` | `e0c40fd0a9903ce42fc5a3e3b756d7d5a113980a` | Untouched |
+| Documentation Platform | `D:\Sale\SecureZoneProjects\securezone-platform` | `main` | `3b61871d669b2c1b68872df109726d90c5357853` | Untouched; pre-existing doc changes preserved |
 
 ## 3. Local Runtime Configuration
 
 | Item | Value |
 | --- | --- |
 | Backend API base | `http://localhost:3000` |
-| Flutter web launch port | `51744` |
-| Flutter runtime define | `API_BASE_URL=http://localhost:3000` |
+| Flutter web local URL | `http://127.0.0.1:51752` |
+| Runtime source | Local backend process and locally served Flutter `build/web` |
 | Production URLs used | None |
 | Production infrastructure touched | No |
 
-The local `.env` database configuration was checked only for safety classification and was treated as a local/development database configuration. No database URL or secret value is recorded in this report.
+Backend health returned HTTP 200 from the local Nest process.
 
-## 4. Safe Local Services
+## 4. Role-by-Role Findings
 
-The backend health endpoint responded successfully:
+| Role | Finding |
+| --- | --- |
+| Organization Admin | Login succeeded. Dashboard/navigation smoke remained passed. Reports list loaded. In-tenant report detail loaded. Provider assignment succeeded for an in-tenant provider. Direct Platform Tools statistics access was correctly denied. |
+| Super Admin | Login succeeded. Dashboard and Platform Tools smoke remained passed. Direct Platform Tools statistics access was allowed. |
+| Provider | Login succeeded. Assignments list loaded. Assigned report detail loaded after assignment. Status transition to `IN_PROGRESS` succeeded. Completion evidence upload succeeded. Completion submission succeeded. Completion-confirmed notification was received. |
+| Citizen | Login succeeded. Reports list loaded. Own report detail loaded. Citizen evidence upload succeeded. Completion review page data loaded after provider completion. Completion confirmation with rating/feedback succeeded. |
+
+## 5. Provider Workflow Verification
+
+Verified:
+
+- Assignments list loaded with HTTP 200.
+- Provider could not open an unassigned report.
+- Organization Admin assigned an in-tenant provider successfully.
+- Assigned report appeared in the provider assignments list.
+- Provider opened assigned report detail successfully.
+- Another provider could not open the assigned report.
+- Provider moved the report to `IN_PROGRESS`.
+- Provider uploaded completion evidence with a valid PNG payload.
+- Provider submitted completion as `COMPLETED_BY_PROVIDER`.
+- Provider received a `completion_confirmed` notification after citizen validation.
+- Timeline included assignment, progress, completion evidence, provider completion, and citizen validation events.
+
+Important local-data note: `provider1@fixzone.ng` authenticates but is outside the Organization Admin tenant in the local seed. Assignment to that account correctly returns `403 Provider must be same org`. The workflow probe therefore used `provider2@fixzone.ng`, an in-tenant seeded provider account.
+
+## 6. Citizen Workflow Verification
+
+Verified:
+
+- Reports list loaded with HTTP 200.
+- Citizen created a local-only closure report.
+- Citizen opened own report detail.
+- Citizen uploaded report evidence.
+- Citizen received a completion-review notification after provider completion.
+- Citizen completion review loaded for the provider-completed report.
+- Citizen confirmed completion with rating and feedback.
+- Final report status became `CLOSED`.
+
+No "Reject Provider" action was exercised; the verified workflow remains provider completion followed by citizen validation.
+
+## 7. Notification Verification
+
+Verified for applicable roles:
+
+- `/api/notifications` returned HTTP 200.
+- `/api/notifications/unread-count` returned HTTP 200.
+- Existing notifications included report routing metadata where applicable.
+- Mark-read mutation returned HTTP 200 for the owning user.
+- Provider could not mutate a citizen-owned workflow notification; API returned HTTP 403.
+- Citizen completion-review notification was generated for the local workflow report.
+- Provider completion-confirmed notification was generated after citizen validation.
+
+Roles with no current notifications returned empty lists cleanly and were treated as implemented empty states, not defects.
+
+## 8. Evidence Preview Verification
+
+Verified:
+
+- Citizen report evidence upload accepted PNG evidence and returned a previewable `/uploads/report-evidence/...png` URL/path.
+- Provider completion evidence upload accepted PNG evidence and returned a previewable `/uploads/report-completion/...png` URL/path.
+- Completion evidence persisted into report detail and citizen completion review when the provider completion action included the upload result.
+- Admin report detail API exposed both citizen evidence and provider completion evidence after the complete handoff.
+- Unauthorized evidence/report detail access was blocked through report ownership and assignment checks.
+
+Implementation note: completion evidence upload is a two-step flow. The upload endpoint saves the image and returns `completionImageUrl` / `completionImagePath`; the completion status update persists those values onto the report. The verified local flow used that exact handoff.
+
+## 9. Tenant Isolation Walkthrough
+
+Verified:
+
+- Citizen direct access to the admin reports route returned HTTP 403.
+- Provider direct access to the admin reports route returned HTTP 403.
+- Provider could not open a report until assigned.
+- A different provider could not open another provider's assigned report.
+- Organization Admin direct access to Super Admin Platform Tools statistics returned HTTP 403.
+- Super Admin direct access to Platform Tools statistics returned HTTP 200.
+- Notification read mutation is user-scoped; cross-user read mutation returned HTTP 403.
+
+Cached state clearing after logout was covered by the prior restarted dashboard/navigation smoke and did not reproduce stale role content.
+
+## 10. Full End-to-End Workflow
+
+Local workflow report:
 
 ```text
-GET http://localhost:3000/api/health
-HTTP 200
+Citizen creates report
+→ Citizen uploads evidence
+→ Organization Admin opens report
+→ Organization Admin assigns in-tenant provider
+→ Provider sees assignment
+→ Provider opens assignment detail
+→ Provider marks work in progress
+→ Provider uploads completion evidence
+→ Provider submits completion
+→ Citizen receives completion-review notification
+→ Citizen opens completion review
+→ Citizen confirms completion with rating/feedback
+→ Provider receives completion-confirmed notification
+→ Admin timeline reflects the completed lifecycle
 ```
 
-The responding process was a local Node/Nest process running from:
+Final lifecycle status: `CLOSED`.
+
+Timeline actions verified:
+
+- `REPORT_CREATED`
+- `REPORT_EVIDENCE_UPLOADED`
+- `PROVIDER_ASSIGNED`
+- `PROVIDER_STARTED_WORK`
+- `COMPLETION_EVIDENCE_UPLOADED`
+- `PROVIDER_SUBMITTED_COMPLETION`
+- `CITIZEN_CONFIRMED_COMPLETION`
+
+## 11. Screenshot Inventory
+
+Screenshots already captured for the closure and responsive remediation are retained under:
 
 ```text
-D:\Sale\SecureZoneProjects\fixzone_enterprise_api\dist\src\main
+docs/stabilization/phase2/ui-polish/screenshots/
 ```
 
-No production service was queried, restarted, deployed, or modified.
+Final closure screenshots:
 
-## 5. Roles and Local Accounts
+- `batch-c-final-closure/org-admin-dashboard.png`
+- `batch-c-final-closure/org-admin-dispatch.png`
+- `batch-c-final-closure/org-admin-reports.png`
+- `batch-c-final-closure/org-admin-providers.png`
+- `batch-c-final-closure/org-admin-users.png`
+- `batch-c-final-closure/org-admin-settings.png`
+- `batch-c-final-closure/super-admin-dashboard.png`
+- `batch-c-final-closure/super-admin-platform-tools.png`
+- `batch-c-final-closure/provider-dashboard.png`
+- `batch-c-final-closure/provider-jobs.png`
+- `batch-c-final-closure/provider-analytics.png`
+- `batch-c-final-closure/provider-profile.png`
+- `batch-c-final-closure/citizen-dashboard.png`
+- `batch-c-final-closure/citizen-reports.png`
+- `batch-c-final-closure/citizen-notifications.png`
+- `batch-c-final-closure/citizen-profile.png`
 
-The seed file contains safe local demo role identifiers for:
+Responsive after-remediation screenshots:
 
-| Role | Local account identifier status |
+- `batch-c-responsive-remediation/after-mobile-320-org-admin-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-320-provider-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-320-citizen-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-360-org-admin-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-360-provider-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-360-citizen-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-390-org-admin-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-390-provider-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-390-citizen-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-430-org-admin-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-430-provider-dashboard.png`
+- `batch-c-responsive-remediation/after-mobile-430-citizen-dashboard.png`
+- `batch-c-responsive-remediation/after-desktop-org-admin-dashboard.png`
+- `batch-c-responsive-remediation/after-desktop-provider-dashboard.png`
+- `batch-c-responsive-remediation/after-desktop-citizen-dashboard.png`
+
+## 12. Automated Regression Results
+
+### Flutter
+
+| Command | Result |
 | --- | --- |
-| Super Admin | Present in seed data |
-| Organization Admin | Present in seed data |
-| Provider | Present in seed data with public provider identifier metadata |
-| Citizen | Present in seed/test data paths |
-
-Credential values are intentionally not repeated here. No passwords, tokens, or secrets were printed into this report.
-
-## 6. Workflow Smoke Matrix
-
-| Workflow | Batch C status | Evidence |
-| --- | --- | --- |
-| Citizen submits report | Automated coverage passed | `report-workflow.e2e-spec.ts` passed |
-| Admin reviews report | Automated coverage passed | `report-workflow.e2e-spec.ts` passed |
-| Admin assigns provider | Automated coverage passed | `report-workflow.e2e-spec.ts` passed |
-| Provider accepts/completes job | Automated coverage passed | `report-workflow.e2e-spec.ts` passed |
-| Citizen reviews completion | Automated coverage passed | `report-workflow.e2e-spec.ts` passed |
-| Trust/KYC related role flows | Automated coverage passed | `trust.e2e-spec.ts` passed |
-| Interactive browser role walkthrough | Conditionally blocked | Requires approved local credentialed browser session/manual sign-in |
-| Notification click-through/read | Conditionally blocked | Requires authenticated interactive browser smoke |
-| Evidence preview across portals | Conditionally blocked | Requires authenticated interactive browser smoke |
-
-The automated workflow suite passed, but the requested credentialed interactive role walkthrough could not be completed without an approved local authenticated session or explicit safe credential handoff.
-
-## 7. Viewport Matrix
-
-| Viewport width | Status | Notes |
-| --- | --- | --- |
-| 320px | Automated coverage only | Responsive tests passed; manual authenticated click-through not completed |
-| 360px | Automated coverage only | Responsive tests passed; manual authenticated click-through not completed |
-| 390px | Automated coverage only | Responsive tests passed; manual authenticated click-through not completed |
-| 430px | Automated coverage only | Responsive tests passed; manual authenticated click-through not completed |
-
-Flutter responsive and widget tests passed, including existing admin navigation, platform tools, provider analytics, role selection, and bottom navigation coverage.
-
-## 8. Screenshots
-
-No screenshots were captured in Batch C. The local Flutter web debug launch succeeded, but authenticated interactive walkthrough screenshots require an approved local browser session.
-
-## 9. Defects Reproduced
-
-No new runtime defect was directly reproduced during Batch C.
-
-The local Flutter web app launched successfully in Chrome debug mode and exited cleanly. Backend health was available locally.
-
-## 10. Fixes Applied
-
-No Flutter or backend runtime fix was applied.
-
-This Batch C pass produced a documentation report only.
-
-## 11. Files Changed
-
-| File | Change |
-| --- | --- |
-| `docs/stabilization/phase2/ui-polish/UI_Batch_C_Interactive_Smoke_Pass_Report.md` | Added Batch C validation, blocked-step, and release-readiness report |
-
-## 12. Validation Commands and Results
+| `flutter analyze` | Passed — no issues found |
+| `flutter test` | Passed — 27 tests |
+| `flutter build web --release` | Passed |
 
 ### Backend
 
@@ -131,64 +226,61 @@ Known non-blocking warning:
 DeprecationWarning: Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0.
 ```
 
-### Flutter
+Prisma also displayed an available update notice. No package update was performed.
 
-| Command | Result |
-| --- | --- |
-| `flutter analyze` | Passed — no issues found |
-| `flutter test` | Passed — 25 tests |
-| `flutter build web --release` | Passed |
-| `flutter run -d chrome --web-port=51744 --dart-define=API_BASE_URL=http://localhost:3000 --no-resident` | Passed — debug service started and app exited cleanly |
+## 13. Implemented vs Placeholder vs Defect Classification
 
-## 13. Tenant Isolation Notes
-
-Tenant isolation was not manually re-tested through authenticated browser role switching in Batch C.
-
-Automated backend coverage for authentication, report workflow, and trust flows passed. Manual cross-tenant portal verification remains a required follow-up once an approved local authenticated browser session is available.
-
-## 14. Blocked or Deferred Steps
-
-The following Batch C items are conditionally blocked:
-
-1. Full browser-based citizen → admin → provider → citizen/admin walkthrough.
-2. Authenticated notification click-through and read-state verification.
-3. Authenticated evidence image preview across citizen, provider, and admin portals.
-4. Authenticated tenant isolation walkthrough using two or more organization-scoped users.
-5. Screenshot capture of authenticated role flows at 320px, 360px, 390px, and 430px.
-
-Reason: the pass requires approved local credentialed browser interaction. No authentication bypass, production account use, or unsafe credential exposure was performed.
-
-## 15. Risks
-
-| Risk | Severity | Mitigation |
+| Area | Classification | Notes |
 | --- | --- | --- |
-| Interactive-only UI regressions may remain undetected | Medium | Complete the credentialed manual browser walkthrough with approved local accounts |
-| Notification click-through may differ from API-level behavior | Medium | Perform manual notification smoke once authenticated session is available |
-| Evidence image rendering may vary by seeded asset availability | Medium | Validate with a newly uploaded local evidence image during manual smoke |
+| Provider assignments/detail | Implemented | Verified through list, detail, assignment, and status APIs. |
+| Citizen report detail/completion review | Implemented | Verified through list, detail, review, confirmation, rating, and feedback APIs. |
+| Notifications | Implemented | Lists, unread count, mark-read, workflow notifications, and authorization passed. |
+| Evidence upload/preview metadata | Implemented | Citizen and provider evidence flows passed with valid PNG uploads. |
+| Tenant isolation | Implemented | Role and ownership boundaries returned expected authorization results. |
+| Future module workflows | Placeholder by design | Not in Batch C scope and not activated. |
+| Batch C runtime defects | None open | No unresolved runtime defect remains from this closure pass. |
 
-## 16. Rollback Notes
+## 14. Files Changed
 
-No runtime application files were changed.
-
-Rollback, if needed, is limited to reverting the documentation commit that adds this report.
-
-## 17. Final Git Status
-
-Expected final state after committing this report:
-
-| Repository | Expected status |
+| File | Change |
 | --- | --- |
-| Backend API | Clean after docs commit |
-| Flutter App | Clean |
-| Website | Clean |
-| Documentation Platform | Pre-existing documentation changes unchanged |
+| `docs/stabilization/phase2/ui-polish/UI_Batch_C_Interactive_Smoke_Pass_Report.md` | Replaced conditional smoke report with final authenticated closure verification report. |
 
-No branch deletion, tag creation, tag push, code push, merge, deployment, migration, environment change, or production change was performed.
+No backend source, Flutter source, website source, infrastructure, package, migration, or environment files were changed.
 
-## 18. Final Decision
+## 15. Governance Confirmation
 
-**UI BATCH C COMPLETE WITH CONDITIONS**
+Confirmed:
 
-Backend and Flutter automated validation passed, and the local Flutter web runtime launched against the local API. No runtime defects were reproduced and no runtime fixes were made.
+- No production URLs used.
+- No production infrastructure modified.
+- No pushes performed.
+- No merges performed.
+- No tags created or pushed.
+- No deployments performed.
+- No migrations created or applied.
+- No package updates performed.
+- No environment changes performed.
+- No website changes performed.
+- No source-code edits performed.
 
-The credentialed interactive end-to-end browser smoke remains conditionally blocked pending an approved local authenticated session or explicit safe local credential handoff.
+## 16. Remaining Limitations
+
+- Local seed data contains both in-tenant providers and a standalone `provider1@fixzone.ng` account. Assignment authorization correctly requires an in-tenant provider for Organization Admin assignment.
+- Future service modules remain metadata/configuration-only and were not smoke-tested as operational workflows.
+- The pg deprecation warning remains non-blocking and should be tracked separately.
+
+## 17. Closure Decision
+
+**UI BATCH C CLOSED**
+
+All required closure conditions are satisfied:
+
+- No unresolved runtime defects remain.
+- Workflow verification succeeded.
+- Tenant isolation succeeded.
+- Notification verification succeeded.
+- Evidence preview/persistence verification succeeded.
+- Automated backend and Flutter regression passed.
+
+Recommended next step: proceed to the next approved Phase 2 UI stabilization batch or formal UI stabilization closure review under the existing governance constraints.
