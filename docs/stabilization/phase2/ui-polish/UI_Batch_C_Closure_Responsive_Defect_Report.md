@@ -134,29 +134,97 @@ Flutter validation:
 
 ## 10. Remaining Batch C Closure Items
 
-This responsive blocker is remediated, but UI Batch C must not be marked closed until the full authenticated closure walkthrough is restarted and completed.
+## 10. Restarted Closure Smoke After Remediation
+
+After the responsive blocker was remediated, the authenticated closure smoke was restarted from the beginning against the local release build served at:
+
+```text
+http://127.0.0.1:51751
+```
+
+The local backend was served at:
+
+```text
+http://localhost:3000
+```
+
+Coverage completed in the restarted smoke:
+
+| Area | Result |
+| --- | --- |
+| Organization Admin dashboard | Passed |
+| Organization Admin Dispatch, Reports, Providers, Users, Settings navigation | Passed smoke coverage |
+| Organization Admin Platform Tools absence | Passed |
+| Organization Admin `/api/admin/platform-tools/` absence | Passed |
+| Super Admin dashboard | Passed |
+| Super Admin Platform Tools visibility/open | Passed |
+| Super Admin demo-environment statistics request | Passed — request made only for Super Admin |
+| Provider dashboard | Passed |
+| Provider Jobs, Analytics, Profile navigation | Passed smoke coverage |
+| Citizen dashboard | Passed |
+| Citizen Reports, Notifications, Profile navigation | Passed smoke coverage |
+| Browser console | No relevant errors observed |
+| Local API responses | No bad local API responses observed |
+
+Restarted smoke screenshots:
+
+```text
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/org-admin-dashboard.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/org-admin-dispatch.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/org-admin-reports.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/org-admin-providers.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/org-admin-users.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/org-admin-settings.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/super-admin-dashboard.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/super-admin-platform-tools.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/provider-dashboard.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/provider-jobs.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/provider-analytics.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/provider-profile.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/citizen-dashboard.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/citizen-reports.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/citizen-notifications.png
+docs/stabilization/phase2/ui-polish/screenshots/batch-c-final-closure/citizen-profile.png
+```
+
+## 11. Backend Validation After Restarted Smoke
+
+Backend validation was run because local backend behavior was exercised:
+
+| Command | Result |
+| --- | --- |
+| `npx prisma validate` | Passed |
+| `npm run test:e2e -- --runInBand auth.e2e-spec.ts report-workflow.e2e-spec.ts trust.e2e-spec.ts` | Passed — 3 suites, 46 tests |
+
+Known non-blocking warning:
+
+```text
+DeprecationWarning: Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0.
+```
+
+## 12. Remaining Batch C Closure Items
+
+This responsive blocker is remediated, and the restarted authenticated dashboard/navigation smoke passed. UI Batch C must still not be marked closed until the deeper workflow items below are completed.
 
 Remaining items:
 
-1. Full Organization Admin walkthrough beyond dashboard responsiveness.
-2. Full Super Admin regression walkthrough.
-3. Full Provider assignment/detail/workflow walkthrough.
-4. Full Citizen report/detail/completion-review walkthrough.
-5. Notification open/read verification.
-6. Evidence preview verification.
-7. Completion/review verification.
-8. Tenant-isolation walkthrough.
-9. End-to-end Citizen → Organization Admin → Provider → Citizen/Admin workflow.
-10. Final automated backend and Flutter validation after the full walkthrough.
+1. Provider assignment/detail/workflow walkthrough.
+2. Citizen report/detail/completion-review walkthrough.
+3. Notification open/read verification.
+4. Evidence preview verification.
+5. Completion/review verification.
+6. Tenant-isolation walkthrough.
+7. End-to-end Citizen → Organization Admin → Provider → Citizen/Admin workflow.
+8. Final closure report update after these deeper workflow items pass.
 
-## 11. Recommendation
+## 13. Recommendation
 
-Restart the full UI Batch C authenticated closure walkthrough from the beginning.
+Continue UI Batch C closure with the deeper workflow-specific walkthrough items.
 
 The Platform Tools authorization defect remains remediated, and the 320px authenticated dashboard overflow blocker is now remediated.
 
-## 12. Closure Decision
+## 14. Closure Decision
 
 **UI BATCH C RESPONSIVE BLOCKER REMEDIATED — UI BATCH C REMAINS OPEN**
 
-The specific 320px overflow blocker is fixed and validated. UI Batch C remains open pending the complete authenticated role, workflow, notification, evidence, completion/review, tenant-isolation, and final regression pass.
+The specific 320px overflow blocker is fixed and validated. The restarted authenticated dashboard/navigation smoke passed. UI Batch C remains open pending provider assignment/detail, citizen report/detail, notification open/read, evidence preview, completion/review, tenant isolation, and end-to-end role workflow verification.
