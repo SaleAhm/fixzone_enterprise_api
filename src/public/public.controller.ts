@@ -21,6 +21,24 @@ export class PublicController {
     return this.publicMetrics.getTrends();
   }
 
+  @Get('impact-summary')
+  @EnterpriseRateLimit(RateLimitTier.PublicRead)
+  getImpactSummary() {
+    return this.publicMetrics.getImpactSummary();
+  }
+
+  @Get('category-summary')
+  @EnterpriseRateLimit(RateLimitTier.PublicRead)
+  getCategorySummary() {
+    return this.publicMetrics.getCategorySummary();
+  }
+
+  @Get('geographic-summary')
+  @EnterpriseRateLimit(RateLimitTier.PublicRead)
+  getGeographicSummary() {
+    return this.publicMetrics.getGeographicSummary();
+  }
+
   @Get('platform-status')
   @EnterpriseRateLimit(RateLimitTier.PublicRead)
   getPlatformStatus() {

@@ -15,6 +15,7 @@ import { TrustModule } from './trust/trust.module';
 import { BusinessLogicModule } from './business-logic/business-logic.module';
 import { RateLimitModule } from './security/rate-limit.module';
 import { PublicModule } from './public/public.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -36,6 +37,7 @@ import { AppService } from './app.service';
     BusinessLogicModule,
     RateLimitModule,
     PublicModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

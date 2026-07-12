@@ -156,6 +156,43 @@ export class PublicMetricsService {
     };
   }
 
+  async getImpactSummary() {
+    const metrics = await this.getMetrics();
+    const trends = await this.getTrends();
+    return {
+      headline: {
+        totalReports: metrics.totalReports,
+        resolvedReports: metrics.resolvedReports,
+        activeReports: metrics.activeReports,
+        resolutionRate: metrics.resolutionRate,
+        averageResolutionTime: metrics.averageResolutionTime,
+      },
+      trendPoints: trends.reportsOverTime.slice(-12),
+      privacy:
+        'Public impact analytics are aggregated and exclude identities, descriptions, evidence, exact addresses, and precise coordinates.',
+      lastUpdatedAt: new Date().toISOString(),
+    };
+  }
+
+  async getCategorySummary() {
+    const trends = await this.getTrends();
+    return {
+      categories: trends.categories.slice(0, 8),
+      lastUpdatedAt: new Date().toISOString(),
+    };
+  }
+
+  async getGeographicSummary() {
+    const trends = await this.getTrends();
+    return {
+      broadGeography: trends.broadGeography.slice(0, 8),
+      precision: 'state_country_only',
+      privacy:
+        'Public geographic analytics use broad organization regions only. Exact report locations and coordinates are never exposed.',
+      lastUpdatedAt: new Date().toISOString(),
+    };
+  }
+
   async getSuccessStories() {
     const stories = await this.prisma.publicSuccessStory.findMany({
       where: { approvedForPublic: true },

@@ -203,6 +203,33 @@ describe('Public Metrics (e2e)', () => {
     expect(body).not.toContain('7.4938');
   });
 
+  it('returns public impact, category, and geographic summaries without private fields', async () => {
+    await seedPublicData();
+
+    const [impact, categories, geography] = await Promise.all([
+      request(app.getHttpServer()).get('/api/public/impact-summary'),
+      request(app.getHttpServer()).get('/api/public/category-summary'),
+      request(app.getHttpServer()).get('/api/public/geographic-summary'),
+    ]);
+
+    expect(impact.status).toBe(200);
+    expect(categories.status).toBe(200);
+    expect(geography.status).toBe(200);
+    expect(impact.body.headline.totalReports).toBeGreaterThanOrEqual(2);
+    expect(categories.body.categories).toEqual(
+      expect.arrayContaining([expect.objectContaining({ category: 'Road' })]),
+    );
+    expect(geography.body.precision).toBe('state_country_only');
+
+    const body = JSON.stringify({ impact: impact.body, categories: categories.body, geography: geography.body });
+    expect(body).not.toContain('Private report title must not leak');
+    expect(body).not.toContain('Private Citizen');
+    expect(body).not.toContain('private-citizen-public');
+    expect(body).not.toContain('Exact private address must not leak');
+    expect(body).not.toContain('9.0765');
+    expect(body).not.toContain('7.4938');
+  });
+
   it('returns only manually approved success stories', async () => {
     await seedPublicData();
 
