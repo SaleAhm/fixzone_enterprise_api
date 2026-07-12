@@ -572,6 +572,28 @@ model ReportActivity {
   @@index([action])
 }
 
+model PublicSuccessStory {
+  id                String    @id @default(cuid())
+  title             String
+  summary           String
+  category          String
+  broadLocation     String
+  organizationName  String?
+  outcome           String
+  resolvedAt        DateTime?
+  approvedForPublic Boolean   @default(false)
+  approvedBy        String?
+  approvedAt        DateTime?
+  publicImage       String?
+  displayOrder      Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([approvedForPublic, displayOrder])
+  @@index([approvedAt])
+  @@index([category])
+}
+
 model Notification {
   id                    String    @id @default(cuid())
   userId                String
