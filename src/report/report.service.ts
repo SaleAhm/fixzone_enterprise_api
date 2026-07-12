@@ -68,6 +68,10 @@ export class ReportService {
     const report = await this.prisma.report.create({
       data: {
         ...dto,
+        locationCapturedAt: dto.locationCapturedAt
+          ? new Date(dto.locationCapturedAt)
+          : undefined,
+        locationSource: dto.locationSource ?? this.locationSourceFor(dto),
         status: ReportStatus.PENDING,
         citizenId: userId,
         organizationId: user.organizationId,
@@ -630,6 +634,14 @@ export class ReportService {
       data.completionNote = dto.completionNote?.trim() || null;
       data.completionImageUrl = completionEvidence.imageUrl;
       data.completionImagePath = completionEvidence.imagePath;
+      data.completionLatitude = dto.completionLatitude ?? null;
+      data.completionLongitude = dto.completionLongitude ?? null;
+      data.completionAccuracy = dto.completionAccuracy ?? null;
+      data.completionLocationCapturedAt = dto.completionLocationCapturedAt
+        ? new Date(dto.completionLocationCapturedAt)
+        : null;
+      data.completionLocationSource =
+        dto.completionLocationSource ?? this.completionLocationSourceFor(dto);
       data.completedByProviderAt = new Date();
     }
 
@@ -652,6 +664,7 @@ export class ReportService {
         metadata: {
           completionNote: dto.completionNote?.trim() || null,
           completionImagePath: updated.completionImagePath,
+          completionLocation: this.completionLocationMetadata(updated),
         },
       });
     } else {
@@ -675,6 +688,7 @@ export class ReportService {
         note: dto.completionNote?.trim() || undefined,
         metadata: {
           completionImagePath: updated.completionImagePath ?? undefined,
+          completionLocation: this.completionLocationMetadata(updated),
         },
       },
     );
@@ -927,6 +941,7 @@ export class ReportService {
         imageUrl: report.completionImageUrl,
         imagePath: report.completionImagePath,
         submittedAt: report.completedByProviderAt,
+        location: this.completionLocationMetadata(report),
       },
       provider: report.assignedProvider,
       availableActions: {
@@ -1218,6 +1233,40 @@ export class ReportService {
     };
   }
 
+  private locationSourceFor(dto: {
+    latitude?: number | null;
+    longitude?: number | null;
+  }) {
+    return dto.latitude != null && dto.longitude != null
+      ? 'DEVICE_GPS'
+      : 'UNKNOWN';
+  }
+
+  private completionLocationSourceFor(dto: {
+    completionLatitude?: number | null;
+    completionLongitude?: number | null;
+  }) {
+    return dto.completionLatitude != null && dto.completionLongitude != null
+      ? 'DEVICE_GPS'
+      : 'UNKNOWN';
+  }
+
+  private completionLocationMetadata(report: {
+    completionLatitude?: number | null;
+    completionLongitude?: number | null;
+    completionAccuracy?: number | null;
+    completionLocationCapturedAt?: Date | string | null;
+    completionLocationSource?: string | null;
+  }) {
+    return {
+      latitude: report.completionLatitude ?? null,
+      longitude: report.completionLongitude ?? null,
+      accuracy: report.completionAccuracy ?? null,
+      capturedAt: report.completionLocationCapturedAt ?? null,
+      source: report.completionLocationSource ?? 'UNKNOWN',
+    };
+  }
+
   private normalizeCompletionEvidenceFields(params: {
     imageUrl?: string | null;
     imagePath?: string | null;
@@ -1318,6 +1367,7 @@ export class ReportService {
           imageUrl: (report as any).completionImageUrl ?? null,
           imagePath: (report as any).completionImagePath ?? null,
           submittedAt: (report as any).completedByProviderAt ?? null,
+          location: this.completionLocationMetadata(report as any),
         },
         citizenReview: {
           rating: (report as any).citizenRating ?? null,

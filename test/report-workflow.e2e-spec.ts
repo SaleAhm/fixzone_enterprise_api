@@ -216,6 +216,89 @@ describe('Report Workflow (e2e)', () => {
     );
   });
 
+  it('persists citizen location metadata and preserves backward compatibility', async () => {
+    const org = await createOrganization('Workflow Geo Org');
+    const citizen = await createUser({
+      email: 'wf-citizen-geo@test.com',
+      fullName: 'Workflow Citizen Geo',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const citizenToken = await signToken(citizen);
+
+    const createdRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF geotagged report',
+        description: 'Report with present-location metadata',
+        category: 'Road',
+        location: 'Pinned location (9.076500, 7.493800)',
+        latitude: 9.0765,
+        longitude: 7.4938,
+        locationAccuracy: 18.4,
+        locationCapturedAt: '2026-07-12T09:00:00.000Z',
+        locationSource: 'DEVICE_GPS',
+      });
+
+    expect(createdRes.status).toBe(201);
+    createdReportIds.push(createdRes.body.id);
+    expect(createdRes.body).toMatchObject({
+      latitude: 9.0765,
+      longitude: 7.4938,
+      locationAccuracy: 18.4,
+      locationSource: 'DEVICE_GPS',
+    });
+    expect(createdRes.body.locationCapturedAt).toBe('2026-07-12T09:00:00.000Z');
+
+    const legacyReport = await createReport({
+      title: 'WF legacy location report',
+      organizationId: org.id,
+      citizenId: citizen.id,
+    });
+
+    const legacy = await prisma.report.findUniqueOrThrow({
+      where: { id: legacyReport.id },
+    });
+
+    expect(legacy.latitude).toBeNull();
+    expect(legacy.longitude).toBeNull();
+    expect(legacy.locationAccuracy).toBeNull();
+    expect(legacy.locationCapturedAt).toBeNull();
+    expect(legacy.locationSource).toBeNull();
+  });
+
+  it('rejects invalid citizen coordinates before persistence', async () => {
+    const org = await createOrganization('Workflow Invalid Geo Org');
+    const citizen = await createUser({
+      email: 'wf-citizen-invalid-geo@test.com',
+      fullName: 'Workflow Invalid Geo Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const citizenToken = await signToken(citizen);
+
+    const invalidRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF invalid geotagged report',
+        description: 'Report with impossible latitude',
+        category: 'Road',
+        location: 'Invalid location',
+        latitude: 123.45,
+        longitude: 7.4938,
+        locationSource: 'DEVICE_GPS',
+      });
+
+    expect(invalidRes.status).toBe(400);
+    expect(
+      await prisma.report.count({
+        where: { title: 'WF invalid geotagged report' },
+      }),
+    ).toBe(0);
+  });
+
   it('orchestrates provider completion, citizen review notification and rating', async () => {
     const org = await createOrganization('Workflow Orchestration Org');
     const admin = await createUser({
@@ -265,10 +348,24 @@ describe('Report Workflow (e2e)', () => {
       .send({
         status: ReportStatus.COMPLETED_BY_PROVIDER,
         completionNote: 'Repairs completed and area cleaned.',
+        completionLatitude: 9.081,
+        completionLongitude: 7.492,
+        completionAccuracy: 24,
+        completionLocationCapturedAt: '2026-07-12T10:15:00.000Z',
+        completionLocationSource: 'DEVICE_GPS',
       });
 
     expect(completedRes.status).toBe(200);
     expect(completedRes.body.status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+    expect(completedRes.body).toMatchObject({
+      completionLatitude: 9.081,
+      completionLongitude: 7.492,
+      completionAccuracy: 24,
+      completionLocationSource: 'DEVICE_GPS',
+    });
+    expect(completedRes.body.completionLocationCapturedAt).toBe(
+      '2026-07-12T10:15:00.000Z',
+    );
 
     const citizenNotifications = await request(app.getHttpServer())
       .get('/api/notifications')
