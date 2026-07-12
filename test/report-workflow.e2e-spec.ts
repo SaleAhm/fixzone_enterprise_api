@@ -12,6 +12,9 @@ describe('Report Workflow (e2e)', () => {
   let prisma: PrismaService;
   let jwtService: JwtService;
 
+  const onePixelPngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+
   const createdReportIds: string[] = [];
   const createdUserIds: string[] = [];
   const createdOrgIds: string[] = [];
@@ -321,6 +324,94 @@ describe('Report Workflow (e2e)', () => {
         'Workflow Citizen Confirmed Completion',
       ]),
     );
+  });
+
+  it('persists completion evidence with refresh-safe upload URL and path fields', async () => {
+    const org = await createOrganization('Workflow Evidence Persistence Org');
+    const provider = await createUser({
+      email: 'wf-provider-evidence-persistence@test.com',
+      fullName: 'Workflow Provider Evidence Persistence',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+      providerId: 'PRV-WF-004',
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-evidence-persistence@test.com',
+      fullName: 'Workflow Citizen Evidence Persistence',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF persisted completion evidence',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'completion.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+
+    expect(uploadRes.status).toBe(201);
+    expect(uploadRes.body).toMatchObject({
+      completionImagePath: expect.stringMatching(
+        new RegExp(`^report-completion/${report.id}/.+\\.png$`),
+      ),
+      completionImageUrl: expect.stringMatching(
+        new RegExp(`^/uploads/report-completion/${report.id}/.+\\.png$`),
+      ),
+    });
+
+    const completedRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionNote: 'Evidence should survive refresh.',
+        completionImageUrl: `https://api.securezonegroup.com${uploadRes.body.completionImageUrl}`,
+        completionImagePath: `https://api.securezonegroup.com/${uploadRes.body.completionImagePath}`,
+      });
+
+    expect(completedRes.status).toBe(200);
+    expect(completedRes.body).toMatchObject({
+      status: ReportStatus.COMPLETED_BY_PROVIDER,
+      completionImagePath: uploadRes.body.completionImagePath,
+      completionImageUrl: uploadRes.body.completionImageUrl,
+    });
+
+    const storedReport = await prisma.report.findUniqueOrThrow({
+      where: { id: report.id },
+    });
+
+    expect(storedReport.completionImagePath).toBe(
+      uploadRes.body.completionImagePath,
+    );
+    expect(storedReport.completionImageUrl).toBe(
+      uploadRes.body.completionImageUrl,
+    );
+
+    const reviewRes = await request(app.getHttpServer())
+      .get(`/api/report/citizen/${report.id}/completion-review`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(reviewRes.status).toBe(200);
+    expect(reviewRes.body).toMatchObject({
+      completionImagePath: uploadRes.body.completionImagePath,
+      completionImageUrl: uploadRes.body.completionImageUrl,
+      completion: {
+        imagePath: uploadRes.body.completionImagePath,
+        imageUrl: uploadRes.body.completionImageUrl,
+      },
+    });
   });
 
   it('enforces citizen completion review ownership and required rating', async () => {

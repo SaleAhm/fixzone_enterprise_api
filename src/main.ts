@@ -16,7 +16,7 @@ async function bootstrap() {
       setHeaders: (res) => {
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-        res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
       },
     }),
   );

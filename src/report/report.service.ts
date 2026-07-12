@@ -623,9 +623,13 @@ export class ReportService {
     const data: any = { status: dto.status };
 
     if (dto.status === ReportStatus.COMPLETED_BY_PROVIDER) {
+      const completionEvidence = this.normalizeCompletionEvidenceFields({
+        imageUrl: dto.completionImageUrl,
+        imagePath: dto.completionImagePath,
+      });
       data.completionNote = dto.completionNote?.trim() || null;
-      data.completionImageUrl = dto.completionImageUrl?.trim() || null;
-      data.completionImagePath = dto.completionImagePath?.trim() || null;
+      data.completionImageUrl = completionEvidence.imageUrl;
+      data.completionImagePath = completionEvidence.imagePath;
       data.completedByProviderAt = new Date();
     }
 
@@ -647,7 +651,7 @@ export class ReportService {
         citizenId: updated.citizenId,
         metadata: {
           completionNote: dto.completionNote?.trim() || null,
-          completionImagePath: dto.completionImagePath?.trim() || null,
+          completionImagePath: updated.completionImagePath,
         },
       });
     } else {
@@ -670,7 +674,7 @@ export class ReportService {
         providerId: updated.assignedProviderId ?? undefined,
         note: dto.completionNote?.trim() || undefined,
         metadata: {
-          completionImagePath: dto.completionImagePath?.trim() || undefined,
+          completionImagePath: updated.completionImagePath ?? undefined,
         },
       },
     );
@@ -1212,6 +1216,75 @@ export class ReportService {
       assignedProvider: true,
       organization: true,
     };
+  }
+
+  private normalizeCompletionEvidenceFields(params: {
+    imageUrl?: string | null;
+    imagePath?: string | null;
+  }) {
+    const imagePath =
+      this.extractLocalUploadPath(params.imagePath) ??
+      this.extractLocalUploadPath(params.imageUrl);
+    const imageUrl = imagePath
+      ? `/uploads/${imagePath}`
+      : this.normalizeExternalImageUrl(params.imageUrl);
+
+    return {
+      imageUrl,
+      imagePath,
+    };
+  }
+
+  private normalizeExternalImageUrl(value?: string | null) {
+    const trimmed = value?.trim();
+    if (!trimmed) return null;
+
+    const localPath = this.extractLocalUploadPath(trimmed);
+    if (localPath) return `/uploads/${localPath}`;
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+
+    return null;
+  }
+
+  private extractLocalUploadPath(value?: string | null) {
+    const trimmed = value?.trim();
+    if (!trimmed) return null;
+
+    let path = trimmed.replace(/\\/g, '/');
+
+    try {
+      const parsed = new URL(trimmed);
+      path = parsed.pathname;
+    } catch {
+      // Keep non-URL values as-is.
+    }
+
+    path = path.replace(/^\/+/, '');
+    if (path.startsWith('uploads/')) {
+      path = path.slice('uploads/'.length);
+    }
+
+    if (!/^(report-completion|report-evidence|demo)\//.test(path)) {
+      return null;
+    }
+
+    const segments = path.split('/');
+    if (
+      segments.some(
+        (segment) => segment === '' || segment === '.' || segment === '..',
+      )
+    ) {
+      return null;
+    }
+
+    if (!/^[A-Za-z0-9._~/-]+$/.test(path)) {
+      return null;
+    }
+
+    return path;
   }
 
   private async withEnterpriseReportDetails<T extends { id: string }>(
