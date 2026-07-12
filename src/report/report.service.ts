@@ -803,7 +803,7 @@ export class ReportService {
       where: { id: report.id },
       data: {
         status: ReportStatus.CLOSED,
-        citizenRating: dto.rating ?? null,
+        citizenRating: dto.rating,
         citizenFeedback: dto.feedback?.trim() || null,
         completionRejectionReason: null,
       },
@@ -814,7 +814,7 @@ export class ReportService {
     await this.audit('Citizen Confirmed Completion', user, {
       targetType: 'Report',
       targetId: reportId,
-      rating: dto.rating ?? null,
+      rating: dto.rating,
     });
     await this.recordReportActivity(
       reportId,
@@ -826,7 +826,7 @@ export class ReportService {
         toStatus: updated.status,
         providerId: updated.assignedProviderId ?? undefined,
         note: dto.feedback?.trim() || undefined,
-        metadata: { rating: dto.rating ?? null },
+        metadata: { rating: dto.rating },
       },
     );
     await this.workflowOrchestrator?.citizenConfirmedCompletion({
@@ -839,7 +839,7 @@ export class ReportService {
       providerId: updated.assignedProviderId ?? null,
       citizenId: updated.citizenId,
       metadata: {
-        rating: dto.rating ?? null,
+        rating: dto.rating,
         feedback: dto.feedback?.trim() || null,
       },
     });

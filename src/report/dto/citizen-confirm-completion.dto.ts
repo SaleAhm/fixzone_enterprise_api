@@ -1,18 +1,17 @@
 import {
   IsInt,
-  IsOptional,
   IsString,
   Max,
   MaxLength,
   Min,
+  IsOptional,
 } from 'class-validator';
 
 export class CitizenConfirmCompletionDto {
-  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(5)
-  rating?: number;
+  rating: number;
 
   @IsOptional()
   @IsString()

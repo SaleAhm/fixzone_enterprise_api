@@ -323,6 +323,153 @@ describe('Report Workflow (e2e)', () => {
     );
   });
 
+  it('enforces citizen completion review ownership and required rating', async () => {
+    const org = await createOrganization('Workflow Completion Guard Org');
+    const otherOrg = await createOrganization(
+      'Workflow Completion Other Tenant Org',
+    );
+    const orgAdmin = await createUser({
+      email: 'wf-admin-completion-guard@test.com',
+      fullName: 'Workflow Admin Completion Guard',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-completion-guard@test.com',
+      fullName: 'Workflow Provider Completion Guard',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+      providerId: 'PRV-WF-003',
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-completion-owner@test.com',
+      fullName: 'Workflow Citizen Completion Owner',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherCitizen = await createUser({
+      email: 'wf-citizen-completion-other@test.com',
+      fullName: 'Workflow Citizen Completion Other',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherTenantCitizen = await createUser({
+      email: 'wf-citizen-completion-tenant@test.com',
+      fullName: 'Workflow Citizen Completion Tenant',
+      role: UserRole.CITIZEN,
+      organizationId: otherOrg.id,
+    });
+    const report = await createReport({
+      title: 'WF guarded completion review',
+      status: ReportStatus.COMPLETED_BY_PROVIDER,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const notReadyReport = await createReport({
+      title: 'WF completion not ready',
+      status: ReportStatus.ASSIGNED,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+
+    const orgAdminToken = await signToken(orgAdmin);
+    const citizenToken = await signToken(citizen);
+    const otherCitizenToken = await signToken(otherCitizen);
+    const otherTenantCitizenToken = await signToken(otherTenantCitizen);
+    const providerToken = await signToken(provider);
+
+    const reviewRes = await request(app.getHttpServer())
+      .get(`/api/report/citizen/${report.id}/completion-review`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(reviewRes.status).toBe(200);
+    expect(reviewRes.body).toMatchObject({
+      id: report.id,
+      status: ReportStatus.COMPLETED_BY_PROVIDER,
+      availableActions: {
+        confirm: true,
+        markIncomplete: true,
+      },
+    });
+
+    const missingRatingRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ feedback: 'Looks fine but no rating.' });
+
+    expect(missingRatingRes.status).toBe(400);
+
+    const lowRatingRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 0, feedback: 'Invalid low rating.' });
+
+    expect(lowRatingRes.status).toBe(400);
+
+    const highRatingRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 6, feedback: 'Invalid high rating.' });
+
+    expect(highRatingRes.status).toBe(400);
+
+    const notReadyRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${notReadyReport.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Trying too early.' });
+
+    expect(notReadyRes.status).toBe(403);
+
+    const otherCitizenRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${otherCitizenToken}`)
+      .send({ rating: 4, feedback: 'Not my report.' });
+
+    expect(otherCitizenRes.status).toBe(403);
+
+    const otherTenantRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${otherTenantCitizenToken}`)
+      .send({ rating: 4, feedback: 'Different tenant cannot approve.' });
+
+    expect(otherTenantRes.status).toBe(403);
+
+    const providerRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ rating: 4, feedback: 'Provider cannot self-rate.' });
+
+    expect(providerRes.status).toBe(403);
+
+    const adminRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${orgAdminToken}`)
+      .send({ rating: 4, feedback: 'Admin cannot approve as citizen.' });
+
+    expect(adminRes.status).toBe(403);
+
+    const confirmRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Verified by citizen.' });
+
+    expect(confirmRes.status).toBe(201);
+    expect(confirmRes.body).toMatchObject({
+      status: ReportStatus.CLOSED,
+      citizenRating: 5,
+      citizenFeedback: 'Verified by citizen.',
+    });
+
+    const duplicateRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Duplicate approval.' });
+
+    expect(duplicateRes.status).toBe(403);
+  });
+
   it('orchestrates citizen rejection of provider-completed work', async () => {
     const org = await createOrganization('Workflow Rejection Org');
     const provider = await createUser({
@@ -355,6 +502,13 @@ describe('Report Workflow (e2e)', () => {
     const citizenToken = await signToken(citizen);
     const providerToken = await signToken(provider);
     const adminToken = await signToken(admin);
+
+    const emptyReasonRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/reject-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ reason: '' });
+
+    expect(emptyReasonRes.status).toBe(400);
 
     const rejectRes = await request(app.getHttpServer())
       .post(`/api/report/citizen/${report.id}/reject-completion`)
