@@ -179,7 +179,33 @@ Backend documentation:
 
 - `docs/stabilization/phase6/Public_Investor_Analytics_Enhancement_Report.md`
 
-## 13. Risks and Limitations
+## 13. Commits and Push Status
+
+Website working-branch commit:
+
+```text
+9349f99506c1b7b94942f181b7508a4d2057a430
+feat(website): enhance public investor analytics
+```
+
+Backend documentation commit:
+
+```text
+038161e763a66d1232a0f68b70de8efb6ce6d5a4
+docs(phase6): report public investor analytics enhancement
+```
+
+Push status:
+
+```text
+Website phase-1-website-stabilization: pushed
+Backend phase-4-platform-expansion: pushed
+Website main: not promoted
+Backend main: not changed
+Dokploy deployment: not performed
+```
+
+## 14. Risks and Limitations
 
 - Public success stories are live but currently empty because no stories have
   been approved for publication.
@@ -189,13 +215,13 @@ Backend documentation:
 - Production deployment is still a separate controlled stage.
 - Promotion to website `main` was not performed in this phase.
 
-## 14. Promotion Readiness Classification
+## 15. Promotion Readiness Classification
 
 Classification:
 
 ```text
-GO FOR CONTROLLED WEBSITE BRANCH PUSH
-NO-GO FOR PRODUCTION PROMOTION OR DEPLOYMENT IN THIS STAGE
+GO FOR CONTROLLED PRODUCTION-BRANCH PROMOTION REVIEW
+NO-GO FOR PRODUCTION DEPLOYMENT WITHOUT SEPARATE AUTHORIZATION
 ```
 
 Rationale:
@@ -208,8 +234,8 @@ Rationale:
 
 Recommended next controlled action:
 
-1. Push `phase-1-website-stabilization`.
-2. Push backend documentation commit on `phase-4-platform-expansion`.
-3. Stop before promotion to website `main`.
-4. Request explicit authorization for production-branch promotion and Dokploy
+1. Review the pushed working branches.
+2. If approved, perform fast-forward-only promotion of website changes to
+   `main`.
+3. Request explicit authorization for Dokploy
    deployment.
