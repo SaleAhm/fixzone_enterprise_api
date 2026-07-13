@@ -54,10 +54,12 @@ export function configureApp(app: INestApplication) {
     next();
   });
 
-  const configuredOrigins = (process.env.CORS_ORIGINS ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  const configuredOrigins = expandCorsOrigins(
+    (process.env.CORS_ORIGINS ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  );
 
   app.enableCors({
     origin:
@@ -80,4 +82,26 @@ export function configureApp(app: INestApplication) {
   );
 
   app.useGlobalFilters(new JsonExceptionFilter());
+}
+
+function expandCorsOrigins(origins: string[]) {
+  return [
+    ...new Set(
+      origins.flatMap((origin) => {
+        const variants = [origin];
+        try {
+          const url = new URL(origin);
+          if (url.hostname === 'securezonegroup.com') {
+            variants.push(`${url.protocol}//www.securezonegroup.com`);
+          }
+          if (url.hostname === 'www.securezonegroup.com') {
+            variants.push(`${url.protocol}//securezonegroup.com`);
+          }
+        } catch {
+          // Keep non-URL origins unchanged; Nest also supports origin patterns.
+        }
+        return variants;
+      }),
+    ),
+  ];
 }
