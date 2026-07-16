@@ -159,7 +159,7 @@ export class DemoDataService {
             data: {
               fullName: `${organizationName} Admin`,
               email: this.demoEmail('org.admin', i + 1, demoBatchId),
-              phone: this.demoPhone(++userSequence),
+              phone: this.demoPhone(++userSequence, demoBatchId),
               passwordHash,
               role: UserRole.ORG_ADMIN,
               organizationId: organization.id,
@@ -173,7 +173,7 @@ export class DemoDataService {
             data: {
               fullName: `${organizationName} Dispatch Officer`,
               email: this.demoEmail('dispatch', i + 1, demoBatchId),
-              phone: this.demoPhone(++userSequence),
+              phone: this.demoPhone(++userSequence, demoBatchId),
               passwordHash,
               role: UserRole.DISPATCH_OFFICER,
               organizationId: organization.id,
@@ -190,11 +190,11 @@ export class DemoDataService {
             data: {
               fullName: profile.providerTeams[i % profile.providerTeams.length],
               email: this.demoEmail('provider', i + 1, demoBatchId),
-              phone: this.demoPhone(++userSequence),
+              phone: this.demoPhone(++userSequence, demoBatchId),
               passwordHash,
               role: UserRole.PROVIDER,
               organizationId: organization.id,
-              providerId: `DEMO-PRV-${String(i + 1).padStart(3, '0')}`,
+              providerId: this.demoProviderId(i + 1, demoBatchId),
               accountStatus: 'ACTIVE',
               providerEngagementType: 'INTERNAL_STAFF',
               serviceCategories: [
@@ -242,7 +242,7 @@ export class DemoDataService {
             data: {
               fullName: this.citizenNames[i % this.citizenNames.length],
               email: this.demoEmail('citizen', i + 1, demoBatchId),
-              phone: this.demoPhone(++userSequence),
+              phone: this.demoPhone(++userSequence, demoBatchId),
               passwordHash,
               role: UserRole.CITIZEN,
               organizationId: organization.id,
@@ -844,11 +844,19 @@ export class DemoDataService {
     return `demo.${kind}.${index}.${demoBatchId}@fixzone.test`;
   }
 
-  private demoPhone(sequence: number) {
-    const suffix = `${Date.now().toString().slice(-7)}${String(
-      sequence,
-    ).padStart(4, '0')}`;
+  private demoPhone(sequence: number, demoBatchId: string) {
+    const batchDigits = demoBatchId.replace(/\D/g, '').padEnd(8, '0').slice(-8);
+    const suffix = `${batchDigits}${String(sequence).padStart(3, '0')}`;
     return `+2348${suffix}`;
+  }
+
+  private demoProviderId(index: number, demoBatchId: string) {
+    const batchSuffix = demoBatchId
+      .replace(/^demo-/, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(-8)
+      .toUpperCase();
+    return `DEMO-PRV-${batchSuffix}-${String(index).padStart(3, '0')}`;
   }
 
   private async audit(
