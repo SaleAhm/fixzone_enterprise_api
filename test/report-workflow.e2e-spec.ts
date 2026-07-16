@@ -2,6 +2,8 @@ import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
+import { existsSync, rmSync } from 'fs';
+import { join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -30,10 +32,22 @@ describe('Report Workflow (e2e)', () => {
 
     prisma = moduleFixture.get(PrismaService);
     jwtService = moduleFixture.get(JwtService);
+
+    await cleanupWorkflowArtifacts();
   });
 
   afterEach(async () => {
+    await cleanupTrackedUploadArtifacts();
+
     if (createdReportIds.length > 0 || createdUserIds.length > 0) {
+      await prisma.complianceAuditLog.deleteMany({
+        where: {
+          OR: [
+            { actorId: { in: [...createdUserIds] } },
+            { entityId: { in: [...createdReportIds, ...createdUserIds] } },
+          ],
+        },
+      });
       await prisma.notification.deleteMany({
         where: {
           OR: [
@@ -67,9 +81,85 @@ describe('Report Workflow (e2e)', () => {
   });
 
   afterAll(async () => {
+    await cleanupWorkflowArtifacts();
     await prisma.$disconnect();
     await app.close();
   });
+
+  async function cleanupWorkflowArtifacts() {
+    const users = await prisma.user.findMany({
+      where: { email: { startsWith: 'wf-' } },
+      select: { id: true },
+    });
+    const userIds = users.map((user) => user.id);
+    const organizations = await prisma.organization.findMany({
+      where: { name: { startsWith: 'Workflow ' } },
+      select: { id: true },
+    });
+    const organizationIds = organizations.map(
+      (organization) => organization.id,
+    );
+    const reports = await prisma.report.findMany({
+      where: {
+        OR: [
+          { title: { startsWith: 'WF ' } },
+          { citizenId: { in: userIds } },
+          { assignedProviderId: { in: userIds } },
+          { organizationId: { in: organizationIds } },
+        ],
+      },
+      select: { id: true },
+    });
+    const reportIds = reports.map((report) => report.id);
+
+    await cleanupUploadArtifacts(reportIds);
+
+    await prisma.notification.deleteMany({
+      where: {
+        OR: [{ reportId: { in: reportIds } }, { userId: { in: userIds } }],
+      },
+    });
+    await prisma.complianceAuditLog.deleteMany({
+      where: {
+        OR: [
+          { actorId: { in: userIds } },
+          { entityId: { in: [...reportIds, ...userIds, ...organizationIds] } },
+          { organizationId: { in: organizationIds } },
+        ],
+      },
+    });
+    await prisma.report.deleteMany({
+      where: { id: { in: reportIds } },
+    });
+    await prisma.user.deleteMany({
+      where: { id: { in: userIds } },
+    });
+    await prisma.organization.deleteMany({
+      where: { id: { in: organizationIds } },
+    });
+
+    createdReportIds.length = 0;
+    createdUserIds.length = 0;
+    createdOrgIds.length = 0;
+  }
+
+  async function cleanupTrackedUploadArtifacts() {
+    await cleanupUploadArtifacts([...createdReportIds]);
+  }
+
+  async function cleanupUploadArtifacts(reportIds: string[]) {
+    for (const reportId of reportIds) {
+      const uploadDirectory = join(
+        process.cwd(),
+        'uploads',
+        'report-completion',
+        reportId,
+      );
+      if (existsSync(uploadDirectory)) {
+        rmSync(uploadDirectory, { recursive: true, force: true });
+      }
+    }
+  }
 
   async function createOrganization(name: string) {
     const organization = await prisma.organization.create({

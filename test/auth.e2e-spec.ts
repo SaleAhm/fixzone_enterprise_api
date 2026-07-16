@@ -16,6 +16,24 @@ describe('Auth API (e2e)', () => {
   let providerToken: string;
   let adminOrganizationId: string;
 
+  const authFixtureEmails = [
+    'admin@test.com',
+    'citizen@test.com',
+    'provider@test.com',
+    'provider1@fixzone.ng',
+    'provider2-auth@test.com',
+    'provider2-suspended@test.com',
+    'provider-new-auth@test.com',
+    'provider-reset-auth@test.com',
+    'provider-invited-reset-auth@test.com',
+    'demo-provider-1-auth@test.com',
+    'demo-provider-2-auth@test.com',
+    'demo-provider-3-auth@test.com',
+    'citizen.sync@test.com',
+  ];
+
+  const authFixturePhones = ['+2348000000001', '+2348000000999'];
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -56,19 +74,8 @@ describe('Auth API (e2e)', () => {
     const users = await prisma.user.findMany({
       where: {
         OR: [
-          { email: 'admin@test.com' },
-          { email: 'citizen@test.com' },
-          { email: 'provider@test.com' },
-          { email: 'provider2-auth@test.com' },
-          { email: 'provider2-suspended@test.com' },
-          { email: 'provider-new-auth@test.com' },
-          { email: 'provider-reset-auth@test.com' },
-          { email: 'provider-invited-reset-auth@test.com' },
-          { email: 'demo-provider-1-auth@test.com' },
-          { email: 'demo-provider-2-auth@test.com' },
-          { email: 'demo-provider-3-auth@test.com' },
-          { email: 'citizen.sync@test.com' },
-          { phone: '+2348000000001' },
+          { email: { in: authFixtureEmails } },
+          { phone: { in: authFixturePhones } },
         ],
       },
       select: { id: true },
@@ -81,7 +88,30 @@ describe('Auth API (e2e)', () => {
           OR: [
             { invitedById: { in: userIds } },
             { acceptedUserId: { in: userIds } },
+            { email: { in: authFixtureEmails } },
           ],
+        },
+      });
+      await prisma.notification.deleteMany({
+        where: {
+          OR: [
+            { userId: { in: userIds } },
+            { report: { citizenId: { in: userIds } } },
+            { report: { assignedProviderId: { in: userIds } } },
+          ],
+        },
+      });
+      await prisma.loginHistory.deleteMany({
+        where: {
+          OR: [
+            { userId: { in: userIds } },
+            { email: { in: authFixtureEmails } },
+          ],
+        },
+      });
+      await prisma.complianceAuditLog.deleteMany({
+        where: {
+          OR: [{ actorId: { in: userIds } }, { entityId: { in: userIds } }],
         },
       });
       await prisma.report.deleteMany({
@@ -97,19 +127,8 @@ describe('Auth API (e2e)', () => {
     await prisma.user.deleteMany({
       where: {
         OR: [
-          { email: 'admin@test.com' },
-          { email: 'citizen@test.com' },
-          { email: 'provider@test.com' },
-          { email: 'provider2-auth@test.com' },
-          { email: 'provider2-suspended@test.com' },
-          { email: 'provider-new-auth@test.com' },
-          { email: 'provider-reset-auth@test.com' },
-          { email: 'provider-invited-reset-auth@test.com' },
-          { email: 'demo-provider-1-auth@test.com' },
-          { email: 'demo-provider-2-auth@test.com' },
-          { email: 'demo-provider-3-auth@test.com' },
-          { email: 'citizen.sync@test.com' },
-          { phone: '+2348000000001' },
+          { email: { in: authFixtureEmails } },
+          { phone: { in: authFixturePhones } },
         ],
       },
     });
