@@ -1387,4 +1387,124 @@ describe('Report Workflow (e2e)', () => {
     expect(reassignRes.body.status).toBe(ReportStatus.ASSIGNED);
     expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
   });
+
+  it('expires overdue provider offers when acceptance is attempted after the deadline', async () => {
+    const org = await createOrganization('Workflow Expired Offer Org');
+    const provider = await createUser({
+      email: 'wf-provider-expired-offer@test.com',
+      fullName: 'Workflow Provider Expired Offer',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-expired-offer@test.com',
+      fullName: 'Workflow Citizen Expired Offer',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF expired assignment offer',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: provider.id,
+    });
+    await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        assignedAt: new Date(Date.now() - 90 * 60 * 1000),
+        assignmentDeadlineAt: new Date(Date.now() - 60 * 1000),
+      },
+    });
+
+    const providerToken = await signToken(provider);
+    const acceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+
+    expect(acceptRes.status).toBe(409);
+    expect(acceptRes.body.message).toBe('Assignment acceptance window expired');
+
+    const stored = await prisma.report.findUniqueOrThrow({
+      where: { id: report.id },
+    });
+    expect(stored.status).toBe(ReportStatus.PENDING);
+    expect(stored.assignedProviderId).toBeNull();
+    expect(stored.assignmentDeadlineAt).toBeNull();
+    expect(stored.lastAssignmentOutcome).toBe(AssignmentOutcome.TIMED_OUT);
+    expect(stored.lastAssignmentProviderId).toBe(provider.id);
+
+    await expect(
+      prisma.notification.count({
+        where: {
+          reportId: report.id,
+          type: 'assignment_timeout',
+        },
+      }),
+    ).resolves.toBeGreaterThanOrEqual(2);
+  });
+
+  it('prevents superseded providers from accepting after reassignment', async () => {
+    const org = await createOrganization('Workflow Superseded Offer Org');
+    const dispatchOfficer = await createUser({
+      email: 'wf-dispatch-superseded@test.com',
+      fullName: 'Workflow Dispatch Superseded',
+      role: UserRole.DISPATCH_OFFICER,
+      organizationId: org.id,
+    });
+    const providerA = await createUser({
+      email: 'wf-provider-superseded-a@test.com',
+      fullName: 'Workflow Provider Superseded A',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const providerB = await createUser({
+      email: 'wf-provider-superseded-b@test.com',
+      fullName: 'Workflow Provider Superseded B',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-superseded@test.com',
+      fullName: 'Workflow Citizen Superseded',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF superseded assignment offer',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: providerA.id,
+    });
+
+    const dispatchToken = await signToken(dispatchOfficer);
+    const reassignRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/reassign`)
+      .set('Authorization', `Bearer ${dispatchToken}`)
+      .send({
+        providerId: providerB.id,
+        reason: 'Provider did not respond before dispatch review',
+      });
+    expect(reassignRes.status).toBe(200);
+    expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
+
+    const oldProviderToken = await signToken(providerA);
+    const oldAcceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${oldProviderToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(oldAcceptRes.status).toBe(403);
+    expect(oldAcceptRes.body.message).toBe('Not your report');
+
+    const newProviderToken = await signToken(providerB);
+    const newAcceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${newProviderToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(newAcceptRes.status).toBe(200);
+    expect(newAcceptRes.body.status).toBe(ReportStatus.IN_PROGRESS);
+    expect(newAcceptRes.body.assignedProviderId).toBe(providerB.id);
+  });
 });

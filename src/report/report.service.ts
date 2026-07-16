@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -555,6 +556,7 @@ export class ReportService {
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
     }
+    await this.assertAssignmentStillAcceptable(report, user, userId);
     if (report.status !== ReportStatus.ASSIGNED) {
       throw new ForbiddenException('Only new assignments can be rejected');
     }
@@ -608,6 +610,13 @@ export class ReportService {
 
     if (!report) throw new NotFoundException('Report not found');
     if (this.isProvider(user)) await this.assertActiveProvider(userId);
+    if (
+      this.isProvider(user) &&
+      report.status === ReportStatus.ASSIGNED &&
+      dto.status === ReportStatus.IN_PROGRESS
+    ) {
+      await this.assertAssignmentStillAcceptable(report, user, userId);
+    }
     if (
       this.isProvider(user) &&
       dto.status === ReportStatus.IN_PROGRESS &&
@@ -1530,6 +1539,31 @@ export class ReportService {
       });
     }
     return expired;
+  }
+
+  private async assertAssignmentStillAcceptable(
+    report: {
+      status: ReportStatus;
+      assignedProviderId: string | null;
+      assignmentDeadlineAt: Date | null;
+    },
+    user: JwtUser,
+    userId: string,
+  ) {
+    if (
+      report.status !== ReportStatus.ASSIGNED ||
+      report.assignedProviderId !== userId ||
+      !report.assignmentDeadlineAt ||
+      report.assignmentDeadlineAt.getTime() >= Date.now()
+    ) {
+      return;
+    }
+
+    await this.expireOverdueAssignments({
+      providerId: userId,
+      actor: user,
+    });
+    throw new ConflictException('Assignment acceptance window expired');
   }
 
   private async assertActiveProvider(userId: string) {
