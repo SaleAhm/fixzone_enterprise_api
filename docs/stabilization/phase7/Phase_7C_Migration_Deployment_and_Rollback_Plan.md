@@ -1,220 +1,179 @@
-# Phase 7C-A — Migration, Deployment, and Rollback Plan
+# Phase 7C Migration, Deployment, and Rollback Plan
 
-Date: 2026-07-17  
-Deployment authorization: **not granted**
+Date: 2026-07-17
 
-## 1. Migration Under Review
+## Migration Under Review
 
-Migration:
+`prisma/migrations/20260717100000_phase7b_invitations_report_discussions/migration.sql`
 
-```text
-prisma/migrations/20260717100000_phase7b_invitations_report_discussions/migration.sql
-```
+## Migration Analysis
 
-Related schema areas:
+The migration is additive:
 
-- `InvitationStatus`
-- `Invitation`
-- `ReportMessage`
-- `User.reportMessages`
-- `Report.messages`
-
-## 2. Migration Safety Analysis
-
-The migration is additive.
-
-### Created enum value
-
-- Adds `DECLINED` to `InvitationStatus`.
-
-### Created invitation columns
-
-Nullable columns:
-
-- `declinedAt`
-- `tokenHash`
-- `resentAt`
-- `lastNotificationAt`
-
-These are nullable and preserve existing rows.
-
-### Created indexes
-
-- `Invitation_tokenHash_idx`
-
-### Created table
-
-`ReportMessage`
-
-Columns:
-
-- `id` — primary key, default `cuid()`.
-- `reportId` — required.
-- `organizationId` — required.
-- `authorId` — required.
-- `authorRole` — required enum `UserRole`.
-- `authorName` — nullable.
-- `message` — required text.
-- `metadata` — nullable JSON.
-- `createdAt` — default current timestamp.
-- `updatedAt` — auto-updated timestamp.
-
-Indexes:
-
-- `ReportMessage_reportId_createdAt_idx`
-- `ReportMessage_organizationId_createdAt_idx`
-- `ReportMessage_authorId_createdAt_idx`
-
-Foreign keys:
-
-- `ReportMessage_reportId_fkey` references `Report(id)` with `ON DELETE CASCADE`.
-- `ReportMessage_authorId_fkey` references `User(id)` with `ON DELETE CASCADE`.
+- Adds enum value `DECLINED` to `InvitationStatus`.
+- Adds nullable columns to `Invitation`:
+  - `declinedAt TIMESTAMP(3)`
+  - `tokenHash TEXT`
+  - `resentAt TIMESTAMP(3)`
+  - `lastNotificationAt TIMESTAMP(3)`
+- Adds index:
+  - `Invitation_tokenHash_idx` on `Invitation(tokenHash)`
+- Creates table `ReportMessage` if absent:
+  - `id TEXT NOT NULL` primary key
+  - `reportId TEXT NOT NULL`
+  - `organizationId TEXT NOT NULL`
+  - `authorId TEXT NOT NULL`
+  - `authorRole UserRole NOT NULL`
+  - `authorName TEXT NULL`
+  - `message TEXT NOT NULL`
+  - `metadata JSONB NULL`
+  - `createdAt TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP`
+  - `updatedAt TIMESTAMP(3) NOT NULL`
+- Adds indexes:
+  - `ReportMessage_reportId_createdAt_idx`
+  - `ReportMessage_organizationId_createdAt_idx`
+  - `ReportMessage_authorId_createdAt_idx`
+- Adds foreign keys:
+  - `ReportMessage.reportId -> Report.id ON DELETE CASCADE ON UPDATE CASCADE`
+  - `ReportMessage.authorId -> User.id ON DELETE CASCADE ON UPDATE CASCADE`
 
 Compatibility:
 
-- Existing production reports and users require no backfill.
-- Existing invitation rows remain valid.
-- No existing columns are dropped or renamed.
-- No non-nullable column is added to an existing table.
-- No destructive SQL is present.
+- Existing production rows are compatible because all new `Invitation` columns are nullable.
+- `ReportMessage` is a new table and requires no backfill.
+- New enum value is additive, but PostgreSQL enum alterations should still be treated as migration operations requiring backup and maintenance-window awareness.
+- Index creation is non-concurrent in the migration. Tables are expected to be small for invitations and empty for `ReportMessage`, but production size must be checked before execution.
+- No unique constraints are added beyond existing schema constraints; duplicate production invitation data should not violate this migration.
+- Rollback after production use would require preserving data-bearing `Invitation` columns and `ReportMessage` rows. Dropping them is not recommended once users create invitation/report-message data.
+- Retry safety is partly improved by `IF NOT EXISTS`; however, foreign key `ADD CONSTRAINT` statements do not use `IF NOT EXISTS`, so a partially applied manual rerun could conflict. Prisma migration history should be the source of truth.
 
-Lock risk:
+## Disposable Database Verification
 
-- Enum alteration and nullable column additions should be brief.
-- New table creation should not lock existing high-write tables for long.
-- Index creation on the new table is low risk because it starts empty.
+Not completed in this audit. A fresh disposable PostgreSQL database was not provisioned, and the user's operational local database was not used destructively. Backend validation became blocked after `npm ci` failed and left dependencies incomplete.
 
-Retry considerations:
+Required before production:
 
-- `ALTER TYPE ... ADD VALUE IF NOT EXISTS` is retry-friendly on supported PostgreSQL versions.
-- `ADD COLUMN IF NOT EXISTS` is retry-friendly.
-- Table creation uses `CREATE TABLE IF NOT EXISTS`.
-- Constraint creation may not be fully idempotent if the table exists but constraints already exist outside normal Prisma migration history. Normal Prisma migration execution applies the file once and should not retry partial manual executions.
+1. Create disposable PostgreSQL database.
+2. Apply the currently deployed production baseline migrations.
+3. Run `npx prisma migrate deploy` to apply Phase 7B.
+4. Start backend against disposable database.
+5. Verify invitation persistence and report-message persistence.
+6. Record migration logs and schema verification.
+7. Drop the disposable database only after evidence is captured.
 
-Rollback considerations:
+## Production Database Pre-flight Requirements
 
-- After production use, dropping `ReportMessage` or new invitation metadata columns would lose data.
-- Preferred rollback is application rollback while retaining additive database objects.
-- Database restore should be reserved for severe migration corruption or data exposure incidents.
+Hard stop: do not run production migration unless a recent verified backup and restore-test evidence exist.
 
-## 3. Production Database Pre-Flight Requirements
+Mandatory checks:
 
-Hard stop if any item cannot be confirmed:
+- Current production migration status: `npx prisma migrate status`
+- Pending migrations: confirm only expected Phase 7B migration is pending.
+- Database size and largest relations.
+- Available disk/storage headroom.
+- Active connection count.
+- Long-running transactions.
+- Locks on `Invitation`, `Report`, and `User`.
+- Recent backup timestamp.
+- Backup integrity verification.
+- Restore-test evidence and owner sign-off.
+- Maintenance-window approval.
+- Migration log capture location.
+- Post-migration schema verification.
+- Application rollback image/revision availability.
 
-1. Recent verified production backup exists.
-2. Backup integrity is confirmed.
-3. Restore-test evidence exists or emergency restore owner accepts documented risk.
-4. Current `_prisma_migrations` state is captured.
-5. Pending migrations are listed before deployment.
-6. Database size and available storage are captured.
-7. Active connection count is reviewed.
-8. Long-running transactions are checked.
-9. Migration log capture is prepared.
-10. Post-migration schema verification commands are prepared.
-
-Recommended read-only production pre-flight SQL:
-
-```sql
-SELECT migration_name, finished_at
-FROM "_prisma_migrations"
-ORDER BY finished_at DESC;
-```
+Example read-only/pre-flight SQL:
 
 ```sql
-SELECT count(*) AS active_connections
-FROM pg_stat_activity
-WHERE state = 'active';
+select now();
+select count(*) from "_prisma_migrations";
+select * from pg_stat_activity where state <> 'idle';
+select pg_size_pretty(pg_database_size(current_database()));
+select relname, pg_size_pretty(pg_total_relation_size(relid))
+from pg_catalog.pg_statio_user_tables
+order by pg_total_relation_size(relid) desc
+limit 20;
 ```
 
-```sql
-SELECT pid, now() - xact_start AS age, query
-FROM pg_stat_activity
-WHERE xact_start IS NOT NULL
-ORDER BY age DESC
-LIMIT 10;
-```
+## Exact Migration Command Plan
 
-## 4. Production Migration Command Plan
-
-Do not execute until release authorization is granted.
+Do not execute until release authorization:
 
 ```bash
+npm ci
+npx prisma validate
+npx prisma generate
 npx prisma migrate status
 npx prisma migrate deploy
 npx prisma migrate status
 ```
 
-Post-migration checks:
+Application startup after migration:
 
-```sql
-SELECT to_regclass('public."ReportMessage"') AS report_message_table;
+```bash
+npm run start:prod
 ```
 
-```sql
-SELECT column_name
-FROM information_schema.columns
-WHERE table_name = 'Invitation'
-  AND column_name IN ('declinedAt', 'tokenHash', 'resentAt', 'lastNotificationAt');
-```
+## Deployment Compatibility Matrix
 
-## 5. Compatibility Matrix
+| Combination | Expected result | Risk |
+| --- | --- | --- |
+| Old Flutter + old backend + old database | Current production baseline | No Phase 7B features. |
+| Old Flutter + new backend + migrated database | Should remain compatible | Additive routes/tables should not break old clients. |
+| New Flutter + old backend + old database | Not safe | New invitation/report-discussion routes may 404 or fail. |
+| New backend + old database before migration | Not safe for Phase 7B routes | Backend references `ReportMessage` and new Invitation fields; affected routes can fail. Startup may succeed until routes execute. |
+| New backend + migrated database + new Flutter | Target state | Requires smoke testing. |
+| Rolling backend deployment before migration | Not recommended | New code can receive requests before required tables/columns exist. |
 
-| Combination | Assessment |
-| --- | --- |
-| Old Flutter + old backend | Current production baseline. |
-| Old Flutter + new backend before migration | Risk: backend references new Prisma model in report-message routes; startup may work, but invoking new routes without table would fail. Existing old Flutter flows should not call new routes. |
-| New Flutter + old backend | Not safe for invitation/report-discussion UI; new routes would return 404. Deploy backend first. |
-| New backend + migrated database + old Flutter | Safe for existing flows; additive routes remain unused by old Flutter. |
-| New backend + migrated database + new Flutter | Intended Phase 7B runtime. |
+Recommended sequencing requires database migration before exposing new backend code to Phase 7B traffic, or a tightly controlled maintenance deployment where backend is updated immediately after successful migration and Flutter is deployed after backend health checks.
 
-## 6. Recommended Deployment Order
+## Recommended Deployment Order
 
-This order is conditional on fresh validation passing:
+1. Verify production backup and restore-test evidence.
+2. Confirm production migration status and pending migration list.
+3. Announce maintenance window if required.
+4. Build backend image from `297f7a07a7c89bce744a81dcae250e0c765bde9a`.
+5. Put new backend traffic behind deployment control, if available.
+6. Run `npx prisma migrate deploy` and capture logs.
+7. Verify schema and backend health.
+8. Activate backend revision.
+9. Run authenticated backend smoke tests with approved test accounts.
+10. Build and deploy Flutter web from `ce454ff15a60885a71398d72d384a693fa08d9ee`.
+11. Run controlled Flutter smoke tests.
+12. Monitor logs, 5xx rate, auth failures, migration errors, invitation errors, notification errors, and report-message errors for at least 60 minutes.
 
-1. Verify production backup and restore evidence.
-2. Confirm production migration state.
-3. Deploy backend build/revision.
-4. Run backend health check.
-5. Apply Prisma migration if not applied as part of backend deployment process.
-6. Verify `ReportMessage` table and invitation columns.
-7. Smoke-test existing authentication and report workflows.
-8. Deploy Flutter web build/revision.
-9. Run authenticated smoke tests.
-10. Monitor logs and metrics during the release observation window.
+## Production Smoke-test Matrix
 
-If Dokploy deployment process runs migrations separately, ensure the backend does not expose new UI-dependent routes to new Flutter before migration is complete.
-
-## 7. Smoke-Test Matrix
-
-### Public/read-only
+Public/read-only:
 
 - Website loads.
-- API health responds.
-- Public metrics respond.
+- API health endpoint responds.
+- Public metrics respond read-only.
 - Flutter gateway loads.
 
-### Citizen
+Citizen:
 
 - Login.
 - Dashboard.
-- Reports list.
+- Reports.
 - Report details.
 - Notification navigation.
-- Pending invitations panel.
+- Pending invitations list.
 - Report discussion on owned report.
 
-### Provider
+Provider:
 
 - Login.
 - Assigned jobs.
 - Job details.
 - Evidence visibility.
 - Report discussion on assigned job.
-- Profile/dashboard.
+- Profile/dashboard organization context.
 
-### Organization Admin
+Organization Admin:
 
-- Organization dashboard.
+- Organization name/context.
+- Dashboard.
 - Invitation creation.
 - Pending invitation status.
 - Resend/revoke.
@@ -223,7 +182,7 @@ If Dokploy deployment process runs migrations separately, ensure the backend doe
 - Trust Center read/update.
 - Users/providers.
 
-### Super Admin
+Super Admin:
 
 - Platform scope.
 - Organizations.
@@ -232,56 +191,59 @@ If Dokploy deployment process runs migrations separately, ensure the backend doe
 - Monetization.
 - Global authorization boundaries.
 
-State-changing production smoke tests must use approved test accounts and reversible test records with cleanup ownership assigned before execution.
+State-changing smoke tests must use approved reversible test records with named cleanup owners. No destructive production tests are authorized by this document.
 
-## 8. Rollback Triggers
-
-Rollback or pause release if any occurs:
+## Rollback Triggers
 
 - Backend startup failure.
-- Migration failure.
+- Migration failure or unexpected migration drift.
 - Elevated 5xx rate.
-- Authentication regression.
+- Authentication or role regression.
 - Cross-tenant authorization defect.
-- Invitation acceptance privilege escalation.
-- Report-discussion data exposure.
+- Invitation acceptance failure.
+- Report discussion data exposure.
 - Upload/evidence regression.
-- Report assignment/workflow regression.
-- Completion/citizen review regression.
-- Trust Center update regression.
+- Report workflow regression.
+- Notification navigation/read-state regression.
+- Trust Center enforcement update failure.
 
-## 9. Rollback Procedure
+## Rollback Procedure
 
-### Backend
+Backend rollback:
 
 1. Restore previous backend image/revision.
-2. Verify health endpoint.
-3. Verify existing report and auth workflows.
-4. Leave additive Phase 7B database structures in place unless data corruption or data exposure requires restore.
+2. Verify API health.
+3. Verify old backend remains compatible with additive Phase 7B tables/columns.
+4. Monitor errors and auth failures.
 
-### Flutter
+Flutter rollback:
 
 1. Restore previous web revision/assets.
-2. Verify service worker/cache behavior.
-3. Instruct testers to hard refresh if stale assets persist.
+2. Invalidate or refresh caches as needed.
+3. Verify service-worker asset version behavior.
+4. Confirm gateway and role shells load.
 
-### Database
+Database rollback:
 
-Preferred:
+- Prefer forward-compatible rollback: leave additive Phase 7B tables/columns in place.
+- Do not drop `ReportMessage` or new invitation fields after production data exists unless explicitly approved.
+- If data corruption or destructive migration failure occurs, restore from verified backup.
+- Recovery point objective equals time between verified backup and failure plus any accepted data loss window.
+- Data created between deployment and rollback, especially invitations and report messages, must be preserved or explicitly reconciled.
 
-- Keep additive tables/columns.
-- Roll application backward.
+## Monitoring Period
 
-Avoid:
+Minimum observation after deployment: 60 minutes, with explicit checks for:
 
-- Dropping `ReportMessage` or invitation metadata after production use.
+- API 5xx rates.
+- Auth 401/403 spikes.
+- Prisma errors.
+- Invitation conflicts and acceptance failures.
+- Report discussion 403/404/500 rates.
+- Notification creation failures.
+- Flutter web asset/service-worker errors.
+- Database connection saturation.
 
-Use database restore only if:
+## Current Audit Conclusion
 
-- Migration corrupts production schema.
-- Unauthorized data exposure occurs.
-- Recovery point objective impact is approved.
-
-## 10. Current Plan Status
-
-The migration appears additive and production-compatible by source review, but deployment planning remains **blocked** until fresh backend and Flutter validation can be completed successfully.
+Deployment is blocked until backend validation is rerun successfully in a clean dependency environment, Flutter release build completes successfully, and production database pre-flight evidence is captured.

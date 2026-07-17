@@ -1,202 +1,157 @@
-# Phase 7C-A — Regression and Parity Audit
+# Phase 7C Regression and Parity Audit
 
-Date: 2026-07-17  
-Classification: **Blocked pending fresh validation rerun**
+Date: 2026-07-17
 
-## 1. Purpose
+## Scope
 
-This audit reviewed frontend/backend parity and regression exposure for Phase 7B invitation, report-discussion, notification, Trust Center, and organization-context work.
+This audit reviewed frontend/backend parity and regression risk for invitations, report discussions, Trust Center enforcement settings, notifications, organization context, and cross-role workflows. It is documentation-only; no runtime implementation changes were made.
 
-## 2. Frontend/Backend Contract Review
+## Frontend/Backend Contract Review
 
-### Invitation creation
+| Feature | Flutter API | Backend route | Method | Status |
+| --- | --- | --- | --- | --- |
+| Admin invitation creation | `ApiService.createAdminInvitation` | `/api/users/admin/invitations` | POST | Implemented; body is dynamic and backend validates role/email/phone/org scope. |
+| Admin invitation list | `ApiService.getAdminInvitations` | `/api/users/admin/invitations` | GET | Implemented; returns serialized invitation with organization/inviter/accepted user. |
+| Invitee invitation list | `ApiService.getMyInvitations` | `/api/users/invitations/mine` | GET | Implemented; filters by current user email/phone. |
+| Invitation accept | `ApiService.acceptInvitation` | `/api/users/invitations/:id/accept` | POST | Implemented; updates user membership and provider link where applicable. |
+| Invitation decline | `ApiService.declineInvitation` | `/api/users/invitations/:id/decline` | POST | Implemented; marks `DECLINED`. |
+| Invitation resend | `ApiService.resendAdminInvitation` | `/api/users/admin/invitations/:id/resend` | POST | Implemented; records reminder and in-app notification. |
+| Invitation revoke | `ApiService.revokeAdminInvitation` | `/api/users/admin/invitations/:id/revoke` | POST | Implemented; marks `REVOKED` and notifies invitee if user exists. |
+| Report-message list | `ApiService.getReportMessages` | `/api/report/:id/messages` | GET | Implemented; returns ordered messages. |
+| Report-message create | `ApiService.createReportMessage` | `/api/report/:id/messages` | POST | Implemented; body `{ message }`, max 1200 chars. |
+| Trust enforcement read | `ApiService.getTrustEnforcementSettings` | `/api/admin/trust/enforcement-settings` | GET | Implemented. |
+| Trust enforcement update | `ApiService.updateTrustEnforcementSettings` | `/api/admin/trust/enforcement-settings` | POST | Implemented; Flutter allow-lists expected keys. |
+| Notifications list | `ApiService.getNotifications` | `/api/notifications` | GET | Implemented. |
+| Notification unread count | `ApiService.getUnreadNotificationCount` | `/api/notifications/unread-count` | GET | Implemented. |
+| Mark notification read | `ApiService.markNotificationRead` | `/api/notifications/:id/read` | PATCH | Implemented. |
+| Mark all read | `ApiService.markAllNotificationsRead` | `/api/notifications/read-all` | PATCH | Implemented. |
+| Organization context | `ApiService.getMyOrganization` | `/api/organizations/mine` | GET | Implemented, but not uniformly surfaced in all shells. |
 
-- Flutter method: admin invitation creation through `ApiService.inviteUser`.
-- Backend route: `POST /api/users/admin/invitations`.
-- Required auth: administrator role.
-- Expected behavior: create pending invitation, not a temporary-password user.
-- Response expectation: invitation payload and delivery status.
-- Risk: email delivery is configuration-pending; UI must not imply email was sent.
+### Contract Risks
 
-### Invitation listing
+- Flutter still surfaces some caught errors as raw exception text in SnackBars, including invitation action failures and discussion send failures.
+- Invitation creation uses `Record<string, unknown>` server-side instead of a strongly typed DTO, so validation shape is service-driven rather than class-validator driven.
+- No pagination contract exists for invitations or report messages; server currently caps admin invitations at 100 and messages are unpaginated.
+- Report discussion rendering uses Flutter `Text`, which is safe from HTML injection, but no rich-text sanitizer is needed only because content is rendered as plain text.
+- Trust enforcement mismatch previously fixed remains aligned: Flutter sends only `requireVerifiedIdentityForDisputes`, `requireVerifiedIdentityForProviderJobAcceptance`, `requireVerifiedIdentityForEvidenceUpload`, `requireEntitlementPlanForPriorityWorkflows`, and `requiredPriorityPlan`, matching backend DTO intent.
 
-- Admin listing route: `GET /api/users/admin/invitations`.
-- Invitee listing route: `GET /api/users/invitations/mine`.
-- Response contains invitation status, intended role, organization reference, timestamps, and delivery metadata.
+## Invitation Lifecycle Readiness
 
-### Invitation acceptance and decline
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Admin creates invitation | Implemented | `UsersService.inviteUser` persists `Invitation` with `PENDING`, token hash, expiry, invite code. |
+| Invitation persisted | Implemented | Prisma `Invitation` model stores status, expiry, organization, invitedBy, acceptedUser, timestamps. |
+| Invitee can see invitation | Implemented | `/users/invitations/mine` filters by email/phone and excludes expired pending invites. |
+| Organization name shown | Implemented | Serialized invitation includes `organization.name`; Flutter panel displays it. |
+| Intended role shown | Implemented | Serialized `role`; Flutter labels it. |
+| Accept | Implemented | Updates user role/org, creates provider organization link when role is provider, marks accepted. |
+| Decline | Implemented | Marks `DECLINED` and notifies inviter. |
+| Resend | Implemented | Updates `resentAt`, `lastNotificationAt`, metadata resend count. |
+| Revoke | Implemented | Marks `REVOKED` and notifies invitee if matched user exists. |
+| Duplicate active invitation | Implemented | Pending duplicate check on role/org/email/phone/expiry. |
+| Existing-member handling | Implemented | Throws conflict for existing active member with same org and role. |
+| Expired invitation | Implemented | Expired pending invitations are marked `EXPIRED` on retrieval/action. |
+| Cross-org isolation | Partially verified by code | Org admins scoped by `organizationId`; fresh e2e rerun blocked. |
+| Unauthorized role grant prevention | Implemented | Super admin invitations disallowed; org admins cannot invite org admins. |
+| Audit/activity creation | Implemented | Uses `DemoAuditLog` for invitation actions. |
+| Notification creation | Implemented | In-app notification rows are created for invitee/inviter events. |
 
-- Accept route: `POST /api/users/invitations/:id/accept`.
-- Decline route: `POST /api/users/invitations/:id/decline`.
-- Backend checks invitee identity by email or phone.
-- Acceptance updates organization membership and intended role.
-- Provider invitation acceptance creates provider-organization linkage when applicable.
+Readiness split:
 
-### Invitation resend and revoke
+- In-app invitation readiness: implemented, pending fresh backend e2e rerun.
+- Email invitation readiness: configuration-pending; code states email delivery is not configured.
+- Token-link invitation readiness: partial foundation only; token hash exists, but no verified email link delivery flow.
+- Remaining limitations: no production email transport, no bounce/retry tracking, no delivery confirmation, no pagination.
 
-- Resend route: `POST /api/users/admin/invitations/:id/resend`.
-- Revoke route: `POST /api/users/admin/invitations/:id/revoke`.
-- Admin UI exposes resend/revoke for pending invitations.
-- Email transport remains pending; resend updates metadata/notification state but does not prove external email delivery.
+The old temporary-password invitation workflow is no longer the default for new admin invitations. Legacy user resend/reset paths still exist and are labelled as legacy/manual.
 
-### Report-message list and create
+## Report Discussion Security Review
 
-- List route: `GET /api/report/:id/messages`.
-- Create route: `POST /api/report/:id/messages`.
-- Message payload: `{ "message": string }`.
-- Length limit: 1200 characters.
-- Empty messages rejected.
-- Backend reuses report access checks.
-- UI describes the feature as report discussion/case conversation, not real-time chat.
+Backend uses `getReportById(reportId, user)` before listing or creating report messages. That check allows:
 
-### Trust Center enforcement update
+- Super admin.
+- Report citizen.
+- Assigned provider.
+- Organization admin or dispatch officer in the same organization.
 
-- Flutter sends only mutable fields:
-  - `requireVerifiedIdentityForDisputes`
-  - `requireVerifiedIdentityForProviderJobAcceptance`
-  - `requireVerifiedIdentityForEvidenceUpload`
-  - `requireEntitlementPlanForPriorityWorkflows`
-  - `requiredPriorityPlan`
-- Read-only backend fields such as `organizationId` and `blockingMode` are not posted back.
-- This avoids the previous DTO rejection mismatch.
+It rejects unrelated citizens, unrelated providers, users outside organization scope, and unauthenticated requests through guards. Existing tests include report discussion participant scoping, but required fresh rerun was blocked by backend dependency failure.
 
-## 3. Invitation Lifecycle Readiness
+Controls present:
 
-Implemented:
-
-- Pending invitation persistence.
-- Invitee dashboard visibility.
-- Accept action.
-- Decline action.
-- Admin resend action.
-- Admin revoke action.
-- Duplicate pending invitation prevention.
-- Existing-member protection.
-- Expiry handling.
-- Audit logging for invitation actions.
-- In-app notification creation where a matching user exists.
-
-Configuration-pending:
-
-- External email invitation delivery.
-- Public token-link landing flow.
-- Bounce/failure handling.
-- Sender-domain verification.
-
-Readiness:
-
-- In-app invitation lifecycle: **implemented, pending fresh validation rerun**.
-- Email invitation lifecycle: **configuration-pending**.
-- Token-link invitation lifecycle: **deferred**.
-
-## 4. Report-Discussion Security Review
-
-Implemented controls:
-
-- Report creator/citizen can access their report discussion.
-- Assigned provider can access assigned report discussion.
-- Organization admin and dispatch officer can access in-scope organization report discussion.
-- Super admin can access globally.
-- Unrelated users are rejected through the existing report authorization path.
-- Cross-organization access is rejected.
-- Unauthenticated requests require JWT guard and are rejected.
-- Message text is trimmed and control characters are normalized.
-- Message timestamps, sender id, sender role, and sender display name are persisted.
-- Message creation records report activity.
-- Message creation fans out in-app notifications to participants excluding the author.
+- Message must be non-empty.
+- Message is trimmed.
+- Max length is 1200 characters.
+- Messages are report-scoped and organizationId-scoped.
+- Sender id, role, and display name are persisted.
+- Report activity `REPORT_DISCUSSION_MESSAGE` is recorded.
+- Participant notifications are created for report citizen, assigned provider, and active org operators except the sender.
+- Flutter labels the UI as "Report Discussion" and uses manual refresh after send, not real-time chat.
 
 Limitations:
 
-- No pagination beyond a bounded latest-message query.
-- No WebSocket/live chat.
-- No attachment support in discussion messages.
-- No moderation workflow.
+- No pagination.
+- No edit/delete/moderation workflow.
+- No server-side profanity/content moderation.
+- No real-time push; manual refresh/poll-like reload only.
 
-## 5. Notification Findings
+## Notification Readiness Review
 
-Implemented/present in Phase 7B:
+| Notification type | In-app persistence | Navigation/readiness |
+| --- | --- | --- |
+| Invitation received | Implemented for existing matched user | No email/push/SMS verified. |
+| Invitation accepted | Implemented to inviter | Generic notification navigation may not deep-link to invitation admin panel. |
+| Invitation declined | Implemented to inviter | Same navigation limitation. |
+| Invitation revoked | Implemented to invitee if matched user exists | Same navigation limitation. |
+| Report assignment | Implemented in report workflow | Provider notification tests passed in Flutter. |
+| Provider progress | Implemented in workflow paths | Production-unverified. |
+| Evidence submission | Implemented in report/evidence paths | Production-unverified. |
+| Completion review | Implemented; Flutter notification navigation tests passed | Locally verified in Flutter tests. |
+| Dispute activity | Implemented in Trust dispute workflow | Production-unverified. |
+| Report discussion message | Implemented | Deep link target is report detail/job detail via reportId. |
 
-- Invitation received notification for matched existing users.
-- Invitation accepted notification to inviter.
-- Invitation declined notification to inviter.
-- Invitation revoked notification to invitee where matched.
-- Report discussion message notification to participants.
+In-app persisted notification readiness is partial. Email, push, and SMS delivery are not production verified and must not be claimed as complete. Mark-as-read and mark-all-read APIs exist. Duplicate notification prevention is limited; discussion messages intentionally fan out per message.
 
-Existing platform notification areas remain relevant:
+Previously reported notification back-navigation risk is improved by Flutter notification navigation tests, but production manual smoke testing remains required.
 
-- Report assignment.
-- Provider progress.
-- Evidence submission.
-- Completion review.
-- Dispute activity.
+## Organization and Workspace Context
 
-Readiness separation:
+| Role shell | Status | Finding |
+| --- | --- | --- |
+| Organization Admin | Partially complete | Admin dashboard still has fallback text like "Welcome, Organization Administrator" and does not always show organization identity prominently. |
+| Dispatch Officer | Partially complete | Backend provides org scope; UI context should be hardened in next tranche. |
+| Provider | Mostly complete | Provider dashboard/profile expose `displayOrganization`. |
+| Citizen | Partially complete | Citizen profile can show organization service area; shell context is lighter. |
+| Super Admin | Partially complete | Platform scope exists but should be clearer in enterprise shell headers. |
 
-- In-app persisted notifications: implemented for Phase 7B events, pending fresh validation rerun.
-- Email notifications: configuration-pending.
-- Push notifications: not verified in this tranche.
-- SMS notifications: not implemented/verified.
+Current APIs can provide organization name through `/organizations/mine`, user organization relation in admin user select, and provider profile data. This is not blocked by API data; it is a UI hardening gap.
 
-## 6. Organization and Workspace Context Findings
+Recommended next tranche files:
 
-Current state:
+- `lib/features/admin/presentation/screens/admin_dashboard_screen.dart`
+- `lib/features/admin/presentation/screens/admin_home_shell.dart`
+- `lib/features/citizen/presentation/screens/citizen_home_screen.dart`
+- `lib/features/provider/presentation/screens/provider_dashboard_screen.dart`
+- `lib/core/services/api_service.dart`
 
-- Super Admin dashboard distinguishes platform scope.
-- Organization Admin and Dispatch dashboard wording identifies organization workspace but does not consistently display the concrete organization name in the primary greeting.
-- Provider dashboard surfaces provider profile context but can be improved with clearer organization/provider identity placement.
-- Citizen dashboard is mostly citizen-service scoped and includes module access context.
+## Regression Matrix
 
-Classification:
+| Workflow | Audit status |
+| --- | --- |
+| Citizen OTP login | Existing implementation; fresh backend e2e blocked. |
+| Provider login | Existing implementation; Flutter tests cover provider state/navigation; backend rerun blocked. |
+| Organization admin login | Existing implementation; backend rerun blocked. |
+| Super admin login | Existing implementation; backend rerun blocked. |
+| Citizen report submission | Existing implementation; backend rerun blocked. |
+| Duplicate-report handling | Existing implementation; backend rerun blocked. |
+| Assignment and AI-assisted assignment | Existing implementation; backend rerun blocked. |
+| Provider acceptance/progress/evidence/completion | Flutter assignment/evidence tests present; backend rerun blocked. |
+| Citizen review, rating, closure | Existing implementation; backend rerun blocked. |
+| Disputes and records | Trust implementation present; backend rerun blocked. |
+| Subscriptions/monetization | Manual billing UI truthfulness tests passed in Flutter. |
+| Analytics and Trust Center | Flutter routes/tests pass; backend rerun blocked. |
+| Invitations | Implemented; backend rerun blocked. |
+| Report discussion | Implemented; backend rerun blocked. |
+| Notifications | Flutter navigation tests passed; backend rerun blocked. |
+| Responsive navigation/onboarding | Flutter tests passed. |
 
-- Super Admin: partially complete.
-- Organization Admin: partially complete; organization name display should be improved.
-- Dispatch Officer: partially complete; organization name display should be improved.
-- Provider: partially complete.
-- Citizen: partially complete.
-
-Recommended next controlled tranche:
-
-- Add a small authenticated workspace identity strip using existing `getMyOrganization`, profile, and token-derived role data.
-- Avoid redesign; keep this additive.
-
-## 7. Regression Matrix
-
-Requires successful fresh validation before closure:
-
-- Citizen OTP login.
-- Provider login.
-- Organization admin login.
-- Super admin login.
-- Citizen report submission.
-- Duplicate-report handling.
-- Assignment.
-- AI-assisted assignment.
-- Provider acceptance.
-- Provider progress.
-- Evidence upload.
-- Completion submission.
-- Citizen review.
-- Rating and closure.
-- Disputes.
-- Records.
-- Subscriptions.
-- Monetization.
-- Analytics.
-- Trust Center.
-- Invitation lifecycle.
-- Report discussion.
-- Notifications.
-- Responsive navigation.
-- Onboarding screens.
-
-Do not claim the following as complete based on Phase 7B:
-
-- Email authentication.
-- Payment gateway.
-- GIS production intelligence.
-- Real-time chat.
-- Production invitation email delivery.
-
-## 8. Audit Conclusion
-
-The contracts and implemented behavior appear coherent from source-level review, but this parity audit remains **blocked pending fresh automated validation** because the local dependency/tooling environment prevented the required command suite from completing.
+Do not claim email authentication, payment gateway, GIS production operation, real-time chat, or production invitation email delivery.
