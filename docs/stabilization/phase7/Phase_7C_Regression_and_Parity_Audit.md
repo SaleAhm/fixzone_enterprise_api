@@ -155,3 +155,45 @@ Recommended next tranche files:
 | Responsive navigation/onboarding | Flutter tests passed. |
 
 Do not claim email authentication, payment gateway, GIS production operation, real-time chat, or production invitation email delivery.
+
+## Phase 7C-C Validation Update
+
+Date: 2026-07-17
+
+The Phase 7C-B backend validation blocker was resolved with a Prisma build-resolution configuration repair. No runtime business logic, authorization, invitation semantics, report-discussion behavior, notification workflow, billing, or Prisma model behavior changed.
+
+Backend validation after repair:
+
+| Command | Result |
+| --- | --- |
+| `npm run build` | Passed. |
+| `npm test -- --runInBand` | Passed: 16 suites, 113 tests. |
+| `npm run test:e2e -- --runInBand` | Passed: 12 suites, 89 tests. |
+| Clean `npm ci` | Passed: 960 packages installed. |
+| Clean `npx prisma validate` | Passed. |
+| Clean `npx prisma generate` | Passed; Prisma Client 7.6.0 generated to `.\node_modules\@prisma\client`. |
+| Clean `npm run build` | Passed. |
+| Clean `npm test -- --runInBand` | Passed: 16 suites, 113 tests. |
+| Clean `npm run test:e2e -- --runInBand` | Passed: 12 suites, 89 tests. |
+
+Flutter validation after backend recovery:
+
+| Command | Result |
+| --- | --- |
+| `flutter pub get` | Passed. |
+| `dart format --set-exit-if-changed .` | Passed: 112 files checked, 0 changed. |
+| `flutter analyze` | Passed: no issues found. |
+| `flutter test` | Passed: 43 tests. |
+| `flutter build web --release` | Passed; built `build\web`. |
+
+Regression-risk update:
+
+- Fresh backend e2e coverage now verifies the report workflow, Firebase citizen report ownership/retrieval path, authorization boundaries, invitations, platform tools, analytics, Trust workflows, rate limiting, and organization-sensitive workflows in the current local environment.
+- The earlier "backend rerun blocked" notes are superseded for local validation by this Phase 7C-C update.
+- Production smoke testing remains required and must use approved test accounts only.
+
+Security-audit update:
+
+- Production dependency audit remains non-green: `npm audit --omit=dev` reports 25 findings, including 1 critical transitive finding.
+- Full dependency audit reports 35 findings.
+- No dependency upgrades were made in this Prisma repair tranche.

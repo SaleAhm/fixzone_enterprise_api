@@ -82,3 +82,67 @@ The application may be functionally close to a controlled promotion, but a GO or
 ## Final Conclusion
 
 Phase 7B is not cleared for production promotion in this audit. The correct release posture is BLOCKED until required validation and production pre-flight evidence are completed.
+
+## Phase 7C-C Update: Prisma Build-Resolution Recovery
+
+Date: 2026-07-17
+
+Result: **GO WITH CONDITIONS**
+
+Phase 7C-C recovered deterministic local backend validation without production access, deployment, production migration execution, DNS changes, secret changes, tag movement, or branch merges.
+
+Root cause:
+
+- The repository's intended Prisma architecture is the legacy package-client architecture: `generator client { provider = "prisma-client-js" }`, application imports from `@prisma/client`, and Prisma Client output is `node_modules/@prisma/client`.
+- A stale root-level ignored `generated/prisma` source-client artifact existed locally and was accidentally included by `nest build` through `tsconfig.build.json`.
+- TypeScript compiled that stale generated-source client alongside the real `@prisma/client` package client, producing hundreds of false Prisma export/delegate errors such as missing `PrismaClient`, missing enums, and missing `PrismaService.report`.
+
+Repair:
+
+- Added `prebuild: prisma generate` so backend builds deterministically generate Prisma Client before Nest compilation.
+- Excluded the ignored root `generated` artifact from `tsconfig.build.json`.
+- No Prisma schema, migration, model, authorization, workflow, invitation, report-discussion, notification, billing, or business-logic behavior changed.
+
+Version evidence:
+
+- Node: `v22.19.0`
+- npm: `10.9.3`
+- `prisma`: `7.6.0`
+- `@prisma/client`: `7.6.0`
+- `@prisma/adapter-pg`: `7.6.0`
+- `@prisma/client-runtime-utils`: `7.6.0`
+- TypeScript resolved by install: `5.9.3`
+- NestJS core: `11.1.17`
+- Prisma package versions matched before and after the repair.
+
+Clean-install reproducibility evidence:
+
+- `npm cache verify`: passed.
+- `npm ci`: passed; 960 packages installed; 35 audit findings remain.
+- `npx prisma validate`: passed.
+- `npx prisma generate`: passed; Prisma Client `7.6.0` generated to `.\node_modules\@prisma\client`.
+- `npm run build`: passed.
+- `npm test -- --runInBand`: passed, 16 suites, 113 tests.
+- `npm run test:e2e -- --runInBand`: passed, 12 suites, 89 tests.
+
+Flutter validation after backend recovery:
+
+- `flutter pub get`: passed.
+- `dart format --set-exit-if-changed .`: passed, 112 files checked, 0 changed.
+- `flutter analyze`: passed, no issues found.
+- `flutter test`: passed, 43 tests.
+- `flutter build web --release`: passed and built `build\web`.
+- Verified artifacts: `build\web\index.html`, `build\web\main.dart.js`, `build\web\assets\AssetManifest.json`, `build\web\flutter_service_worker.js`.
+
+Remaining security-audit findings:
+
+- `npm audit --omit=dev`: 25 production-tree findings: 12 moderate, 12 high, 1 critical.
+- `npm audit`: 35 total findings: 1 low, 20 moderate, 13 high, 1 critical.
+- The critical finding is transitive `websocket-driver`.
+- Direct production dependencies with findings include `@nestjs/config`, `@nestjs/core`, `@nestjs/platform-express`, `firebase-admin`, and `prisma`.
+- Some fixes appear non-breaking according to npm metadata; others require major or breaking dependency movement, notably `firebase-admin` to `14.2.0` and npm's suggested Prisma path to `6.19.3`.
+- No audit fix or dependency upgrade was run in this tranche.
+
+Updated readiness:
+
+The local build/test/release validation blocker is resolved. The maximum recommendation remains **GO WITH CONDITIONS** because production backup verification, restore-test evidence, production DB migration pre-flight, environment readiness, approved deployment window, approved smoke-test accounts, and authorized deployment execution are still required before promotion.

@@ -247,3 +247,41 @@ Minimum observation after deployment: 60 minutes, with explicit checks for:
 ## Current Audit Conclusion
 
 Deployment is blocked until backend validation is rerun successfully in a clean dependency environment, Flutter release build completes successfully, and production database pre-flight evidence is captured.
+
+## Phase 7C-C Validation and Deployment-Readiness Update
+
+Date: 2026-07-17
+
+The local validation blockers named above are resolved:
+
+- Clean backend dependency installation completed successfully with `npm ci`.
+- Prisma validation and generation completed successfully.
+- Backend build completed successfully after Prisma Client generation.
+- Backend unit/integration and e2e test suites passed.
+- Flutter release web build completed successfully and generated `build\web`.
+
+No database schema change was required for the Prisma build-resolution repair. No migration was created, edited, or applied. The migration under review remains `prisma/migrations/20260717100000_phase7b_invitations_report_discussions/migration.sql`.
+
+Build-order update:
+
+- Backend `npm run build` now runs `prisma generate` through `prebuild`.
+- Prisma Client output remains the package-client path `node_modules/@prisma/client`.
+- The ignored root `generated` artifact is excluded from Nest build compilation.
+
+Updated deployment recommendation:
+
+Recommendation: **GO WITH CONDITIONS**
+
+The remaining production conditions are operational, not local-build blockers:
+
+- Verify a recent production backup and restore-test evidence.
+- Confirm production migration status and pending migration list.
+- Confirm production database size, largest relations, available storage, active connections, long-running transactions, and relevant locks.
+- Confirm production environment readiness without exposing secret values.
+- Approve deployment window, rollback owner, migration log capture, and smoke-test accounts.
+- Execute production deployment only after explicit authorization.
+- Monitor API, auth, Prisma, invitation, report-discussion, notification, Flutter asset/service-worker, and database health after deployment.
+
+Security note:
+
+The dependency audit remains open. `npm audit --omit=dev` reports 25 production-tree findings, and the full audit reports 35 findings including 1 critical transitive `websocket-driver` finding. No audit fix was run in this tranche; address dependency remediation in a separate approved security tranche.
