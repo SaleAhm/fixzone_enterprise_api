@@ -86,3 +86,22 @@ The following remain required before UI polishing begins:
 3. role navigation browser spot-checks;
 4. stable-production/current-local screenshot matrix;
 5. final confirmation that no stable-production capability has been visually hidden or functionally reduced.
+
+## Phase 7C-A update
+
+Additive premium polish was implemented only for:
+
+- SecureZone onboarding wizard narration;
+- role-gateway role descriptions and journey chips;
+- provider analytics KPI card responsiveness at 320px.
+
+The following historical gaps are now partially closed:
+
+| Area | Phase 7C-A result | Classification |
+| --- | --- | --- |
+| Onboarding narrative depth | Six preserved steps now include concise capabilities and governance notes | FIXED |
+| Role selector journey clarity | Four role cards now include richer narratives and journey chips | FIXED |
+| Provider analytics narrow overflow | KPI cards use responsive one-column horizontal layout below 360px | FIXED |
+| Manual screenshot evidence | Still requires authenticated browser capture | NOT TESTED |
+
+No broad redesign, route replacement, gateway removal, or inactive service-module activation was performed.

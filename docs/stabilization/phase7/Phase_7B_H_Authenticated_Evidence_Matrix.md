@@ -28,3 +28,16 @@ No new screenshots were produced in Phase 7B-H.
 Reason:
 
 No authenticated browser automation/session was available from this execution environment, and local background service start was blocked before browser testing could begin.
+
+## Phase 7C-A continuity note
+
+Phase 7C-A did not produce new authenticated browser evidence.
+
+It added automated Flutter coverage for:
+
+- onboarding six-step preservation;
+- onboarding Continue/Skip/final dashboard actions;
+- role gateway narrative rendering;
+- provider analytics 320px overflow regression.
+
+Manual authenticated screenshots remain required before Phase 7C-A can be classified complete.
