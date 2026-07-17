@@ -20,7 +20,7 @@ describe('Auth API (e2e)', () => {
     'admin@test.com',
     'citizen@test.com',
     'provider@test.com',
-    'provider1@fixzone.ng',
+    'provider1-auth@test.com',
     'provider2-auth@test.com',
     'provider2-suspended@test.com',
     'provider-new-auth@test.com',
@@ -33,6 +33,16 @@ describe('Auth API (e2e)', () => {
   ];
 
   const authFixturePhones = ['+2348000000001', '+2348000000999'];
+  const authFixtureProviderIds = [
+    'PRV-AUTH-MISMATCH-001',
+    'PRV-AUTH-MISMATCH-002',
+    'PRV-AUTH-SUSPENDED',
+    'PRV-AUTH-001',
+    'PRV-AUTH-002',
+    'PRV-AUTH-003',
+    'PRV-AUTH-DEMO-001',
+    'PRV-AUTH-RESET',
+  ];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -76,6 +86,7 @@ describe('Auth API (e2e)', () => {
         OR: [
           { email: { in: authFixtureEmails } },
           { phone: { in: authFixturePhones } },
+          { providerId: { in: authFixtureProviderIds } },
         ],
       },
       select: { id: true },
@@ -129,6 +140,7 @@ describe('Auth API (e2e)', () => {
         OR: [
           { email: { in: authFixtureEmails } },
           { phone: { in: authFixturePhones } },
+          { providerId: { in: authFixtureProviderIds } },
         ],
       },
     });
@@ -266,7 +278,7 @@ describe('Auth API (e2e)', () => {
         email: 'provider2-auth@test.com',
         passwordHash,
         role: 'PROVIDER',
-        providerId: 'PRV-2024-002',
+        providerId: 'PRV-AUTH-MISMATCH-002',
         organizationId: adminOrganizationId,
       },
     });
@@ -276,7 +288,7 @@ describe('Auth API (e2e)', () => {
       .send({
         email: 'provider2-auth@test.com',
         password: 'Password123!',
-        providerId: 'PRV-2024-001',
+        providerId: 'PRV-AUTH-MISMATCH-001',
       });
 
     expect(res.status).toBe(401);
@@ -294,7 +306,7 @@ describe('Auth API (e2e)', () => {
           email: 'provider2-auth@test.com',
           passwordHash,
           role: 'PROVIDER',
-          providerId: 'PRV-2024-002',
+          providerId: 'PRV-AUTH-MISMATCH-002',
           organizationId: adminOrganizationId,
         },
       });
@@ -305,12 +317,12 @@ describe('Auth API (e2e)', () => {
       .send({
         email: 'provider2-auth@test.com',
         password: 'Password123!',
-        providerId: 'PRV-2024-002',
+        providerId: 'PRV-AUTH-MISMATCH-002',
       });
 
     expect(res.status).toBe(201);
     expect(res.body.accessToken).toBeDefined();
-    expect(res.body.user.providerId).toBe('PRV-2024-002');
+    expect(res.body.user.providerId).toBe('PRV-AUTH-MISMATCH-002');
   });
 
   it('blocks suspended provider login', async () => {
@@ -321,7 +333,7 @@ describe('Auth API (e2e)', () => {
         email: 'provider2-suspended@test.com',
         passwordHash,
         role: 'PROVIDER',
-        providerId: 'PRV-2024-099',
+        providerId: 'PRV-AUTH-SUSPENDED',
         accountStatus: 'SUSPENDED',
         organizationId: adminOrganizationId,
       },
@@ -332,7 +344,7 @@ describe('Auth API (e2e)', () => {
       .send({
         email: 'provider2-suspended@test.com',
         password: 'Password123!',
-        providerId: 'PRV-2024-099',
+        providerId: 'PRV-AUTH-SUSPENDED',
       });
 
     expect(res.status).toBe(401);
@@ -391,23 +403,23 @@ describe('Auth API (e2e)', () => {
     }
   });
 
-  it('allows documented provider1 demo credentials by email or provider ID', async () => {
+  it('allows provider demo-style credentials by email or provider ID', async () => {
     const passwordHash = await bcrypt.hash('Password123!', 10);
     await prisma.user.upsert({
-      where: { email: 'provider1@fixzone.ng' },
+      where: { email: 'provider1-auth@test.com' },
       update: {
         passwordHash,
         role: 'PROVIDER',
-        providerId: 'PRV-2024-001',
+        providerId: 'PRV-AUTH-DEMO-001',
         accountStatus: 'ACTIVE',
         organizationId: adminOrganizationId,
       },
       create: {
         fullName: 'Demo Provider One',
-        email: 'provider1@fixzone.ng',
+        email: 'provider1-auth@test.com',
         passwordHash,
         role: 'PROVIDER',
-        providerId: 'PRV-2024-001',
+        providerId: 'PRV-AUTH-DEMO-001',
         accountStatus: 'ACTIVE',
         organizationId: adminOrganizationId,
       },
@@ -416,24 +428,24 @@ describe('Auth API (e2e)', () => {
     const emailLogin = await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({
-        email: 'provider1@fixzone.ng',
+        email: 'provider1-auth@test.com',
         password: 'Password123!',
       });
 
     expect(emailLogin.status).toBe(201);
     expect(emailLogin.body.user.role).toBe('PROVIDER');
-    expect(emailLogin.body.user.providerId).toBe('PRV-2024-001');
+    expect(emailLogin.body.user.providerId).toBe('PRV-AUTH-DEMO-001');
 
     const providerIdLogin = await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({
-        providerId: 'PRV-2024-001',
+        providerId: 'PRV-AUTH-DEMO-001',
         password: 'Password123!',
       });
 
     expect(providerIdLogin.status).toBe(201);
-    expect(providerIdLogin.body.user.email).toBe('provider1@fixzone.ng');
-    expect(providerIdLogin.body.user.providerId).toBe('PRV-2024-001');
+    expect(providerIdLogin.body.user.email).toBe('provider1-auth@test.com');
+    expect(providerIdLogin.body.user.providerId).toBe('PRV-AUTH-DEMO-001');
   });
 
   it('newly registered provider can log in and never stores plaintext password', async () => {
