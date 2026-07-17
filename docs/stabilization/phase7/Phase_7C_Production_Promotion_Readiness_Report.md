@@ -146,3 +146,38 @@ Remaining security-audit findings:
 Updated readiness:
 
 The local build/test/release validation blocker is resolved. The maximum recommendation remains **GO WITH CONDITIONS** because production backup verification, restore-test evidence, production DB migration pre-flight, environment readiness, approved deployment window, approved smoke-test accounts, and authorized deployment execution are still required before promotion.
+
+## Phase 7C-D Update: Security Triage and Preflight Evidence
+
+Date: 2026-07-17
+
+Result: **READY WITH CONDITIONS**
+
+Phase 7C-D completed documentation-only dependency-security triage and production preflight evidence planning. No dependency changes, runtime source changes, production access, deployment, production migration execution, Dokploy changes, DNS/SSL/secret changes, Firebase production setting changes, branch merges, or tag movement occurred.
+
+Evidence documents:
+
+- `docs/stabilization/phase7/Phase_7C_Dependency_Security_Triage.md`
+- `docs/stabilization/phase7/Phase_7C_Production_Preflight_Evidence_Checklist.md`
+
+Security triage summary:
+
+- `npm audit --omit=dev`: 25 production-tree findings: 1 critical, 12 high, 12 moderate.
+- `npm audit`: 35 total findings: 1 critical, 13 high, 20 moderate, 1 low.
+- Critical finding: `websocket-driver@0.7.4`, via `firebase-admin -> @firebase/database-compat -> @firebase/database -> faye-websocket -> websocket-driver`.
+- Reachability conclusion: **LOW PRACTICAL EXPOSURE** for the current Nest production runtime. The vulnerable Realtime Database/WebSocket chain is present in dependencies, but the audited production app does not import `firebase-admin`, does not call Firebase Realtime Database, and does not route public API input into `websocket-driver`.
+- Recommended action: do not make unapproved dependency changes in this tranche; require explicit risk acceptance for this deployment authorization phase and schedule a separate dependency remediation tranche.
+
+Production evidence status:
+
+- Recent production backup: **EVIDENCE REQUIRED**.
+- Off-site backup replication: **EVIDENCE REQUIRED**.
+- Restore-test evidence: **EVIDENCE REQUIRED**.
+- Production DB migration status: **EVIDENCE REQUIRED**.
+- Environment readiness: **EVIDENCE REQUIRED**.
+- Smoke-test accounts: **EVIDENCE REQUIRED**.
+- Monitoring/rollback owners: **EVIDENCE REQUIRED**.
+
+Updated recommendation:
+
+The release candidate may proceed to a controlled deployment-authorization review as **READY WITH CONDITIONS** only after the missing production evidence is supplied and the dependency-risk disposition is accepted. It is not cleared for deployment execution in this document.

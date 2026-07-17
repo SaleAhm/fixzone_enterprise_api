@@ -285,3 +285,31 @@ The remaining production conditions are operational, not local-build blockers:
 Security note:
 
 The dependency audit remains open. `npm audit --omit=dev` reports 25 production-tree findings, and the full audit reports 35 findings including 1 critical transitive `websocket-driver` finding. No audit fix was run in this tranche; address dependency remediation in a separate approved security tranche.
+
+## Phase 7C-D Preflight Evidence Update
+
+Date: 2026-07-17
+
+Phase 7C-D did not execute production commands or migrations. It produced the deployment-authorization evidence checklist at:
+
+`docs/stabilization/phase7/Phase_7C_Production_Preflight_Evidence_Checklist.md`
+
+Migration readiness remains conditional:
+
+- Local backend build/test validation is complete.
+- The Phase 7B migration remains additive and unchanged.
+- Production migration execution is not authorized until backup, restore-test, migration-status, disk, connection, lock, environment, rollback, and smoke-test evidence are provided.
+
+Deployment-time ordering remains:
+
+1. Verify production backup and restore-test evidence.
+2. Capture production migration status.
+3. Confirm backend revision `8ac1fe609ccabe82ddea2ba4235d68ef37af6e5c`.
+4. Decide maintenance/traffic control.
+5. Run `npx prisma migrate deploy` only during an authorized deployment window.
+6. Capture migration logs and schema verification.
+7. Activate backend and verify health.
+8. Run smoke-test gate.
+9. Promote Flutter only after backend readiness.
+
+Recommendation: **READY WITH CONDITIONS** for deployment authorization review, not deployment execution.
