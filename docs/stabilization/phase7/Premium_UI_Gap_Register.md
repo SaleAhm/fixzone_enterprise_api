@@ -74,3 +74,15 @@ Record for future work only:
 ## Classification
 
 `PLANNING ONLY — DO NOT START BROAD REDESIGN UNTIL PARITY IS CLOSED`
+
+## Phase 7B-H update
+
+No broad premium redesign was started.
+
+The following remain required before UI polishing begins:
+
+1. authenticated provider browser retest;
+2. citizen notification browser evidence;
+3. role navigation browser spot-checks;
+4. stable-production/current-local screenshot matrix;
+5. final confirmation that no stable-production capability has been visually hidden or functionally reduced.

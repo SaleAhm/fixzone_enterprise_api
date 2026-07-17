@@ -79,9 +79,21 @@ No provider-login source change was made.
 
 ## Remaining verification
 
-The local HTTP server background-start command was blocked by shell policy in this execution, so browser retest and direct HTTP login retest remain required.
+The local HTTP server background-start command was blocked by shell policy in the prior execution. In Phase 7B-H, a local Nest test harness verified the backend authentication path without starting production services or touching production data.
 
-Required manual retest:
+Verified through local backend harness:
+
+- email + Provider ID login for `provider1@fixzone.ng` returned HTTP `201`;
+- Provider ID-only login for `PRV-2024-001` returned HTTP `201`;
+- returned role was `PROVIDER`;
+- returned Provider ID was `PRV-2024-001`;
+- organization ID was present;
+- `/api/auth/me` preserved `PROVIDER` and `PRV-2024-001`;
+- invalid password returned HTTP `401` with `Incorrect password`.
+
+Browser retest remains required.
+
+Required manual browser retest:
 
 1. Start local backend and Flutter web.
 2. Log in with `provider1@fixzone.ng` + approved local password.

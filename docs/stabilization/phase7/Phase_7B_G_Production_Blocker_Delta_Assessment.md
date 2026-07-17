@@ -53,3 +53,21 @@ Do not authorize production release solely from Phase 7B-G. Complete:
 2. full Phase 7B-F authenticated role walkthrough;
 3. stable-production/current-local parity screenshot matrix;
 4. targeted fixes for any reproduced parity regression.
+
+## Phase 7B-H blocker delta
+
+Resolved or reduced:
+
+- Provider baseline is locally repaired and stayed intact after full backend validation.
+- Backend provider login is verified through local API harness.
+- Provider ID synchronization is verified at DB, auth response, and `/auth/me` levels.
+- Backup UI truthfulness is source-verified.
+
+Still blocking closure:
+
+- No authenticated Flutter browser session was available.
+- No screenshot evidence was produced.
+- Provider dashboard/job flow was not browser-tested.
+- Citizen notification deep-link/back-navigation was not browser-tested.
+- Timeline/progress parity was not browser-tested.
+- Stable-production authenticated parity remains unavailable because production login is prohibited.

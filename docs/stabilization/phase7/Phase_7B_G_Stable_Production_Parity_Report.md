@@ -92,3 +92,28 @@ Proceed only with narrow parity remediation:
 1. keep the local demo seed state repaired for provider authentication retest;
 2. keep backup/download/restore UI truthful and governance-controlled;
 3. complete the missing authenticated browser closure matrix before production release classification changes.
+
+## Phase 7B-H targeted retest update
+
+Phase 7B-H reconfirmed the local provider baseline through read-only database inspection and a local Nest test harness.
+
+Verified locally:
+
+- `provider1@fixzone.ng` exists.
+- Canonical Provider ID is `PRV-2024-001`.
+- six demo providers have populated `PRV-2024-*` identifiers.
+- six active provider-organization links exist.
+- existing reports remain present.
+- `PRV-AUTH-*` test fixtures are not persisted after tests.
+- provider email login and Provider ID-only login succeed through the backend API.
+- `/auth/me` returns `PROVIDER` and `PRV-2024-001`.
+
+Still not verified:
+
+- authenticated browser walkthrough;
+- screenshot evidence;
+- browser back-navigation;
+- Flutter route refresh behaviour;
+- stable-production authenticated comparison.
+
+Classification remains evidence-limited until browser verification is available.
