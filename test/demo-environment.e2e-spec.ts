@@ -28,6 +28,10 @@ describe('Demo Environment Platform Tools (e2e)', () => {
     jwtService = moduleFixture.get(JwtService);
   });
 
+  beforeEach(async () => {
+    await cleanupDemoData();
+  });
+
   afterEach(async () => {
     await cleanupDemoData();
 

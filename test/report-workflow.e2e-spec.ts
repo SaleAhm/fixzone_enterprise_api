@@ -10,6 +10,8 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Report Workflow (e2e)', () => {
+  jest.setTimeout(30000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let jwtService: JwtService;

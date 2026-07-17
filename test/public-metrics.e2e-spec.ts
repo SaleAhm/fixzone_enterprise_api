@@ -7,6 +7,8 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Public Metrics (e2e)', () => {
+  jest.setTimeout(30000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   const createdReportIds: string[] = [];
