@@ -1,7 +1,17 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
-import { AccountStatus, Prisma, UserRole } from '@prisma/client';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  AccountStatus,
+  InvitationStatus,
+  Prisma,
+  UserRole,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
 type JwtUser = {
@@ -9,6 +19,8 @@ type JwtUser = {
   userId?: string;
   sub?: string;
   email?: string | null;
+  phone?: string | null;
+  fullName?: string | null;
   role: UserRole;
   organizationId?: string | null;
 };
@@ -35,11 +47,13 @@ export class UsersService {
   }
 
   async getInvitations(user: JwtUser) {
-    return this.prisma.invitation.findMany({
+    const invitations = await this.prisma.invitation.findMany({
       where: this.buildInvitationScope(user),
       orderBy: { createdAt: 'desc' },
       take: 100,
+      include: this.invitationInclude(),
     });
+    return invitations.map((invitation) => this.serializeInvitation(invitation));
   }
 
   async getUser(id: string, user: JwtUser) {
@@ -180,7 +194,7 @@ export class UsersService {
     };
   }
 
-  async resendInvitation(id: string, user: JwtUser) {
+  async resendUserInvitation(id: string, user: JwtUser) {
     const existing = await this.getUser(id, user);
     if (
       existing.role === UserRole.SUPER_ADMIN &&
@@ -201,7 +215,7 @@ export class UsersService {
     return {
       user: existing,
       message:
-        'Invitation recorded. Email/SMS delivery can be connected to the notification provider.',
+        'Legacy invitation reminder recorded. Email/SMS delivery is not configured locally.',
     };
   }
 
@@ -210,7 +224,7 @@ export class UsersService {
     const actorId = user.id ?? user.userId ?? user.sub;
     if (!actorId) throw new ForbiddenException('Actor missing');
 
-    if (role === UserRole.SUPER_ADMIN || role === UserRole.PENDING_PROVIDER) {
+    if (role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('This role cannot be invited');
     }
     if (user.role !== UserRole.SUPER_ADMIN && role === UserRole.ORG_ADMIN) {
@@ -232,6 +246,16 @@ export class UsersService {
       throw new ForbiddenException('Email or phone is required');
     }
 
+    const organization = organizationId
+      ? await this.prisma.organization.findUnique({
+          where: { id: organizationId },
+          select: { id: true, name: true },
+        })
+      : null;
+    if (organizationId && !organization) {
+      throw new ForbiddenException('Organization not found');
+    }
+
     const duplicateFilters = [
       email ? { email } : null,
       phone ? { phone } : null,
@@ -240,86 +264,314 @@ export class UsersService {
     );
     const existing = await this.prisma.user.findFirst({
       where: { OR: duplicateFilters },
-    });
-    if (existing) throw new ForbiddenException('User already exists');
-
-    const temporaryPassword =
-      typeof dto.temporaryPassword === 'string' &&
-      dto.temporaryPassword.trim().length >= 8
-        ? dto.temporaryPassword.trim()
-        : `FixZone-${randomUUID().slice(0, 8)}!`;
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
-
-    const invitedUser = await this.prisma.user.create({
-      data: {
-        fullName,
-        email,
-        phone,
-        role,
-        accountStatus: AccountStatus.PENDING_INVITE,
-        passwordHash,
-        organizationId,
+      select: {
+        id: true,
+        role: true,
+        accountStatus: true,
+        organizationId: true,
+        email: true,
+        phone: true,
       },
-      select: this.adminUserSelect(),
     });
+    if (
+      existing &&
+      organizationId &&
+      existing.organizationId === organizationId &&
+      existing.role === role &&
+      existing.accountStatus !== AccountStatus.DEACTIVATED
+    ) {
+      throw new ConflictException('User is already a member with this role');
+    }
 
+    const activeDuplicate = await this.prisma.invitation.findFirst({
+      where: {
+        status: InvitationStatus.PENDING,
+        organizationId,
+        role,
+        OR: duplicateFilters,
+        expiresAt: { gt: new Date() },
+      },
+    });
+    if (activeDuplicate) {
+      throw new ConflictException('A pending invitation already exists');
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = this.hashToken(token);
     const invitation = await this.prisma.invitation.create({
       data: {
         fullName,
         email,
         phone,
         role,
-        temporaryPasswordHash: passwordHash,
         inviteCode: `INV-${randomUUID().slice(0, 10).toUpperCase()}`,
         organizationId,
         invitedById: actorId,
-        acceptedUserId: invitedUser.id,
+        tokenHash,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         metadata: {
-          createdUserId: invitedUser.id,
-          delivery: 'MANUAL',
+          delivery: 'EMAIL_NOT_CONFIGURED',
+          tokenPreview: token.slice(0, 6),
+          existingUserId: existing?.id ?? null,
         },
       },
+      include: this.invitationInclude(),
     });
 
+    if (existing) {
+      await this.createNotification({
+        userId: existing.id,
+        type: 'ORGANIZATION_INVITATION_RECEIVED',
+        title: 'Organization invitation received',
+        message: `${organization?.name ?? 'SecureZone'} invited you as ${this.humanRole(role)}.`,
+      });
+    }
+
     await this.audit('User Invited', user, {
-      targetUserId: invitedUser.id,
       invitationId: invitation.id,
       role,
       organizationId,
+      invitedEmail: email,
+      invitedPhone: phone,
+      existingUserId: existing?.id ?? null,
     });
 
     return {
-      user: invitedUser,
-      invitation,
-      temporaryPassword,
-      message: 'Invitation generated successfully.',
+      invitation: this.serializeInvitation(invitation),
+      delivery: {
+        status: 'EMAIL_NOT_CONFIGURED',
+        message:
+          'Invitation created. Email delivery is not configured in this environment, but the invitee can see it after signing in with the invited email or phone.',
+      },
+      message: 'Invitation created. Email delivery is pending configuration.',
     };
   }
 
   async revokeInvitation(id: string, user: JwtUser) {
     const invitation = await this.prisma.invitation.findFirst({
       where: { id, ...this.buildInvitationScope(user) },
+      include: this.invitationInclude(),
     });
     if (!invitation) throw new ForbiddenException('Invitation not found');
+    if (invitation.status !== InvitationStatus.PENDING) {
+      throw new ConflictException('Only pending invitations can be revoked');
+    }
 
     const revoked = await this.prisma.invitation.update({
       where: { id },
-      data: { status: 'REVOKED', revokedAt: new Date() },
+      data: { status: InvitationStatus.REVOKED, revokedAt: new Date() },
+      include: this.invitationInclude(),
     });
 
-    if (invitation.acceptedUserId) {
-      await this.prisma.user.update({
-        where: { id: invitation.acceptedUserId },
-        data: { accountStatus: AccountStatus.DEACTIVATED },
-      });
-    }
+    await this.notifyInvitedIdentity(invitation, {
+      type: 'ORGANIZATION_INVITATION_REVOKED',
+      title: 'Organization invitation revoked',
+      message: `${invitation.organization?.name ?? 'An organization'} revoked an invitation.`,
+    });
 
     await this.audit('Invitation Revoked', user, {
       invitationId: id,
       role: invitation.role,
     });
-    return revoked;
+    return this.serializeInvitation(revoked);
+  }
+
+  async resendInvitation(id: string, user: JwtUser) {
+    const invitation = await this.prisma.invitation.findFirst({
+      where: { id, ...this.buildInvitationScope(user) },
+      include: this.invitationInclude(),
+    });
+    if (!invitation) throw new ForbiddenException('Invitation not found');
+    if (invitation.status !== InvitationStatus.PENDING) {
+      throw new ConflictException('Only pending invitations can be resent');
+    }
+    if (invitation.expiresAt && invitation.expiresAt <= new Date()) {
+      await this.markInvitationExpired(invitation.id);
+      throw new ConflictException('Invitation has expired');
+    }
+    const updated = await this.prisma.invitation.update({
+      where: { id },
+      data: {
+        resentAt: new Date(),
+        lastNotificationAt: new Date(),
+        metadata: {
+          ...this.objectMetadata(invitation.metadata),
+          delivery: 'EMAIL_NOT_CONFIGURED',
+          resendCount:
+            Number(this.objectMetadata(invitation.metadata).resendCount ?? 0) +
+            1,
+        },
+      },
+      include: this.invitationInclude(),
+    });
+    await this.notifyInvitedIdentity(invitation, {
+      type: 'ORGANIZATION_INVITATION_RECEIVED',
+      title: 'Organization invitation reminder',
+      message: `${invitation.organization?.name ?? 'SecureZone'} reminded you about a pending ${this.humanRole(invitation.role)} invitation.`,
+    });
+    await this.audit('Invitation Resent', user, {
+      invitationId: id,
+      role: invitation.role,
+    });
+    return {
+      invitation: this.serializeInvitation(updated),
+      delivery: {
+        status: 'EMAIL_NOT_CONFIGURED',
+        message:
+          'Invitation reminder recorded. Email delivery is not configured locally.',
+      },
+    };
+  }
+
+  async getMyInvitations(user: JwtUser) {
+    const filters = this.inviteeFilters(user);
+    if (filters.length === 0) return [];
+    const invitations = await this.prisma.invitation.findMany({
+      where: {
+        status: InvitationStatus.PENDING,
+        OR: filters,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: this.invitationInclude(),
+    });
+    const now = new Date();
+    const expiredIds = invitations
+      .filter((invitation) => invitation.expiresAt && invitation.expiresAt <= now)
+      .map((invitation) => invitation.id);
+    if (expiredIds.length) {
+      await this.prisma.invitation.updateMany({
+        where: { id: { in: expiredIds } },
+        data: { status: InvitationStatus.EXPIRED },
+      });
+    }
+    return invitations
+      .filter((invitation) => !expiredIds.includes(invitation.id))
+      .map((invitation) => this.serializeInvitation(invitation));
+  }
+
+  async acceptInvitation(id: string, user: JwtUser) {
+    const actorId = user.id ?? user.userId ?? user.sub;
+    if (!actorId) throw new ForbiddenException('Actor missing');
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { id },
+      include: this.invitationInclude(),
+    });
+    if (!invitation) throw new NotFoundException('Invitation not found');
+    this.assertInviteeMatches(invitation, user);
+    if (invitation.status !== InvitationStatus.PENDING) {
+      throw new ConflictException('Invitation is no longer pending');
+    }
+    if (invitation.expiresAt && invitation.expiresAt <= new Date()) {
+      await this.markInvitationExpired(invitation.id);
+      throw new ConflictException('Invitation has expired');
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const currentUser = await tx.user.findUniqueOrThrow({
+        where: { id: actorId },
+        select: {
+          id: true,
+          role: true,
+          organizationId: true,
+          accountStatus: true,
+        },
+      });
+      const data: Prisma.UserUpdateInput = {
+        accountStatus:
+          currentUser.accountStatus === AccountStatus.SUSPENDED
+            ? AccountStatus.SUSPENDED
+            : AccountStatus.ACTIVE,
+      };
+      if (invitation.organizationId) {
+        data.organization = { connect: { id: invitation.organizationId } };
+      }
+      if (currentUser.role !== UserRole.SUPER_ADMIN) {
+        data.role = invitation.role;
+      }
+      const acceptedUser = await tx.user.update({
+        where: { id: actorId },
+        data,
+        select: this.adminUserSelect(),
+      });
+      if (
+        invitation.role === UserRole.PROVIDER &&
+        invitation.organizationId
+      ) {
+        await tx.providerOrganization.upsert({
+          where: {
+            providerId_organizationId: {
+              providerId: actorId,
+              organizationId: invitation.organizationId,
+            },
+          },
+          update: { active: true, isPrimary: true },
+          create: {
+            providerId: actorId,
+            organizationId: invitation.organizationId,
+            active: true,
+            isPrimary: true,
+          },
+        });
+      }
+      return tx.invitation.update({
+        where: { id },
+        data: {
+          status: InvitationStatus.ACCEPTED,
+          acceptedAt: new Date(),
+          acceptedUserId: actorId,
+          metadata: {
+            ...this.objectMetadata(invitation.metadata),
+            acceptedUserRole: acceptedUser.role,
+          },
+        },
+        include: this.invitationInclude(),
+      });
+    });
+
+    await this.createNotification({
+      userId: invitation.invitedById,
+      type: 'ORGANIZATION_INVITATION_ACCEPTED',
+      title: 'Invitation accepted',
+      message: `${user.fullName ?? invitation.fullName} accepted the ${this.humanRole(invitation.role)} invitation.`,
+    });
+    await this.audit('Invitation Accepted', user, {
+      invitationId: id,
+      role: invitation.role,
+      organizationId: invitation.organizationId,
+    });
+    return this.serializeInvitation(updated);
+  }
+
+  async declineInvitation(id: string, user: JwtUser) {
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { id },
+      include: this.invitationInclude(),
+    });
+    if (!invitation) throw new NotFoundException('Invitation not found');
+    this.assertInviteeMatches(invitation, user);
+    if (invitation.status !== InvitationStatus.PENDING) {
+      throw new ConflictException('Invitation is no longer pending');
+    }
+    const updated = await this.prisma.invitation.update({
+      where: { id },
+      data: {
+        status: InvitationStatus.DECLINED,
+        declinedAt: new Date(),
+      },
+      include: this.invitationInclude(),
+    });
+    await this.createNotification({
+      userId: invitation.invitedById,
+      type: 'ORGANIZATION_INVITATION_DECLINED',
+      title: 'Invitation declined',
+      message: `${user.fullName ?? invitation.fullName} declined the ${this.humanRole(invitation.role)} invitation.`,
+    });
+    await this.audit('Invitation Declined', user, {
+      invitationId: id,
+      role: invitation.role,
+      organizationId: invitation.organizationId,
+    });
+    return this.serializeInvitation(updated);
   }
 
   async approveProviderRequest(id: string, user: JwtUser) {
@@ -429,6 +681,135 @@ export class UsersService {
       throw new ForbiddenException('No organization assigned');
     }
     return user.organizationId;
+  }
+
+  private inviteeFilters(user: JwtUser) {
+    const filters: Array<{ email: string } | { phone: string }> = [];
+    const email = user.email?.toLowerCase().trim();
+    const phone = user.phone?.trim();
+    if (email) filters.push({ email });
+    if (phone) filters.push({ phone });
+    return filters;
+  }
+
+  private assertInviteeMatches(
+    invitation: {
+      email: string | null;
+      phone: string | null;
+    },
+    user: JwtUser,
+  ) {
+    const emailMatches =
+      invitation.email &&
+      user.email &&
+      invitation.email.toLowerCase() === user.email.toLowerCase();
+    const phoneMatches =
+      invitation.phone && user.phone && invitation.phone === user.phone;
+    if (!emailMatches && !phoneMatches) {
+      throw new ForbiddenException('Invitation is not assigned to this account');
+    }
+  }
+
+  private async markInvitationExpired(id: string) {
+    await this.prisma.invitation.update({
+      where: { id },
+      data: { status: InvitationStatus.EXPIRED },
+    });
+  }
+
+  private hashToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private objectMetadata(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  private invitationInclude() {
+    return {
+      organization: { select: { id: true, name: true, type: true } },
+      invitedBy: { select: { id: true, fullName: true, role: true } },
+      acceptedUser: { select: { id: true, fullName: true, role: true } },
+    };
+  }
+
+  private serializeInvitation(invitation: any) {
+    const metadata = this.objectMetadata(invitation.metadata);
+    const now = new Date();
+    const expired =
+      invitation.status === InvitationStatus.PENDING &&
+      invitation.expiresAt &&
+      invitation.expiresAt <= now;
+    return {
+      id: invitation.id,
+      inviteCode: invitation.inviteCode,
+      email: invitation.email,
+      phone: invitation.phone,
+      fullName: invitation.fullName,
+      role: invitation.role,
+      status: expired ? InvitationStatus.EXPIRED : invitation.status,
+      organizationId: invitation.organizationId,
+      organization: invitation.organization,
+      invitedBy: invitation.invitedBy,
+      acceptedUser: invitation.acceptedUser,
+      expiresAt: invitation.expiresAt,
+      acceptedAt: invitation.acceptedAt,
+      declinedAt: invitation.declinedAt,
+      revokedAt: invitation.revokedAt,
+      resentAt: invitation.resentAt,
+      createdAt: invitation.createdAt,
+      updatedAt: invitation.updatedAt,
+      deliveryStatus: metadata.delivery ?? 'EMAIL_NOT_CONFIGURED',
+      emailDeliveryConfigured: false,
+    };
+  }
+
+  private async notifyInvitedIdentity(
+    invitation: {
+      email: string | null;
+      phone: string | null;
+    },
+    notification: { type: string; title: string; message: string },
+  ) {
+    const filters = [
+      invitation.email ? { email: invitation.email } : null,
+      invitation.phone ? { phone: invitation.phone } : null,
+    ].filter(
+      (value): value is { email: string } | { phone: string } => value !== null,
+    );
+    if (!filters.length) return;
+    const user = await this.prisma.user.findFirst({
+      where: { OR: filters },
+      select: { id: true },
+    });
+    if (!user) return;
+    await this.createNotification({ userId: user.id, ...notification });
+  }
+
+  private async createNotification(data: {
+    userId: string;
+    type: string;
+    title: string;
+    message: string;
+  }) {
+    await this.prisma.notification.create({
+      data: {
+        userId: data.userId,
+        type: data.type,
+        title: data.title,
+        message: data.message,
+      },
+    });
+  }
+
+  private humanRole(role: UserRole) {
+    return role
+      .toLowerCase()
+      .split('_')
+      .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
+      .join(' ');
   }
 
   private adminUserSelect() {

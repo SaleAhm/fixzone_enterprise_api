@@ -524,7 +524,18 @@ describe('Auth API (e2e)', () => {
     expect(login.body.user.role).toBe('PROVIDER');
   });
 
-  it('admin-created provider can log in after password reset activation', async () => {
+  it('invited provider can view and accept organization invitation', async () => {
+    const inviteePasswordHash = await bcrypt.hash('InviteePassword123!', 10);
+    const invitee = await prisma.user.create({
+      data: {
+        fullName: 'Provider Invited Reset Auth',
+        email: 'provider-invited-reset-auth@test.com',
+        passwordHash: inviteePasswordHash,
+        role: 'CITIZEN',
+        accountStatus: 'ACTIVE',
+      },
+    });
+
     const invite = await request(app.getHttpServer())
       .post('/api/users/admin/invitations')
       .set('Authorization', `Bearer ${adminToken}`)
@@ -532,30 +543,51 @@ describe('Auth API (e2e)', () => {
         fullName: 'Provider Invited Reset Auth',
         email: 'provider-invited-reset-auth@test.com',
         role: 'PROVIDER',
-        temporaryPassword: 'TempPassword123!',
         organizationId: adminOrganizationId,
       });
 
     expect(invite.status).toBe(201);
-    expect(invite.body.user.accountStatus).toBe('PENDING_INVITE');
+    expect(invite.body.invitation.status).toBe('PENDING');
+    expect(invite.body.invitation.email).toBe(
+      'provider-invited-reset-auth@test.com',
+    );
+    expect(invite.body.temporaryPassword).toBeUndefined();
 
-    const reset = await request(app.getHttpServer())
-      .post(`/api/users/admin/${invite.body.user.id}/reset-password`)
-      .set('Authorization', `Bearer ${adminToken}`)
-      .send({ password: 'ProviderReset123!' });
+    const inviteeLogin = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({
+        email: 'provider-invited-reset-auth@test.com',
+        password: 'InviteePassword123!',
+      });
 
-    expect(reset.status).toBe(201);
-    expect(reset.body.user.accountStatus).toBe('ACTIVE');
+    expect(inviteeLogin.status).toBe(201);
+
+    const mine = await request(app.getHttpServer())
+      .get('/api/users/invitations/mine')
+      .set('Authorization', `Bearer ${inviteeLogin.body.accessToken}`);
+
+    expect(mine.status).toBe(200);
+    expect(mine.body).toHaveLength(1);
+    expect(mine.body[0].id).toBe(invite.body.invitation.id);
+
+    const accept = await request(app.getHttpServer())
+      .post(`/api/users/invitations/${invite.body.invitation.id}/accept`)
+      .set('Authorization', `Bearer ${inviteeLogin.body.accessToken}`);
+
+    expect(accept.status).toBe(201);
+    expect(accept.body.status).toBe('ACCEPTED');
 
     const login = await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({
         email: 'provider-invited-reset-auth@test.com',
-        password: 'ProviderReset123!',
+        password: 'InviteePassword123!',
       });
 
     expect(login.status).toBe(201);
     expect(login.body.user.role).toBe('PROVIDER');
+    expect(login.body.user.id).toBe(invitee.id);
+    expect(login.body.user.organizationId).toBe(adminOrganizationId);
   });
 
   it('Citizen cannot access provider-or-admin route', async () => {

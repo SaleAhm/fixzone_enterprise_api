@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
@@ -279,6 +280,67 @@ export class ReportService {
       where: { reportId },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  async getReportMessages(reportId: string, user: JwtUser) {
+    await this.getReportById(reportId, user);
+    return this.prisma.reportMessage.findMany({
+      where: { reportId },
+      orderBy: { createdAt: 'asc' },
+      take: 100,
+      select: {
+        id: true,
+        reportId: true,
+        organizationId: true,
+        authorId: true,
+        authorRole: true,
+        authorName: true,
+        message: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  async createReportMessage(
+    reportId: string,
+    dto: { message?: unknown },
+    user: JwtUser,
+  ) {
+    const userId = this.getUserId(user);
+    const text = typeof dto.message === 'string' ? dto.message.trim() : '';
+    if (!text) throw new BadRequestException('Message is required');
+    if (text.length > 1200) {
+      throw new BadRequestException('Message must be 1200 characters or less');
+    }
+    const report = await this.getReportById(reportId, user);
+    const safeMessage = text.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
+    const message = await this.prisma.reportMessage.create({
+      data: {
+        reportId,
+        organizationId: report.organizationId,
+        authorId: userId,
+        authorRole: user.role,
+        authorName: user.fullName ?? null,
+        message: safeMessage,
+      },
+      select: {
+        id: true,
+        reportId: true,
+        organizationId: true,
+        authorId: true,
+        authorRole: true,
+        authorName: true,
+        message: true,
+        createdAt: true,
+      },
+    });
+    await this.recordReportActivity(reportId, 'REPORT_DISCUSSION_MESSAGE', user, {
+      organizationId: report.organizationId,
+      note: safeMessage.slice(0, 240),
+      metadata: { messageId: message.id },
+    });
+    await this.notifyReportMessageParticipants(report, userId, safeMessage);
+    return message;
   }
 
   // ===================== ASSIGN =====================
@@ -1406,6 +1468,46 @@ export class ReportService {
     const notification = (this.prisma as any).notification;
     if (!notification?.create) return;
     await notification.create({ data });
+  }
+
+  private async notifyReportMessageParticipants(
+    report: {
+      id: string;
+      title: string;
+      organizationId: string;
+      citizenId: string;
+      assignedProviderId: string | null;
+    },
+    authorId: string,
+    message: string,
+  ) {
+    const participants = new Set<string>();
+    participants.add(report.citizenId);
+    if (report.assignedProviderId) participants.add(report.assignedProviderId);
+
+    const operators = await this.prisma.user.findMany({
+      where: {
+        organizationId: report.organizationId,
+        role: { in: [UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER] },
+        accountStatus: { not: 'DEACTIVATED' },
+      },
+      select: { id: true },
+      take: 25,
+    });
+    operators.forEach((operator) => participants.add(operator.id));
+    participants.delete(authorId);
+
+    await Promise.all(
+      [...participants].map((userId) =>
+        this.createNotification({
+          userId,
+          reportId: report.id,
+          type: 'REPORT_DISCUSSION_MESSAGE',
+          title: 'New report discussion message',
+          message: `"${report.title}": ${message.slice(0, 140)}`,
+        }),
+      ),
+    );
   }
 
   private async notifyOrganizationOperators(

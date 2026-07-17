@@ -75,6 +75,40 @@ export class UsersController {
     return this.usersService.revokeInvitation(id, user);
   }
 
+  @Post('admin/invitations/:id/resend')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  resendInvitationById(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.resendInvitation(id, user);
+  }
+
+  @Get('invitations/mine')
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getMyInvitations(@CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.getMyInvitations(user);
+  }
+
+  @Post('invitations/:id/accept')
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  acceptInvitation(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.acceptInvitation(id, user);
+  }
+
+  @Post('invitations/:id/decline')
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  declineInvitation(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.declineInvitation(id, user);
+  }
+
   @Get('admin/:id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
@@ -121,11 +155,11 @@ export class UsersController {
   @Post('admin/:id/resend-invitation')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
-  resendInvitation(
+  resendUserInvitation(
     @Param('id') id: string,
     @CurrentUser() user: CurrentAuthUser,
   ) {
-    return this.usersService.resendInvitation(id, user);
+    return this.usersService.resendUserInvitation(id, user);
   }
 
   @Post('admin/:id/approve-provider')

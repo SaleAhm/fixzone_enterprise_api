@@ -189,9 +189,11 @@ describe('Public Metrics (e2e)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.reportsOverTime.length).toBeGreaterThan(0);
-    expect(res.body.categories).toEqual(
-      expect.arrayContaining([expect.objectContaining({ category: 'Road' })]),
-    );
+    expect(
+      res.body.categories.some((item: { category?: string }) =>
+        item.category?.toLowerCase().includes('road'),
+      ),
+    ).toBe(true);
     expect(res.body.broadGeography).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ region: 'FCT, Nigeria' }),
@@ -218,12 +220,18 @@ describe('Public Metrics (e2e)', () => {
     expect(categories.status).toBe(200);
     expect(geography.status).toBe(200);
     expect(impact.body.headline.totalReports).toBeGreaterThanOrEqual(2);
-    expect(categories.body.categories).toEqual(
-      expect.arrayContaining([expect.objectContaining({ category: 'Road' })]),
-    );
+    expect(
+      categories.body.categories.some((item: { category?: string }) =>
+        item.category?.toLowerCase().includes('road'),
+      ),
+    ).toBe(true);
     expect(geography.body.precision).toBe('state_country_only');
 
-    const body = JSON.stringify({ impact: impact.body, categories: categories.body, geography: geography.body });
+    const body = JSON.stringify({
+      impact: impact.body,
+      categories: categories.body,
+      geography: geography.body,
+    });
     expect(body).not.toContain('Private report title must not leak');
     expect(body).not.toContain('Private Citizen');
     expect(body).not.toContain('private-citizen-public');

@@ -80,6 +80,7 @@ enum AccountStatus {
 enum InvitationStatus {
   PENDING
   ACCEPTED
+  DECLINED
   REVOKED
   EXPIRED
 }
@@ -271,6 +272,7 @@ model User {
   disputesAgainst         DisputeCase[]          @relation("DisputeAgainstUser")
   reviewedDisputes        DisputeCase[]          @relation("DisputeClosedBy")
   disputeMessages         DisputeMessage[]
+  reportMessages          ReportMessage[]
   entitlement             UserEntitlement?
   complianceAuditLogs     ComplianceAuditLog[]   @relation("ComplianceAuditActor")
 
@@ -456,7 +458,11 @@ model Invitation {
   metadata              Json?
   expiresAt             DateTime?
   acceptedAt            DateTime?
+  declinedAt            DateTime?
   revokedAt             DateTime?
+  tokenHash             String?
+  resentAt              DateTime?
+  lastNotificationAt    DateTime?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
@@ -470,6 +476,7 @@ model Invitation {
   @@index([role])
   @@index([email])
   @@index([phone])
+  @@index([tokenHash])
   @@index([createdAt])
 }
 
@@ -538,6 +545,7 @@ model Report {
   assignedProvider User?            @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
   notifications    Notification[]
   activities       ReportActivity[]
+  messages         ReportMessage[]
 
   @@index([organizationId])
   @@index([citizenId])
@@ -546,6 +554,26 @@ model Report {
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
+}
+
+model ReportMessage {
+  id             String   @id @default(cuid())
+  reportId       String
+  organizationId String
+  authorId       String
+  authorRole     UserRole
+  authorName     String?
+  message        String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([authorId, createdAt])
 }
 
 model ReportActivity {

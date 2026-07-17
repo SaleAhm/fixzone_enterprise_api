@@ -308,6 +308,76 @@ describe('Report Workflow (e2e)', () => {
     );
   });
 
+  it('scopes report discussion messages to authorized report participants', async () => {
+    const org = await createOrganization('Workflow Discussion Org');
+    const otherOrg = await createOrganization('Workflow Discussion Other Org');
+    const admin = await createUser({
+      email: 'wf-admin-discussion@test.com',
+      fullName: 'Workflow Discussion Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-discussion@test.com',
+      fullName: 'Workflow Discussion Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-discussion@test.com',
+      fullName: 'Workflow Discussion Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherAdmin = await createUser({
+      email: 'wf-admin-discussion-other@test.com',
+      fullName: 'Workflow Discussion Other Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const report = await createReport({
+      title: 'WF discussion report',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+
+    const adminToken = await signToken(admin);
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const otherAdminToken = await signToken(otherAdmin);
+
+    const createdMessage = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ message: 'Provider has reached the site.' });
+
+    expect(createdMessage.status).toBe(201);
+    expect(createdMessage.body.message).toBe('Provider has reached the site.');
+    expect(createdMessage.body.organizationId).toBe(org.id);
+
+    const citizenMessages = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(citizenMessages.status).toBe(200);
+    expect(citizenMessages.body).toHaveLength(1);
+    expect(citizenMessages.body[0].authorRole).toBe(UserRole.PROVIDER);
+
+    const adminMessages = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(adminMessages.status).toBe(200);
+    expect(adminMessages.body).toHaveLength(1);
+
+    const forbiddenMessages = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${otherAdminToken}`);
+
+    expect(forbiddenMessages.status).toBe(403);
+  });
+
   it('persists citizen location metadata and preserves backward compatibility', async () => {
     const org = await createOrganization('Workflow Geo Org');
     const citizen = await createUser({
