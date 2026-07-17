@@ -221,3 +221,36 @@ Remaining final conditions before deployment execution:
 8. Give explicit deployment execution authorization.
 
 This review authorizes moving into a controlled deployment phase after those final conditions are satisfied. It does not authorize deployment execution by itself.
+
+## Phase 7C-F Update: Final Production Preflight
+
+Date: 2026-07-17
+
+Result: **BLOCKED**
+
+Phase 7C-F confirmed the authorized repository revisions and prepared the final execution runbook. It did not authorize deployment execution because required fresh production evidence and operational approvals were unavailable in this workspace.
+
+Created documents:
+
+- `docs/stabilization/phase7/Phase_7C_Final_Production_Preflight.md`
+- `docs/stabilization/phase7/Phase_7C_Deployment_Execution_Runbook.md`
+- `docs/stabilization/phase7/Phase_7C_Temporary_Dependency_Risk_Acceptance.md`
+
+Historical baseline remains verified:
+
+- Optimized backups, manifest/SHA256 workflow, off-site replication, restoration testing, Uptime Kuma monitoring, HPE ML30 DR state, Tailscale administration, power-recovery procedures, backup monitoring, and replication monitoring.
+
+Fresh evidence still required:
+
+- Deployment-window backup and replication evidence.
+- Manifest/SHA256 verification.
+- Restore evidence link in deployment record.
+- Read-only production database preflight.
+- Environment presence verification.
+- Dokploy read-only configuration review.
+- Owner assignments.
+- Deployment window approval.
+- Final temporary dependency risk acceptance record.
+- Explicit deployment execution authorization.
+
+No production deployment, migration, restart, environment change, secret change, DNS/SSL change, Firebase production change, database write, merge, or tag movement occurred.
