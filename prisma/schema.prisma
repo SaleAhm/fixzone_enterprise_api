@@ -91,6 +91,14 @@ enum OrganizationStatus {
   ARCHIVED
 }
 
+enum UpgradeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
 enum IdentityVerificationStatus {
   UNVERIFIED
   PHONE_VERIFIED
@@ -204,6 +212,7 @@ model Organization {
   children            Organization[]         @relation("OrganizationHierarchy")
   providerLinks       ProviderOrganization[]
   invitations         Invitation[]
+  upgradeRequests     OrganizationUpgradeRequest[]
   evidenceRecords     EvidenceRecord[]
   disputeCases        DisputeCase[]
   complianceAuditLogs ComplianceAuditLog[]
@@ -495,6 +504,30 @@ model ProviderOrganization {
   @@unique([providerId, organizationId])
   @@index([organizationId, active])
   @@index([providerId, active])
+}
+
+model OrganizationUpgradeRequest {
+  id                String               @id @default(cuid())
+  organizationId    String
+  currentPlan       SubscriptionPlan
+  requestedPlan     SubscriptionPlan
+  requestedByUserId String
+  status            UpgradeRequestStatus @default(PENDING)
+  requestNote       String?
+  reviewNote        String?
+  reviewedByUserId  String?
+  requestedAt       DateTime             @default(now())
+  reviewedAt        DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([requestedPlan])
+  @@index([requestedByUserId])
+  @@index([reviewedByUserId])
 }
 
 model Report {
