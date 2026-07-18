@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -53,7 +54,9 @@ export class UsersService {
       take: 100,
       include: this.invitationInclude(),
     });
-    return invitations.map((invitation) => this.serializeInvitation(invitation));
+    return invitations.map((invitation) =>
+      this.serializeInvitation(invitation),
+    );
   }
 
   async getUser(id: string, user: JwtUser) {
@@ -78,6 +81,27 @@ export class UsersService {
 
     const data: Prisma.UserUpdateInput = {};
     if (typeof dto.phone === 'string') data.phone = dto.phone.trim() || null;
+    if (typeof dto.email === 'string' && existing.role === UserRole.PROVIDER) {
+      const email = this.normalizeEmail(dto.email);
+      if (email) {
+        const duplicate = await this.prisma.user.findUnique({
+          where: { email },
+          select: { id: true },
+        });
+        if (duplicate && duplicate.id !== id) {
+          throw new ConflictException({
+            code: 'IDENTITY_EMAIL_CONFLICT',
+            message: 'This email already belongs to another SecureZone user.',
+          });
+        }
+        data.email = email;
+        data.emailVerifiedAt = null;
+        data.identityVerificationStatus = 'UNVERIFIED';
+      } else {
+        data.email = null;
+        data.emailVerifiedAt = null;
+      }
+    }
     if (typeof dto.fullName === 'string' && dto.fullName.trim()) {
       data.fullName = dto.fullName.trim();
     }
@@ -249,7 +273,12 @@ export class UsersService {
     const organization = organizationId
       ? await this.prisma.organization.findUnique({
           where: { id: organizationId },
-          select: { id: true, name: true },
+          select: {
+            id: true,
+            name: true,
+            allowedUsers: true,
+            allowedProviders: true,
+          },
         })
       : null;
     if (organizationId && !organization) {
@@ -271,8 +300,53 @@ export class UsersService {
         organizationId: true,
         email: true,
         phone: true,
+        fullName: true,
+        providerId: true,
       },
     });
+
+    if (existing && organizationId) {
+      const existingMembership =
+        role === UserRole.PROVIDER
+          ? await this.prisma.providerOrganization.findUnique({
+              where: {
+                providerId_organizationId: {
+                  providerId: existing.id,
+                  organizationId,
+                },
+              },
+            })
+          : null;
+      if (
+        role === UserRole.PROVIDER &&
+        existing.role === UserRole.PROVIDER &&
+        existingMembership?.active
+      ) {
+        return {
+          code: 'USER_ALREADY_MEMBER',
+          message: 'This provider already belongs to this organization.',
+          existingUser: this.existingUserSummary(existing),
+          membership: {
+            organizationId,
+            active: true,
+            isPrimary: existingMembership.isPrimary,
+          },
+        };
+      }
+      if (
+        role === UserRole.PROVIDER &&
+        existing.role === UserRole.PROVIDER &&
+        existingMembership &&
+        !existingMembership.active
+      ) {
+        throw new ConflictException({
+          code: 'MEMBERSHIP_SUSPENDED',
+          message:
+            'This provider membership exists but is suspended. Reactivate it explicitly before assigning work.',
+          existingUser: this.existingUserSummary(existing),
+        });
+      }
+    }
     if (
       existing &&
       organizationId &&
@@ -280,7 +354,12 @@ export class UsersService {
       existing.role === role &&
       existing.accountStatus !== AccountStatus.DEACTIVATED
     ) {
-      throw new ConflictException('User is already a member with this role');
+      return {
+        code: 'USER_ALREADY_MEMBER',
+        message:
+          'This user already belongs to this organization with this role.',
+        existingUser: this.existingUserSummary(existing),
+      };
     }
 
     const activeDuplicate = await this.prisma.invitation.findFirst({
@@ -293,7 +372,63 @@ export class UsersService {
       },
     });
     if (activeDuplicate) {
-      throw new ConflictException('A pending invitation already exists');
+      throw new ConflictException({
+        code: 'MEMBERSHIP_INVITATION_PENDING',
+        message: 'A pending invitation already exists.',
+      });
+    }
+
+    if (
+      existing &&
+      organizationId &&
+      role === UserRole.PROVIDER &&
+      existing.role === UserRole.PROVIDER
+    ) {
+      const confirmed =
+        dto.confirmExistingUser === true ||
+        String(dto.existingUserAction ?? '').toUpperCase() === 'ADD_MEMBERSHIP';
+      if (!confirmed) {
+        return {
+          code: 'EXISTING_USER_REQUIRES_CONFIRMATION',
+          requiresConfirmation: true,
+          message:
+            'This provider already has a SecureZone account. Confirm before adding organization membership.',
+          existingUser: this.existingUserSummary(existing),
+          organization,
+          requestedRole: role,
+        };
+      }
+      await this.enforceProviderQuota(organizationId);
+      const membership = await this.prisma.providerOrganization.create({
+        data: {
+          providerId: existing.id,
+          organizationId,
+          active: true,
+          isPrimary: existing.organizationId === organizationId,
+        },
+      });
+      await this.createNotification({
+        userId: existing.id,
+        type: 'ORGANIZATION_MEMBERSHIP_ADDED',
+        title: 'Organization membership added',
+        message: `${organization?.name ?? 'SecureZone'} added you as a provider.`,
+      });
+      await this.audit('Provider Membership Added', user, {
+        providerId: existing.id,
+        organizationId,
+        existingIdentity: true,
+      });
+      return {
+        code: 'PROVIDER_MEMBERSHIP_CREATED',
+        message: 'Existing provider added to this organization.',
+        existingUser: this.existingUserSummary(existing),
+        membership,
+      };
+    }
+
+    await this.enforceUserQuota(organizationId);
+    if (role === UserRole.PROVIDER) {
+      await this.enforceProviderQuota(organizationId);
     }
 
     const token = randomBytes(32).toString('base64url');
@@ -436,7 +571,9 @@ export class UsersService {
     });
     const now = new Date();
     const expiredIds = invitations
-      .filter((invitation) => invitation.expiresAt && invitation.expiresAt <= now)
+      .filter(
+        (invitation) => invitation.expiresAt && invitation.expiresAt <= now,
+      )
       .map((invitation) => invitation.id);
     if (expiredIds.length) {
       await this.prisma.invitation.updateMany({
@@ -482,10 +619,18 @@ export class UsersService {
             ? AccountStatus.SUSPENDED
             : AccountStatus.ACTIVE,
       };
-      if (invitation.organizationId) {
+      const providerMembershipOnly =
+        currentUser.role === UserRole.PROVIDER &&
+        invitation.role === UserRole.PROVIDER &&
+        invitation.organizationId &&
+        currentUser.organizationId !== invitation.organizationId;
+      if (invitation.organizationId && !providerMembershipOnly) {
         data.organization = { connect: { id: invitation.organizationId } };
       }
-      if (currentUser.role !== UserRole.SUPER_ADMIN) {
+      if (
+        currentUser.role !== UserRole.SUPER_ADMIN &&
+        !providerMembershipOnly
+      ) {
         data.role = invitation.role;
       }
       const acceptedUser = await tx.user.update({
@@ -493,10 +638,7 @@ export class UsersService {
         data,
         select: this.adminUserSelect(),
       });
-      if (
-        invitation.role === UserRole.PROVIDER &&
-        invitation.organizationId
-      ) {
+      if (invitation.role === UserRole.PROVIDER && invitation.organizationId) {
         await tx.providerOrganization.upsert({
           where: {
             providerId_organizationId: {
@@ -504,12 +646,15 @@ export class UsersService {
               organizationId: invitation.organizationId,
             },
           },
-          update: { active: true, isPrimary: true },
+          update: {
+            active: true,
+            isPrimary: currentUser.organizationId === invitation.organizationId,
+          },
           create: {
             providerId: actorId,
             organizationId: invitation.organizationId,
             active: true,
-            isPrimary: true,
+            isPrimary: currentUser.organizationId === invitation.organizationId,
           },
         });
       }
@@ -645,9 +790,21 @@ export class UsersService {
       throw new ForbiddenException('No organization assigned');
     }
 
-    return user.role === UserRole.SUPER_ADMIN
-      ? {}
-      : { organizationId: user.organizationId };
+    if (user.role === UserRole.SUPER_ADMIN) return {};
+    const organizationId = user.organizationId;
+    if (!organizationId)
+      throw new ForbiddenException('No organization assigned');
+    return {
+      OR: [
+        { organizationId },
+        {
+          role: UserRole.PROVIDER,
+          providerOrganizations: {
+            some: { organizationId, active: true },
+          },
+        },
+      ],
+    } satisfies Prisma.UserWhereInput;
   }
 
   private buildInvitationScope(user: JwtUser) {
@@ -706,7 +863,9 @@ export class UsersService {
     const phoneMatches =
       invitation.phone && user.phone && invitation.phone === user.phone;
     if (!emailMatches && !phoneMatches) {
-      throw new ForbiddenException('Invitation is not assigned to this account');
+      throw new ForbiddenException(
+        'Invitation is not assigned to this account',
+      );
     }
   }
 
@@ -725,6 +884,81 @@ export class UsersService {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
+  }
+
+  private normalizeEmail(value: string) {
+    const email = value.toLowerCase().trim();
+    if (!email) return null;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new BadRequestException('Enter a valid email address');
+    }
+    return email;
+  }
+
+  private existingUserSummary(existing: {
+    id: string;
+    fullName?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    role: UserRole;
+    accountStatus: AccountStatus;
+    organizationId?: string | null;
+    providerId?: string | null;
+  }) {
+    return {
+      id: existing.id,
+      fullName: existing.fullName,
+      email: existing.email,
+      phone: existing.phone,
+      role: existing.role,
+      accountStatus: existing.accountStatus,
+      organizationId: existing.organizationId,
+      providerId: existing.providerId,
+    };
+  }
+
+  private async enforceUserQuota(organizationId: string | null) {
+    if (!organizationId) return;
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { allowedUsers: true },
+    });
+    if (organization?.allowedUsers == null) return;
+    const users = await this.prisma.user.count({ where: { organizationId } });
+    if (users >= organization.allowedUsers) {
+      throw new ConflictException({
+        code: 'USER_QUOTA_EXCEEDED',
+        message: 'This organization has reached its user quota.',
+      });
+    }
+  }
+
+  private async enforceProviderQuota(organizationId: string | null) {
+    if (!organizationId) return;
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { allowedProviders: true },
+    });
+    if (organization?.allowedProviders == null) return;
+    const providers = await this.prisma.user.count({
+      where: {
+        role: UserRole.PROVIDER,
+        OR: [
+          { organizationId },
+          {
+            providerOrganizations: {
+              some: { organizationId, active: true },
+            },
+          },
+        ],
+      },
+    });
+    if (providers >= organization.allowedProviders) {
+      throw new ConflictException({
+        code: 'PROVIDER_QUOTA_EXCEEDED',
+        message: 'This organization has reached its provider quota.',
+      });
+    }
   }
 
   private invitationInclude() {
