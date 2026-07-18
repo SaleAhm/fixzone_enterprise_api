@@ -67,6 +67,8 @@ export class ReportService {
       throw new ForbiddenException('Citizen must belong to an organization');
     }
 
+    await this.enforceMonthlyReportQuota(user.organizationId);
+
     const report = await this.prisma.report.create({
       data: {
         ...dto,
@@ -220,9 +222,13 @@ export class ReportService {
     }
 
     await this.expireOverdueAssignments({ providerId: userId });
+    const organizationIds = await this.authorizedProviderOrganizationIds(user);
 
     return this.prisma.report.findMany({
-      where: { assignedProviderId: userId },
+      where: {
+        assignedProviderId: userId,
+        organizationId: { in: organizationIds },
+      },
       orderBy: { createdAt: 'desc' },
       include: this.includeRelations(),
     });
@@ -261,7 +267,12 @@ export class ReportService {
     const sameOrg =
       user.organizationId && report.organizationId === user.organizationId;
 
-    if (report.citizenId === userId || report.assignedProviderId === userId) {
+    if (report.citizenId === userId) {
+      return this.withEnterpriseReportDetails(report);
+    }
+
+    if (report.assignedProviderId === userId && this.isProvider(user)) {
+      await this.assertProviderCanAccessReport(user, report.organizationId);
       return this.withEnterpriseReportDetails(report);
     }
 
@@ -313,6 +324,9 @@ export class ReportService {
       throw new BadRequestException('Message must be 1200 characters or less');
     }
     const report = await this.getReportById(reportId, user);
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ForbiddenException('Discussion is read-only for this report');
+    }
     const safeMessage = text.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const message = await this.prisma.reportMessage.create({
       data: {
@@ -334,11 +348,16 @@ export class ReportService {
         createdAt: true,
       },
     });
-    await this.recordReportActivity(reportId, 'REPORT_DISCUSSION_MESSAGE', user, {
-      organizationId: report.organizationId,
-      note: safeMessage.slice(0, 240),
-      metadata: { messageId: message.id },
-    });
+    await this.recordReportActivity(
+      reportId,
+      'REPORT_DISCUSSION_MESSAGE',
+      user,
+      {
+        organizationId: report.organizationId,
+        note: safeMessage.slice(0, 240),
+        metadata: { messageId: message.id },
+      },
+    );
     await this.notifyReportMessageParticipants(report, userId, safeMessage);
     return message;
   }
@@ -615,6 +634,7 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
+    await this.assertProviderCanAccessReport(user, report.organizationId);
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
     }
@@ -672,6 +692,9 @@ export class ReportService {
 
     if (!report) throw new NotFoundException('Report not found');
     if (this.isProvider(user)) await this.assertActiveProvider(userId);
+    if (this.isProvider(user)) {
+      await this.assertProviderCanAccessReport(user, report.organizationId);
+    }
     if (
       this.isProvider(user) &&
       report.status === ReportStatus.ASSIGNED &&
@@ -783,6 +806,7 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
+    await this.assertProviderCanAccessReport(user, report.organizationId);
 
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
@@ -1313,6 +1337,26 @@ export class ReportService {
       : 'UNKNOWN';
   }
 
+  private async enforceMonthlyReportQuota(organizationId: string) {
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { allowedReportsPerMonth: true },
+    });
+    if (organization?.allowedReportsPerMonth == null) return;
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const reportsThisMonth = await this.prisma.report.count({
+      where: { organizationId, createdAt: { gte: monthStart } },
+    });
+    if (reportsThisMonth >= organization.allowedReportsPerMonth) {
+      throw new ConflictException({
+        code: 'REPORT_QUOTA_EXCEEDED',
+        message: 'This organization has reached its monthly report quota.',
+      });
+    }
+  }
+
   private completionLocationSourceFor(dto: {
     completionLatitude?: number | null;
     completionLongitude?: number | null;
@@ -1679,6 +1723,34 @@ export class ReportService {
     }
     if (user.accountStatus === 'SUSPENDED') {
       throw new ForbiddenException('Provider account is suspended');
+    }
+  }
+
+  private async authorizedProviderOrganizationIds(user: JwtUser) {
+    const userId = this.getUserId(user);
+    const ids = new Set<string>();
+    if (user.organizationId) ids.add(user.organizationId);
+    const linkModel = (this.prisma as any).providerOrganization;
+    if (linkModel?.findMany) {
+      const links = await linkModel.findMany({
+        where: { providerId: userId, active: true },
+        select: { organizationId: true },
+      });
+      for (const link of links as Array<{ organizationId?: string | null }>) {
+        if (link.organizationId) ids.add(link.organizationId);
+      }
+    }
+    return [...ids];
+  }
+
+  private async assertProviderCanAccessReport(
+    user: JwtUser,
+    organizationId: string,
+  ) {
+    if (!this.isProvider(user)) return;
+    const organizationIds = await this.authorizedProviderOrganizationIds(user);
+    if (!organizationIds.includes(organizationId)) {
+      throw new ForbiddenException('Provider organization access denied');
     }
   }
 
