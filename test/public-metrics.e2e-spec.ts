@@ -15,6 +15,7 @@ describe('Public Metrics (e2e)', () => {
   const createdUserIds: string[] = [];
   const createdOrgIds: string[] = [];
   const createdStoryIds: string[] = [];
+  const visitorSettingKeys: string[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -52,6 +53,12 @@ describe('Public Metrics (e2e)', () => {
         where: { id: { in: [...createdOrgIds] } },
       });
       createdOrgIds.length = 0;
+    }
+    if (visitorSettingKeys.length > 0) {
+      await prisma.platformSetting.deleteMany({
+        where: { key: { in: [...visitorSettingKeys] } },
+      });
+      visitorSettingKeys.length = 0;
     }
   });
 
@@ -270,5 +277,32 @@ describe('Public Metrics (e2e)', () => {
       expect(res.body.averageResolutionTime).toBeNull();
       expect(res.body.availability.averageResolutionTime).toBe(false);
     }
+  });
+
+  it('records aggregate visitor page views without storing personal data', async () => {
+    visitorSettingKeys.push('public.visitorAnalytics.v1');
+    await prisma.platformSetting.deleteMany({
+      where: { key: 'public.visitorAnalytics.v1' },
+    });
+
+    const first = await request(app.getHttpServer())
+      .post('/api/public/visitor-event')
+      .send({ sessionId: 'session-public-test-12345', path: '/#platform' });
+    const second = await request(app.getHttpServer())
+      .post('/api/public/visitor-event')
+      .send({ sessionId: 'session-public-test-12345', path: '/#metrics' });
+    const summary = await request(app.getHttpServer()).get(
+      '/api/public/visitor-summary',
+    );
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(summary.status).toBe(200);
+    expect(summary.body.totalPageViews).toBe(2);
+    expect(summary.body.todayPageViews).toBe(2);
+    expect(summary.body.todaySessions).toBe(1);
+    expect(summary.body.privacy).toContain('Raw IP addresses');
+    expect(JSON.stringify(summary.body)).not.toContain('userAgent');
+    expect(JSON.stringify(summary.body)).not.toContain('referrer');
   });
 });
