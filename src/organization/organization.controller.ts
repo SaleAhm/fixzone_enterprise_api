@@ -67,6 +67,33 @@ export class OrganizationController {
     return this.organizationService.getBillingOverview(user);
   }
 
+  @Get('plans/catalog')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getPlanCatalog() {
+    return this.organizationService.getPlanCatalog();
+  }
+
+  @Get('upgrade-requests')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getUpgradeRequests(@Req() req: Request) {
+    const user = req.user as RequestUser;
+    return this.organizationService.listUpgradeRequests(user);
+  }
+
+  @Post('upgrade-requests/:requestId/review')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  reviewUpgradeRequest(
+    @Param('requestId') requestId: string,
+    @Body() dto: Record<string, unknown>,
+    @Req() req: Request,
+  ) {
+    const user = req.user as RequestUser;
+    return this.organizationService.reviewUpgradeRequest(requestId, dto, user);
+  }
+
   @Get(':id')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
@@ -141,5 +168,25 @@ export class OrganizationController {
   getBilling(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getBilling(id, user);
+  }
+
+  @Get(':id/readiness')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getReadiness(@Param('id') id: string, @Req() req: Request) {
+    const user = req.user as RequestUser;
+    return this.organizationService.getReadiness(id, user);
+  }
+
+  @Post(':id/upgrade-requests')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  requestUpgrade(
+    @Param('id') id: string,
+    @Body() dto: Record<string, unknown>,
+    @Req() req: Request,
+  ) {
+    const user = req.user as RequestUser;
+    return this.organizationService.requestUpgrade(id, dto, user);
   }
 }

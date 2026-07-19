@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
 import { ReportService } from './report.service';
 
@@ -180,6 +180,114 @@ describe('ReportService workflow validators', () => {
   });
 });
 
+describe('ReportService monthly quota guard', () => {
+  it('allows reporting when monthly quota is unset', async () => {
+    const service = new ReportService({
+      organization: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ allowedReportsPerMonth: null }),
+      },
+      report: { count: jest.fn() },
+    } as any);
+
+    await expect(
+      (service as any).enforceMonthlyReportQuota('org-1'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects report creation after monthly quota is reached', async () => {
+    const service = new ReportService({
+      organization: {
+        findUnique: jest.fn().mockResolvedValue({ allowedReportsPerMonth: 2 }),
+      },
+      report: { count: jest.fn().mockResolvedValue(2) },
+    } as any);
+
+    await expect(
+      (service as any).enforceMonthlyReportQuota('org-1'),
+    ).rejects.toThrow(ConflictException);
+  });
+});
+
+describe('ReportService provider tenant access', () => {
+  it('lists only assignments from active provider organizations', async () => {
+    const service = new ReportService({
+      providerOrganization: {
+        findMany: jest.fn().mockResolvedValue([{ organizationId: 'org-b' }]),
+      },
+      report: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    } as any);
+
+    await service.getAssignedReports({
+      id: 'provider-1',
+      role: UserRole.PROVIDER,
+      organizationId: 'org-a',
+    });
+
+    expect((service as any).prisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          assignedProviderId: 'provider-1',
+          organizationId: { in: ['org-a', 'org-b'] },
+        },
+      }),
+    );
+  });
+
+  it('denies assigned provider direct access after membership is inactive', async () => {
+    const service = new ReportService({
+      providerOrganization: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      report: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'report-1',
+          citizenId: 'citizen-1',
+          assignedProviderId: 'provider-1',
+          organizationId: 'org-b',
+        }),
+      },
+    } as any);
+
+    await expect(
+      service.getReportById('report-1', {
+        id: 'provider-1',
+        role: UserRole.PROVIDER,
+        organizationId: 'org-a',
+      }),
+    ).rejects.toThrow('Provider organization access denied');
+  });
+
+  it('keeps closed report discussions read-only', async () => {
+    const service = new ReportService({
+      report: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'report-1',
+          status: ReportStatus.CLOSED,
+          citizenId: 'citizen-1',
+          assignedProviderId: null,
+          organizationId: 'org-a',
+        }),
+      },
+    } as any);
+
+    await expect(
+      service.createReportMessage(
+        'report-1',
+        { message: 'Any update?' },
+        {
+          id: 'citizen-1',
+          role: UserRole.CITIZEN,
+          organizationId: 'org-a',
+        },
+      ),
+    ).rejects.toThrow('Discussion is read-only for this report');
+  });
+});
+
 describe('ReportService assignment rejection', () => {
   const findUnique = jest.fn();
   const update = jest.fn();
@@ -232,7 +340,7 @@ describe('ReportService assignment rejection', () => {
       service.rejectAssignment(
         'report-1',
         { reason: 'Cannot continue' },
-        { id: 'provider-1', role: UserRole.PROVIDER },
+        { id: 'provider-1', role: UserRole.PROVIDER, organizationId: 'org-1' },
       ),
     ).rejects.toThrow('Only new assignments can be rejected');
   });

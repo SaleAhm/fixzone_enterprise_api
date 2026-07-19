@@ -946,7 +946,7 @@ export class TrustService {
         },
       });
       if (!report) throw new NotFoundException('Related report not found');
-      if (!this.canAccessReport(user, report)) {
+      if (!(await this.canAccessReport(user, report))) {
         throw new ForbiddenException('Report evidence is outside your scope');
       }
       return {
@@ -962,7 +962,7 @@ export class TrustService {
 
   private async listReportEvidence(user: TrustUser) {
     const reports = await this.prisma.report.findMany({
-      where: this.reportScopeWhere(user),
+      where: await this.reportScopeWhere(user),
       select: {
         id: true,
         title: true,
@@ -1016,17 +1016,27 @@ export class TrustService {
     });
   }
 
-  private reportScopeWhere(user: TrustUser): Prisma.ReportWhereInput {
+  private async reportScopeWhere(
+    user: TrustUser,
+  ): Promise<Prisma.ReportWhereInput> {
     if (user.role === UserRole.SUPER_ADMIN) return {};
     if (this.isOrgScopedAdminRole(user.role)) {
       return { organizationId: user.organizationId ?? '__none__' };
     }
+    if (user.role === UserRole.PROVIDER) {
+      const organizationIds =
+        await this.authorizedProviderOrganizationIds(user);
+      return {
+        assignedProviderId: user.id,
+        organizationId: { in: organizationIds },
+      };
+    }
     return {
-      OR: [{ citizenId: user.id }, { assignedProviderId: user.id }],
+      citizenId: user.id,
     };
   }
 
-  private canAccessReport(
+  private async canAccessReport(
     user: TrustUser,
     report: {
       citizenId: string;
@@ -1034,9 +1044,29 @@ export class TrustService {
       organizationId: string;
     },
   ) {
-    if (report.citizenId === user.id || report.assignedProviderId === user.id)
+    if (report.citizenId === user.id) {
       return true;
+    }
+    if (
+      user.role === UserRole.PROVIDER &&
+      report.assignedProviderId === user.id
+    ) {
+      const organizationIds =
+        await this.authorizedProviderOrganizationIds(user);
+      return organizationIds.includes(report.organizationId);
+    }
     return this.canAdminAccessOrganization(user, report.organizationId);
+  }
+
+  private async authorizedProviderOrganizationIds(user: TrustUser) {
+    const ids = new Set<string>();
+    if (user.organizationId) ids.add(user.organizationId);
+    const links = await this.prisma.providerOrganization.findMany({
+      where: { providerId: user.id, active: true },
+      select: { organizationId: true },
+    });
+    for (const link of links) ids.add(link.organizationId);
+    return [...ids];
   }
 
   private canAccessDispute(

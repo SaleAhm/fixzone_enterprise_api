@@ -158,6 +158,39 @@ export class ReportController {
     return this.reportService.getReportTimeline(id, user);
   }
 
+  @Get(':id/messages')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  @EnterpriseRateLimit(RateLimitTier.NotificationRead)
+  getReportMessages(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.getReportMessages(id, user);
+  }
+
+  @Post(':id/messages')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  @EnterpriseRateLimit(RateLimitTier.NotificationMutation)
+  createReportMessage(
+    @Param('id') id: string,
+    @Body() dto: { message?: unknown },
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.createReportMessage(id, dto, user);
+  }
+
   // ===================== ORGANIZATION =====================
 
   @Get()

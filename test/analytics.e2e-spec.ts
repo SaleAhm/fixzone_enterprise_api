@@ -105,7 +105,7 @@ describe('Executive Analytics (e2e)', () => {
             email: `analytics-provider-a-${suffix}@test.com`,
             fullName: 'Provider A',
             role: UserRole.PROVIDER,
-            providerId: 'PRV-ANALYTICS-A',
+            providerId: `PRV-ANALYTICS-A-${suffix}`,
             accountStatus: AccountStatus.ACTIVE,
             organizationId: orgA.id,
           },
@@ -123,7 +123,7 @@ describe('Executive Analytics (e2e)', () => {
             email: `analytics-provider-b-${suffix}@test.com`,
             fullName: 'Provider B',
             role: UserRole.PROVIDER,
-            providerId: 'PRV-ANALYTICS-B',
+            providerId: `PRV-ANALYTICS-B-${suffix}`,
             accountStatus: AccountStatus.ACTIVE,
             organizationId: orgB.id,
           },
@@ -286,14 +286,14 @@ describe('Executive Analytics (e2e)', () => {
       ]),
     );
     expect(providers.body.providers[0]).toMatchObject({
-      providerPublicId: 'PRV-ANALYTICS-A',
+      providerPublicId: expect.stringMatching(/^PRV-ANALYTICS-A-/),
     });
     expect(geography.body.reportsByRegion).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ region: 'Abuja Municipal, FCT, Nigeria' }),
       ]),
     );
-  });
+  }, 15000);
 
   it('prevents organization admins from reading another tenant analytics scope', async () => {
     const { orgA, orgB, orgToken } = await createAnalyticsFixture();

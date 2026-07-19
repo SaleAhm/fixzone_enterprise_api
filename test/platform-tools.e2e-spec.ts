@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UserRole } from '@prisma/client';
+import { rm } from 'fs/promises';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -36,6 +37,7 @@ describe('Platform Tools (e2e)', () => {
     });
     for (const backup of backups) {
       await prisma.platformBackup.delete({ where: { id: backup.id } });
+      await rm(backup.filePath, { force: true });
     }
     await prisma.demoAuditLog.deleteMany({
       where: {
@@ -113,7 +115,9 @@ describe('Platform Tools (e2e)', () => {
       .post('/api/platform-tools/backups')
       .set('Authorization', `Bearer ${token}`);
     expect(backup.status).toBe(201);
-    expect(backup.body.fileName).toMatch(/^fixzone-backup-/);
+    expect(backup.body.fileName).toMatch(
+      /^fixzone-backup-\d{14}-[a-f0-9]{8}\.json$/,
+    );
 
     const list = await request(app.getHttpServer())
       .get('/api/platform-tools/backups')
@@ -132,6 +136,23 @@ describe('Platform Tools (e2e)', () => {
       .set('Authorization', `Bearer ${token}`);
     expect(deleted.status).toBe(200);
     expect(deleted.body.deleted).toBe(true);
+  });
+
+  it('creates repeated backups without filename collisions', async () => {
+    const superAdmin = await createUser(UserRole.SUPER_ADMIN);
+    const token = await tokenFor(superAdmin);
+
+    const first = await request(app.getHttpServer())
+      .post('/api/platform-tools/backups')
+      .set('Authorization', `Bearer ${token}`);
+    const second = await request(app.getHttpServer())
+      .post('/api/platform-tools/backups')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(first.body.fileName).not.toBe(second.body.fileName);
+    expect(first.body.filePath).not.toBe(second.body.filePath);
   });
 
   it('enforces maintenance mode for citizen/provider APIs while allowing admin bypass', async () => {

@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import {
   EnterpriseRateLimit,
   RateLimitTier,
@@ -49,5 +49,25 @@ export class PublicController {
   @EnterpriseRateLimit(RateLimitTier.PublicRead)
   getSuccessStories() {
     return this.publicMetrics.getSuccessStories();
+  }
+
+  @Get('visitor-summary')
+  @EnterpriseRateLimit(RateLimitTier.PublicRead)
+  getVisitorSummary() {
+    return this.publicMetrics.getVisitorSummary();
+  }
+
+  @Post('visitor-event')
+  @EnterpriseRateLimit(RateLimitTier.PublicRead)
+  recordVisitorEvent(
+    @Body()
+    body: {
+      sessionId?: unknown;
+      path?: unknown;
+      referrer?: unknown;
+      userAgent?: unknown;
+    },
+  ) {
+    return this.publicMetrics.recordVisitorEvent(body);
   }
 }

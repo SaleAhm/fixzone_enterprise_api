@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -64,6 +66,8 @@ export class ReportService {
     if (!user.organizationId) {
       throw new ForbiddenException('Citizen must belong to an organization');
     }
+
+    await this.enforceMonthlyReportQuota(user.organizationId);
 
     const report = await this.prisma.report.create({
       data: {
@@ -218,9 +222,13 @@ export class ReportService {
     }
 
     await this.expireOverdueAssignments({ providerId: userId });
+    const organizationIds = await this.authorizedProviderOrganizationIds(user);
 
     return this.prisma.report.findMany({
-      where: { assignedProviderId: userId },
+      where: {
+        assignedProviderId: userId,
+        organizationId: { in: organizationIds },
+      },
       orderBy: { createdAt: 'desc' },
       include: this.includeRelations(),
     });
@@ -259,7 +267,12 @@ export class ReportService {
     const sameOrg =
       user.organizationId && report.organizationId === user.organizationId;
 
-    if (report.citizenId === userId || report.assignedProviderId === userId) {
+    if (report.citizenId === userId) {
+      return this.withEnterpriseReportDetails(report);
+    }
+
+    if (report.assignedProviderId === userId && this.isProvider(user)) {
+      await this.assertProviderCanAccessReport(user, report.organizationId);
       return this.withEnterpriseReportDetails(report);
     }
 
@@ -278,6 +291,75 @@ export class ReportService {
       where: { reportId },
       orderBy: { createdAt: 'asc' },
     });
+  }
+
+  async getReportMessages(reportId: string, user: JwtUser) {
+    await this.getReportById(reportId, user);
+    return this.prisma.reportMessage.findMany({
+      where: { reportId },
+      orderBy: { createdAt: 'asc' },
+      take: 100,
+      select: {
+        id: true,
+        reportId: true,
+        organizationId: true,
+        authorId: true,
+        authorRole: true,
+        authorName: true,
+        message: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  async createReportMessage(
+    reportId: string,
+    dto: { message?: unknown },
+    user: JwtUser,
+  ) {
+    const userId = this.getUserId(user);
+    const text = typeof dto.message === 'string' ? dto.message.trim() : '';
+    if (!text) throw new BadRequestException('Message is required');
+    if (text.length > 1200) {
+      throw new BadRequestException('Message must be 1200 characters or less');
+    }
+    const report = await this.getReportById(reportId, user);
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ForbiddenException('Discussion is read-only for this report');
+    }
+    const safeMessage = text.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
+    const message = await this.prisma.reportMessage.create({
+      data: {
+        reportId,
+        organizationId: report.organizationId,
+        authorId: userId,
+        authorRole: user.role,
+        authorName: user.fullName ?? null,
+        message: safeMessage,
+      },
+      select: {
+        id: true,
+        reportId: true,
+        organizationId: true,
+        authorId: true,
+        authorRole: true,
+        authorName: true,
+        message: true,
+        createdAt: true,
+      },
+    });
+    await this.recordReportActivity(
+      reportId,
+      'REPORT_DISCUSSION_MESSAGE',
+      user,
+      {
+        organizationId: report.organizationId,
+        note: safeMessage.slice(0, 240),
+        metadata: { messageId: message.id },
+      },
+    );
+    await this.notifyReportMessageParticipants(report, userId, safeMessage);
+    return message;
   }
 
   // ===================== ASSIGN =====================
@@ -552,9 +634,11 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
+    await this.assertProviderCanAccessReport(user, report.organizationId);
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
     }
+    await this.assertAssignmentStillAcceptable(report, user, userId);
     if (report.status !== ReportStatus.ASSIGNED) {
       throw new ForbiddenException('Only new assignments can be rejected');
     }
@@ -608,6 +692,16 @@ export class ReportService {
 
     if (!report) throw new NotFoundException('Report not found');
     if (this.isProvider(user)) await this.assertActiveProvider(userId);
+    if (this.isProvider(user)) {
+      await this.assertProviderCanAccessReport(user, report.organizationId);
+    }
+    if (
+      this.isProvider(user) &&
+      report.status === ReportStatus.ASSIGNED &&
+      dto.status === ReportStatus.IN_PROGRESS
+    ) {
+      await this.assertAssignmentStillAcceptable(report, user, userId);
+    }
     if (
       this.isProvider(user) &&
       dto.status === ReportStatus.IN_PROGRESS &&
@@ -712,6 +806,7 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
+    await this.assertProviderCanAccessReport(user, report.organizationId);
 
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
@@ -1242,6 +1337,26 @@ export class ReportService {
       : 'UNKNOWN';
   }
 
+  private async enforceMonthlyReportQuota(organizationId: string) {
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { allowedReportsPerMonth: true },
+    });
+    if (organization?.allowedReportsPerMonth == null) return;
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const reportsThisMonth = await this.prisma.report.count({
+      where: { organizationId, createdAt: { gte: monthStart } },
+    });
+    if (reportsThisMonth >= organization.allowedReportsPerMonth) {
+      throw new ConflictException({
+        code: 'REPORT_QUOTA_EXCEEDED',
+        message: 'This organization has reached its monthly report quota.',
+      });
+    }
+  }
+
   private completionLocationSourceFor(dto: {
     completionLatitude?: number | null;
     completionLongitude?: number | null;
@@ -1399,6 +1514,46 @@ export class ReportService {
     await notification.create({ data });
   }
 
+  private async notifyReportMessageParticipants(
+    report: {
+      id: string;
+      title: string;
+      organizationId: string;
+      citizenId: string;
+      assignedProviderId: string | null;
+    },
+    authorId: string,
+    message: string,
+  ) {
+    const participants = new Set<string>();
+    participants.add(report.citizenId);
+    if (report.assignedProviderId) participants.add(report.assignedProviderId);
+
+    const operators = await this.prisma.user.findMany({
+      where: {
+        organizationId: report.organizationId,
+        role: { in: [UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER] },
+        accountStatus: { not: 'DEACTIVATED' },
+      },
+      select: { id: true },
+      take: 25,
+    });
+    operators.forEach((operator) => participants.add(operator.id));
+    participants.delete(authorId);
+
+    await Promise.all(
+      [...participants].map((userId) =>
+        this.createNotification({
+          userId,
+          reportId: report.id,
+          type: 'REPORT_DISCUSSION_MESSAGE',
+          title: 'New report discussion message',
+          message: `"${report.title}": ${message.slice(0, 140)}`,
+        }),
+      ),
+    );
+  }
+
   private async notifyOrganizationOperators(
     organizationId: string,
     data: {
@@ -1532,6 +1687,31 @@ export class ReportService {
     return expired;
   }
 
+  private async assertAssignmentStillAcceptable(
+    report: {
+      status: ReportStatus;
+      assignedProviderId: string | null;
+      assignmentDeadlineAt: Date | null;
+    },
+    user: JwtUser,
+    userId: string,
+  ) {
+    if (
+      report.status !== ReportStatus.ASSIGNED ||
+      report.assignedProviderId !== userId ||
+      !report.assignmentDeadlineAt ||
+      report.assignmentDeadlineAt.getTime() >= Date.now()
+    ) {
+      return;
+    }
+
+    await this.expireOverdueAssignments({
+      providerId: userId,
+      actor: user,
+    });
+    throw new ConflictException('Assignment acceptance window expired');
+  }
+
   private async assertActiveProvider(userId: string) {
     if (!this.prisma.user?.findUnique) return;
     const user = await this.prisma.user.findUnique({
@@ -1543,6 +1723,34 @@ export class ReportService {
     }
     if (user.accountStatus === 'SUSPENDED') {
       throw new ForbiddenException('Provider account is suspended');
+    }
+  }
+
+  private async authorizedProviderOrganizationIds(user: JwtUser) {
+    const userId = this.getUserId(user);
+    const ids = new Set<string>();
+    if (user.organizationId) ids.add(user.organizationId);
+    const linkModel = (this.prisma as any).providerOrganization;
+    if (linkModel?.findMany) {
+      const links = await linkModel.findMany({
+        where: { providerId: userId, active: true },
+        select: { organizationId: true },
+      });
+      for (const link of links as Array<{ organizationId?: string | null }>) {
+        if (link.organizationId) ids.add(link.organizationId);
+      }
+    }
+    return [...ids];
+  }
+
+  private async assertProviderCanAccessReport(
+    user: JwtUser,
+    organizationId: string,
+  ) {
+    if (!this.isProvider(user)) return;
+    const organizationIds = await this.authorizedProviderOrganizationIds(user);
+    if (!organizationIds.includes(organizationId)) {
+      throw new ForbiddenException('Provider organization access denied');
     }
   }
 

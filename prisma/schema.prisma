@@ -80,6 +80,7 @@ enum AccountStatus {
 enum InvitationStatus {
   PENDING
   ACCEPTED
+  DECLINED
   REVOKED
   EXPIRED
 }
@@ -88,6 +89,14 @@ enum OrganizationStatus {
   ACTIVE
   SUSPENDED
   ARCHIVED
+}
+
+enum UpgradeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  COMPLETED
 }
 
 enum IdentityVerificationStatus {
@@ -203,6 +212,7 @@ model Organization {
   children            Organization[]         @relation("OrganizationHierarchy")
   providerLinks       ProviderOrganization[]
   invitations         Invitation[]
+  upgradeRequests     OrganizationUpgradeRequest[]
   evidenceRecords     EvidenceRecord[]
   disputeCases        DisputeCase[]
   complianceAuditLogs ComplianceAuditLog[]
@@ -271,6 +281,7 @@ model User {
   disputesAgainst         DisputeCase[]          @relation("DisputeAgainstUser")
   reviewedDisputes        DisputeCase[]          @relation("DisputeClosedBy")
   disputeMessages         DisputeMessage[]
+  reportMessages          ReportMessage[]
   entitlement             UserEntitlement?
   complianceAuditLogs     ComplianceAuditLog[]   @relation("ComplianceAuditActor")
 
@@ -456,7 +467,11 @@ model Invitation {
   metadata              Json?
   expiresAt             DateTime?
   acceptedAt            DateTime?
+  declinedAt            DateTime?
   revokedAt             DateTime?
+  tokenHash             String?
+  resentAt              DateTime?
+  lastNotificationAt    DateTime?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
@@ -470,6 +485,7 @@ model Invitation {
   @@index([role])
   @@index([email])
   @@index([phone])
+  @@index([tokenHash])
   @@index([createdAt])
 }
 
@@ -488,6 +504,30 @@ model ProviderOrganization {
   @@unique([providerId, organizationId])
   @@index([organizationId, active])
   @@index([providerId, active])
+}
+
+model OrganizationUpgradeRequest {
+  id                String               @id @default(cuid())
+  organizationId    String
+  currentPlan       SubscriptionPlan
+  requestedPlan     SubscriptionPlan
+  requestedByUserId String
+  status            UpgradeRequestStatus @default(PENDING)
+  requestNote       String?
+  reviewNote        String?
+  reviewedByUserId  String?
+  requestedAt       DateTime             @default(now())
+  reviewedAt        DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([requestedPlan])
+  @@index([requestedByUserId])
+  @@index([reviewedByUserId])
 }
 
 model Report {
@@ -538,6 +578,7 @@ model Report {
   assignedProvider User?            @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
   notifications    Notification[]
   activities       ReportActivity[]
+  messages         ReportMessage[]
 
   @@index([organizationId])
   @@index([citizenId])
@@ -546,6 +587,26 @@ model Report {
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
+}
+
+model ReportMessage {
+  id             String   @id @default(cuid())
+  reportId       String
+  organizationId String
+  authorId       String
+  authorRole     UserRole
+  authorName     String?
+  message        String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([reportId, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([authorId, createdAt])
 }
 
 model ReportActivity {

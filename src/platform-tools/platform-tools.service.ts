@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, ReportStatus, UserRole } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { createReadStream } from 'fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'os';
@@ -115,10 +116,11 @@ export class PlatformToolsService {
     const actorUserId = this.requireSuperAdmin(user);
     await mkdir(this.backupRoot, { recursive: true });
     const createdAt = new Date();
+    const operationId = randomUUID().slice(0, 8);
     const fileName = `fixzone-backup-${createdAt
       .toISOString()
       .replace(/[-:.TZ]/g, '')
-      .slice(0, 14)}.json`;
+      .slice(0, 14)}-${operationId}.json`;
     const filePath = join(this.backupRoot, fileName);
 
     const data = {

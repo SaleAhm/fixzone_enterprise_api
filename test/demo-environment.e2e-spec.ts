@@ -28,6 +28,10 @@ describe('Demo Environment Platform Tools (e2e)', () => {
     jwtService = moduleFixture.get(JwtService);
   });
 
+  beforeEach(async () => {
+    await cleanupDemoData();
+  });
+
   afterEach(async () => {
     await cleanupDemoData();
 
@@ -176,6 +180,48 @@ describe('Demo Environment Platform Tools (e2e)', () => {
     await expect(
       prisma.report.count({ where: { isDemo: true } }),
     ).resolves.toBe(0);
+  });
+
+  it('supports repeated demo generation without unique fixture collisions', async () => {
+    const superAdmin = await createUser(UserRole.SUPER_ADMIN);
+    const token = await signToken(superAdmin);
+
+    const payload = {
+      scenario: 'Rainy Season',
+      citizens: 1,
+      providers: 1,
+      organizations: 1,
+      reports: 1,
+      notifications: 1,
+      includeEvidenceImages: true,
+    };
+
+    const first = await request(app.getHttpServer())
+      .post('/api/admin/platform-tools/demo-environment/generate')
+      .set('Authorization', `Bearer ${token}`)
+      .send(payload);
+    const second = await request(app.getHttpServer())
+      .post('/api/admin/platform-tools/demo-environment/generate')
+      .set('Authorization', `Bearer ${token}`)
+      .send(payload);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(first.body.demoBatchId).not.toBe(second.body.demoBatchId);
+
+    const phones = await prisma.user.findMany({
+      where: { isDemo: true },
+      select: { phone: true },
+    });
+    expect(new Set(phones.map((user) => user.phone)).size).toBe(phones.length);
+
+    const purgeRes = await request(app.getHttpServer())
+      .delete('/api/admin/platform-tools/demo-environment/purge')
+      .set('Authorization', `Bearer ${token}`);
+    expect(purgeRes.status).toBe(200);
+    await expect(prisma.user.count({ where: { isDemo: true } })).resolves.toBe(
+      0,
+    );
   });
 
   it('rejects non-super-admin access', async () => {

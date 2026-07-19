@@ -2,12 +2,16 @@ import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
+import { existsSync, rmSync } from 'fs';
+import { join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Report Workflow (e2e)', () => {
+  jest.setTimeout(30000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   let jwtService: JwtService;
@@ -30,10 +34,22 @@ describe('Report Workflow (e2e)', () => {
 
     prisma = moduleFixture.get(PrismaService);
     jwtService = moduleFixture.get(JwtService);
+
+    await cleanupWorkflowArtifacts();
   });
 
   afterEach(async () => {
+    await cleanupTrackedUploadArtifacts();
+
     if (createdReportIds.length > 0 || createdUserIds.length > 0) {
+      await prisma.complianceAuditLog.deleteMany({
+        where: {
+          OR: [
+            { actorId: { in: [...createdUserIds] } },
+            { entityId: { in: [...createdReportIds, ...createdUserIds] } },
+          ],
+        },
+      });
       await prisma.notification.deleteMany({
         where: {
           OR: [
@@ -67,9 +83,85 @@ describe('Report Workflow (e2e)', () => {
   });
 
   afterAll(async () => {
+    await cleanupWorkflowArtifacts();
     await prisma.$disconnect();
     await app.close();
   });
+
+  async function cleanupWorkflowArtifacts() {
+    const users = await prisma.user.findMany({
+      where: { email: { startsWith: 'wf-' } },
+      select: { id: true },
+    });
+    const userIds = users.map((user) => user.id);
+    const organizations = await prisma.organization.findMany({
+      where: { name: { startsWith: 'Workflow ' } },
+      select: { id: true },
+    });
+    const organizationIds = organizations.map(
+      (organization) => organization.id,
+    );
+    const reports = await prisma.report.findMany({
+      where: {
+        OR: [
+          { title: { startsWith: 'WF ' } },
+          { citizenId: { in: userIds } },
+          { assignedProviderId: { in: userIds } },
+          { organizationId: { in: organizationIds } },
+        ],
+      },
+      select: { id: true },
+    });
+    const reportIds = reports.map((report) => report.id);
+
+    await cleanupUploadArtifacts(reportIds);
+
+    await prisma.notification.deleteMany({
+      where: {
+        OR: [{ reportId: { in: reportIds } }, { userId: { in: userIds } }],
+      },
+    });
+    await prisma.complianceAuditLog.deleteMany({
+      where: {
+        OR: [
+          { actorId: { in: userIds } },
+          { entityId: { in: [...reportIds, ...userIds, ...organizationIds] } },
+          { organizationId: { in: organizationIds } },
+        ],
+      },
+    });
+    await prisma.report.deleteMany({
+      where: { id: { in: reportIds } },
+    });
+    await prisma.user.deleteMany({
+      where: { id: { in: userIds } },
+    });
+    await prisma.organization.deleteMany({
+      where: { id: { in: organizationIds } },
+    });
+
+    createdReportIds.length = 0;
+    createdUserIds.length = 0;
+    createdOrgIds.length = 0;
+  }
+
+  async function cleanupTrackedUploadArtifacts() {
+    await cleanupUploadArtifacts([...createdReportIds]);
+  }
+
+  async function cleanupUploadArtifacts(reportIds: string[]) {
+    for (const reportId of reportIds) {
+      const uploadDirectory = join(
+        process.cwd(),
+        'uploads',
+        'report-completion',
+        reportId,
+      );
+      if (existsSync(uploadDirectory)) {
+        rmSync(uploadDirectory, { recursive: true, force: true });
+      }
+    }
+  }
 
   async function createOrganization(name: string) {
     const organization = await prisma.organization.create({
@@ -214,6 +306,76 @@ describe('Report Workflow (e2e)', () => {
         'REPORT_CLOSED',
       ]),
     );
+  });
+
+  it('scopes report discussion messages to authorized report participants', async () => {
+    const org = await createOrganization('Workflow Discussion Org');
+    const otherOrg = await createOrganization('Workflow Discussion Other Org');
+    const admin = await createUser({
+      email: 'wf-admin-discussion@test.com',
+      fullName: 'Workflow Discussion Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-discussion@test.com',
+      fullName: 'Workflow Discussion Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-discussion@test.com',
+      fullName: 'Workflow Discussion Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherAdmin = await createUser({
+      email: 'wf-admin-discussion-other@test.com',
+      fullName: 'Workflow Discussion Other Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const report = await createReport({
+      title: 'WF discussion report',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+
+    const adminToken = await signToken(admin);
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const otherAdminToken = await signToken(otherAdmin);
+
+    const createdMessage = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ message: 'Provider has reached the site.' });
+
+    expect(createdMessage.status).toBe(201);
+    expect(createdMessage.body.message).toBe('Provider has reached the site.');
+    expect(createdMessage.body.organizationId).toBe(org.id);
+
+    const citizenMessages = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+
+    expect(citizenMessages.status).toBe(200);
+    expect(citizenMessages.body).toHaveLength(1);
+    expect(citizenMessages.body[0].authorRole).toBe(UserRole.PROVIDER);
+
+    const adminMessages = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(adminMessages.status).toBe(200);
+    expect(adminMessages.body).toHaveLength(1);
+
+    const forbiddenMessages = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/messages`)
+      .set('Authorization', `Bearer ${otherAdminToken}`);
+
+    expect(forbiddenMessages.status).toBe(403);
   });
 
   it('persists citizen location metadata and preserves backward compatibility', async () => {
@@ -1296,5 +1458,125 @@ describe('Report Workflow (e2e)', () => {
     expect(reassignRes.status).toBe(200);
     expect(reassignRes.body.status).toBe(ReportStatus.ASSIGNED);
     expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
+  });
+
+  it('expires overdue provider offers when acceptance is attempted after the deadline', async () => {
+    const org = await createOrganization('Workflow Expired Offer Org');
+    const provider = await createUser({
+      email: 'wf-provider-expired-offer@test.com',
+      fullName: 'Workflow Provider Expired Offer',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-expired-offer@test.com',
+      fullName: 'Workflow Citizen Expired Offer',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF expired assignment offer',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: provider.id,
+    });
+    await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        assignedAt: new Date(Date.now() - 90 * 60 * 1000),
+        assignmentDeadlineAt: new Date(Date.now() - 60 * 1000),
+      },
+    });
+
+    const providerToken = await signToken(provider);
+    const acceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+
+    expect(acceptRes.status).toBe(409);
+    expect(acceptRes.body.message).toBe('Assignment acceptance window expired');
+
+    const stored = await prisma.report.findUniqueOrThrow({
+      where: { id: report.id },
+    });
+    expect(stored.status).toBe(ReportStatus.PENDING);
+    expect(stored.assignedProviderId).toBeNull();
+    expect(stored.assignmentDeadlineAt).toBeNull();
+    expect(stored.lastAssignmentOutcome).toBe(AssignmentOutcome.TIMED_OUT);
+    expect(stored.lastAssignmentProviderId).toBe(provider.id);
+
+    await expect(
+      prisma.notification.count({
+        where: {
+          reportId: report.id,
+          type: 'assignment_timeout',
+        },
+      }),
+    ).resolves.toBeGreaterThanOrEqual(2);
+  });
+
+  it('prevents superseded providers from accepting after reassignment', async () => {
+    const org = await createOrganization('Workflow Superseded Offer Org');
+    const dispatchOfficer = await createUser({
+      email: 'wf-dispatch-superseded@test.com',
+      fullName: 'Workflow Dispatch Superseded',
+      role: UserRole.DISPATCH_OFFICER,
+      organizationId: org.id,
+    });
+    const providerA = await createUser({
+      email: 'wf-provider-superseded-a@test.com',
+      fullName: 'Workflow Provider Superseded A',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const providerB = await createUser({
+      email: 'wf-provider-superseded-b@test.com',
+      fullName: 'Workflow Provider Superseded B',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-superseded@test.com',
+      fullName: 'Workflow Citizen Superseded',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF superseded assignment offer',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: providerA.id,
+    });
+
+    const dispatchToken = await signToken(dispatchOfficer);
+    const reassignRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/reassign`)
+      .set('Authorization', `Bearer ${dispatchToken}`)
+      .send({
+        providerId: providerB.id,
+        reason: 'Provider did not respond before dispatch review',
+      });
+    expect(reassignRes.status).toBe(200);
+    expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
+
+    const oldProviderToken = await signToken(providerA);
+    const oldAcceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${oldProviderToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(oldAcceptRes.status).toBe(403);
+    expect(oldAcceptRes.body.message).toBe('Not your report');
+
+    const newProviderToken = await signToken(providerB);
+    const newAcceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${newProviderToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(newAcceptRes.status).toBe(200);
+    expect(newAcceptRes.body.status).toBe(ReportStatus.IN_PROGRESS);
+    expect(newAcceptRes.body.assignedProviderId).toBe(providerB.id);
   });
 });

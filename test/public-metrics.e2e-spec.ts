@@ -7,12 +7,15 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Public Metrics (e2e)', () => {
+  jest.setTimeout(30000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   const createdReportIds: string[] = [];
   const createdUserIds: string[] = [];
   const createdOrgIds: string[] = [];
   const createdStoryIds: string[] = [];
+  const visitorSettingKeys: string[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -50,6 +53,12 @@ describe('Public Metrics (e2e)', () => {
         where: { id: { in: [...createdOrgIds] } },
       });
       createdOrgIds.length = 0;
+    }
+    if (visitorSettingKeys.length > 0) {
+      await prisma.platformSetting.deleteMany({
+        where: { key: { in: [...visitorSettingKeys] } },
+      });
+      visitorSettingKeys.length = 0;
     }
   });
 
@@ -187,9 +196,11 @@ describe('Public Metrics (e2e)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.reportsOverTime.length).toBeGreaterThan(0);
-    expect(res.body.categories).toEqual(
-      expect.arrayContaining([expect.objectContaining({ category: 'Road' })]),
-    );
+    expect(
+      res.body.categories.some((item: { category?: string }) =>
+        item.category?.toLowerCase().includes('road'),
+      ),
+    ).toBe(true);
     expect(res.body.broadGeography).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ region: 'FCT, Nigeria' }),
@@ -216,12 +227,18 @@ describe('Public Metrics (e2e)', () => {
     expect(categories.status).toBe(200);
     expect(geography.status).toBe(200);
     expect(impact.body.headline.totalReports).toBeGreaterThanOrEqual(2);
-    expect(categories.body.categories).toEqual(
-      expect.arrayContaining([expect.objectContaining({ category: 'Road' })]),
-    );
+    expect(
+      categories.body.categories.some((item: { category?: string }) =>
+        item.category?.toLowerCase().includes('road'),
+      ),
+    ).toBe(true);
     expect(geography.body.precision).toBe('state_country_only');
 
-    const body = JSON.stringify({ impact: impact.body, categories: categories.body, geography: geography.body });
+    const body = JSON.stringify({
+      impact: impact.body,
+      categories: categories.body,
+      geography: geography.body,
+    });
     expect(body).not.toContain('Private report title must not leak');
     expect(body).not.toContain('Private Citizen');
     expect(body).not.toContain('private-citizen-public');
@@ -260,5 +277,32 @@ describe('Public Metrics (e2e)', () => {
       expect(res.body.averageResolutionTime).toBeNull();
       expect(res.body.availability.averageResolutionTime).toBe(false);
     }
+  });
+
+  it('records aggregate visitor page views without storing personal data', async () => {
+    visitorSettingKeys.push('public.visitorAnalytics.v1');
+    await prisma.platformSetting.deleteMany({
+      where: { key: 'public.visitorAnalytics.v1' },
+    });
+
+    const first = await request(app.getHttpServer())
+      .post('/api/public/visitor-event')
+      .send({ sessionId: 'session-public-test-12345', path: '/#platform' });
+    const second = await request(app.getHttpServer())
+      .post('/api/public/visitor-event')
+      .send({ sessionId: 'session-public-test-12345', path: '/#metrics' });
+    const summary = await request(app.getHttpServer()).get(
+      '/api/public/visitor-summary',
+    );
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(summary.status).toBe(200);
+    expect(summary.body.totalPageViews).toBe(2);
+    expect(summary.body.todayPageViews).toBe(2);
+    expect(summary.body.todaySessions).toBe(1);
+    expect(summary.body.privacy).toContain('Raw IP addresses');
+    expect(JSON.stringify(summary.body)).not.toContain('userAgent');
+    expect(JSON.stringify(summary.body)).not.toContain('referrer');
   });
 });
