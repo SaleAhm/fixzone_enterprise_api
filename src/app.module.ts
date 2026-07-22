@@ -16,6 +16,7 @@ import { BusinessLogicModule } from './business-logic/business-logic.module';
 import { RateLimitModule } from './security/rate-limit.module';
 import { PublicModule } from './public/public.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { GovernanceModule } from './governance/governance.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -38,6 +39,7 @@ import { AppService } from './app.service';
     RateLimitModule,
     PublicModule,
     AnalyticsModule,
+    GovernanceModule,
   ],
   controllers: [AppController],
   providers: [AppService],

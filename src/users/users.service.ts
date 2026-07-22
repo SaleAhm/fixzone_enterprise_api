@@ -248,6 +248,12 @@ export class UsersService {
     const actorId = user.id ?? user.userId ?? user.sub;
     if (!actorId) throw new ForbiddenException('Actor missing');
 
+    if (this.isGovernanceAdminRole(role)) {
+      throw new ForbiddenException(
+        'Delegated admin roles must be created from governance administration',
+      );
+    }
+
     if (role === UserRole.SUPER_ADMIN) {
       throw new ForbiddenException('This role cannot be invited');
     }
@@ -378,12 +384,13 @@ export class UsersService {
       });
     }
 
-    if (
+    const existingProviderMembershipInvite =
       existing &&
       organizationId &&
       role === UserRole.PROVIDER &&
-      existing.role === UserRole.PROVIDER
-    ) {
+      existing.role === UserRole.PROVIDER;
+
+    if (existingProviderMembershipInvite) {
       const confirmed =
         dto.confirmExistingUser === true ||
         String(dto.existingUserAction ?? '').toUpperCase() === 'ADD_MEMBERSHIP';
@@ -399,35 +406,12 @@ export class UsersService {
         };
       }
       await this.enforceProviderQuota(organizationId);
-      const membership = await this.prisma.providerOrganization.create({
-        data: {
-          providerId: existing.id,
-          organizationId,
-          active: true,
-          isPrimary: existing.organizationId === organizationId,
-        },
-      });
-      await this.createNotification({
-        userId: existing.id,
-        type: 'ORGANIZATION_MEMBERSHIP_ADDED',
-        title: 'Organization membership added',
-        message: `${organization?.name ?? 'SecureZone'} added you as a provider.`,
-      });
-      await this.audit('Provider Membership Added', user, {
-        providerId: existing.id,
-        organizationId,
-        existingIdentity: true,
-      });
-      return {
-        code: 'PROVIDER_MEMBERSHIP_CREATED',
-        message: 'Existing provider added to this organization.',
-        existingUser: this.existingUserSummary(existing),
-        membership,
-      };
     }
 
-    await this.enforceUserQuota(organizationId);
-    if (role === UserRole.PROVIDER) {
+    if (!existingProviderMembershipInvite) {
+      await this.enforceUserQuota(organizationId);
+    }
+    if (role === UserRole.PROVIDER && !existingProviderMembershipInvite) {
       await this.enforceProviderQuota(organizationId);
     }
 
@@ -448,6 +432,9 @@ export class UsersService {
           delivery: 'EMAIL_NOT_CONFIGURED',
           tokenPreview: token.slice(0, 6),
           existingUserId: existing?.id ?? null,
+          invitationPurpose: existingProviderMembershipInvite
+            ? 'PROVIDER_MEMBERSHIP_ACTIVATION'
+            : 'USER_ONBOARDING',
         },
       },
       include: this.invitationInclude(),
@@ -823,6 +810,22 @@ export class UsersService {
       throw new ForbiddenException('Invalid role');
     }
     return value as UserRole;
+  }
+
+  private isGovernanceAdminRole(role: UserRole) {
+    const governanceAdminRoles: UserRole[] = [
+      UserRole.PLATFORM_OWNER,
+      UserRole.EXECUTIVE_SUPER_ADMIN,
+      UserRole.TECHNICAL_ADMIN,
+      UserRole.BILLING_ADMIN,
+      UserRole.LEGAL_ADMIN,
+      UserRole.ASSIGNMENT_ADMIN,
+      UserRole.ASSET_ADMIN,
+      UserRole.COMPLIANCE_ADMIN,
+      UserRole.REGULATORY_ADMIN,
+      UserRole.SUPPORT_ADMIN,
+    ];
+    return governanceAdminRoles.includes(role);
   }
 
   private resolveInvitationOrganization(

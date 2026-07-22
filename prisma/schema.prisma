@@ -7,6 +7,16 @@ datasource db {
 }
 
 enum UserRole {
+  PLATFORM_OWNER
+  EXECUTIVE_SUPER_ADMIN
+  TECHNICAL_ADMIN
+  BILLING_ADMIN
+  LEGAL_ADMIN
+  ASSIGNMENT_ADMIN
+  ASSET_ADMIN
+  COMPLIANCE_ADMIN
+  REGULATORY_ADMIN
+  SUPPORT_ADMIN
   SUPER_ADMIN
   ORG_ADMIN
   DISPATCH_OFFICER
@@ -81,6 +91,7 @@ enum InvitationStatus {
   PENDING
   ACCEPTED
   DECLINED
+  CANCELLED
   REVOKED
   EXPIRED
 }
@@ -176,6 +187,81 @@ enum PlatformEntitlementPlan {
   GOVERNMENT
 }
 
+enum AdminScopeType {
+  PLATFORM
+  ORGANIZATION
+  JURISDICTION
+  MODULE
+  ASSET
+  REPORT
+}
+
+enum DelegatedAuthorityStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+  EXPIRED
+}
+
+enum RegulatoryCaseStatus {
+  DRAFT
+  OPEN
+  UNDER_REVIEW
+  READY_FOR_EXPORT
+  EXPORTED
+  CLOSED
+}
+
+enum RegulatoryExportStatus {
+  REQUESTED
+  PREPARING
+  READY
+  FAILED
+  CANCELLED
+}
+
+enum EvidencePackageStatus {
+  DRAFT
+  SEALED
+  EXPORTED
+  VOIDED
+}
+
+enum EvidenceAuditAction {
+  UPLOADED
+  VIEWED
+  DOWNLOADED
+  EXPORTED
+  METADATA_UPDATED
+  SOFT_DELETED
+  RESTORED
+}
+
+enum OwnershipStatus {
+  UNKNOWN
+  PENDING
+  VERIFIED
+  DISPUTED
+}
+
+enum OwnerType {
+  FEDERAL
+  STATE
+  LGA
+  PRIVATE
+  NGO
+  COMMUNITY
+  ENTERPRISE
+}
+
+enum AssetClaimStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  DISPUTED
+  CANCELLED
+}
+
 model Organization {
   id                     String             @id @default(cuid())
   name                   String
@@ -208,8 +294,8 @@ model Organization {
 
   users               User[]
   reports             Report[]
-  parent              Organization?          @relation("OrganizationHierarchy", fields: [parentId], references: [id])
-  children            Organization[]         @relation("OrganizationHierarchy")
+  parent              Organization?                @relation("OrganizationHierarchy", fields: [parentId], references: [id])
+  children            Organization[]               @relation("OrganizationHierarchy")
   providerLinks       ProviderOrganization[]
   invitations         Invitation[]
   upgradeRequests     OrganizationUpgradeRequest[]
@@ -452,6 +538,210 @@ model ComplianceAuditLog {
   @@index([createdAt])
 }
 
+model Permission {
+  id              String           @id @default(cuid())
+  key             String           @unique
+  name            String
+  description     String?
+  module          String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  rolePermissions RolePermission[]
+
+  @@index([module])
+}
+
+model RolePermission {
+  id            String    @id @default(cuid())
+  role          UserRole
+  permissionId  String
+  inheritedFrom UserRole?
+  createdAt     DateTime  @default(now())
+
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([role, permissionId])
+  @@index([role])
+  @@index([permissionId])
+}
+
+model AdminScope {
+  id             String         @id @default(cuid())
+  userId         String
+  scopeType      AdminScopeType
+  scopeRef       String?
+  organizationId String?
+  permissions    Json?
+  active         Boolean        @default(true)
+  createdById    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([userId, active])
+  @@index([scopeType, scopeRef])
+  @@index([organizationId])
+}
+
+model DelegatedAuthority {
+  id             String                   @id @default(cuid())
+  userId         String
+  delegatedById  String
+  organizationId String?
+  role           UserRole
+  permissions    Json?
+  scopes         Json?
+  status         DelegatedAuthorityStatus @default(ACTIVE)
+  reason         String?
+  startsAt       DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  @@index([userId, status])
+  @@index([delegatedById])
+  @@index([organizationId])
+  @@index([role])
+}
+
+model RegulatoryCase {
+  id             String               @id @default(cuid())
+  caseNumber     String               @unique
+  organizationId String?
+  reportId       String?
+  disputeId      String?
+  title          String
+  status         RegulatoryCaseStatus @default(DRAFT)
+  metadata       Json?
+  createdById    String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([organizationId, createdAt])
+  @@index([reportId])
+  @@index([disputeId])
+  @@index([status])
+}
+
+model RegulatoryExport {
+  id               String                 @id @default(cuid())
+  regulatoryCaseId String?
+  organizationId   String?
+  exportType       String
+  format           String
+  status           RegulatoryExportStatus @default(REQUESTED)
+  requestedById    String?
+  reviewedById     String?
+  fileUrl          String?
+  checksum         String?
+  metadata         Json?
+  requestedAt      DateTime               @default(now())
+  completedAt      DateTime?
+
+  @@index([regulatoryCaseId])
+  @@index([organizationId, requestedAt])
+  @@index([status])
+  @@index([requestedById])
+}
+
+model EvidencePackage {
+  id                String                @id @default(cuid())
+  regulatoryCaseId  String?
+  organizationId    String?
+  relatedEntityType String?
+  relatedEntityId   String?
+  status            EvidencePackageStatus @default(DRAFT)
+  manifest          Json?
+  checksum          String?
+  createdById       String?
+  sealedById        String?
+  createdAt         DateTime              @default(now())
+  sealedAt          DateTime?
+  updatedAt         DateTime              @updatedAt
+
+  @@index([regulatoryCaseId])
+  @@index([organizationId, createdAt])
+  @@index([relatedEntityType, relatedEntityId])
+  @@index([status])
+}
+
+model DisputeTimeline {
+  id            String   @id @default(cuid())
+  disputeCaseId String
+  actorId       String?
+  action        String
+  beforeState   Json?
+  afterState    Json?
+  reason        String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([disputeCaseId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action])
+}
+
+model DisputeEvidence {
+  id               String   @id @default(cuid())
+  disputeCaseId    String
+  evidenceRecordId String?
+  uploadedById     String?
+  description      String?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  @@index([disputeCaseId, createdAt])
+  @@index([evidenceRecordId])
+  @@index([uploadedById])
+}
+
+model DisputeDecision {
+  id            String   @id @default(cuid())
+  disputeCaseId String
+  decidedById   String?
+  decision      String
+  reason        String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([disputeCaseId, createdAt])
+  @@index([decidedById])
+}
+
+model EvidenceAudit {
+  id               String              @id @default(cuid())
+  evidenceRecordId String?
+  actorId          String?
+  actorRole        UserRole?
+  action           EvidenceAuditAction
+  beforeState      Json?
+  afterState       Json?
+  reason           String?
+  ipAddress        String?
+  userAgent        String?
+  metadata         Json?
+  createdAt        DateTime            @default(now())
+
+  @@index([evidenceRecordId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action])
+}
+
+model EvidenceAccessLog {
+  id               String              @id @default(cuid())
+  evidenceRecordId String?
+  actorId          String?
+  actorRole        UserRole?
+  action           EvidenceAuditAction
+  ipAddress        String?
+  userAgent        String?
+  metadata         Json?
+  createdAt        DateTime            @default(now())
+
+  @@index([evidenceRecordId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action])
+}
+
 model Invitation {
   id                    String           @id @default(cuid())
   email                 String?
@@ -528,6 +818,141 @@ model OrganizationUpgradeRequest {
   @@index([requestedPlan])
   @@index([requestedByUserId])
   @@index([reviewedByUserId])
+}
+
+model JurisdictionZone {
+  id             String   @id @default(cuid())
+  organizationId String?
+  name           String
+  zoneType       String
+  state          String?
+  lga            String?
+  country        String?  @default("Nigeria")
+  boundaryRef    String?
+  metadata       Json?
+  active         Boolean  @default(true)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId, active])
+  @@index([state, lga])
+  @@index([zoneType])
+}
+
+model AssetCluster {
+  id             String   @id @default(cuid())
+  organizationId String?
+  category       String?
+  locationText   String?
+  latitude       Float?
+  longitude      Float?
+  radiusKm       Float?
+  incidentCount  Int      @default(0)
+  confidence     Float?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId, createdAt])
+  @@index([category])
+  @@index([latitude, longitude])
+}
+
+model PotentialAsset {
+  id              String          @id @default(cuid())
+  assetClusterId  String?
+  organizationId  String?
+  title           String
+  category        String?
+  locationText    String?
+  latitude        Float?
+  longitude       Float?
+  ownershipStatus OwnershipStatus @default(UNKNOWN)
+  ownerType       OwnerType?
+  confidence      Float?
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([assetClusterId])
+  @@index([organizationId, createdAt])
+  @@index([ownershipStatus])
+  @@index([ownerType])
+}
+
+model AssetCandidateOwner {
+  id               String          @id @default(cuid())
+  potentialAssetId String?
+  organizationId   String?
+  ownerName        String
+  ownerType        OwnerType
+  ownershipStatus  OwnershipStatus @default(PENDING)
+  confidence       Float?
+  source           String?
+  metadata         Json?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([potentialAssetId])
+  @@index([organizationId])
+  @@index([ownerType, ownershipStatus])
+}
+
+model OwnershipRecommendation {
+  id                   String          @id @default(cuid())
+  potentialAssetId     String?
+  reportId             String?
+  recommendedOwnerType OwnerType?
+  recommendedOwnerName String?
+  status               OwnershipStatus @default(PENDING)
+  confidence           Float?
+  rationale            String?
+  metadata             Json?
+  createdById          String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  @@index([potentialAssetId])
+  @@index([reportId])
+  @@index([status])
+}
+
+model AssetClaim {
+  id                     String           @id @default(cuid())
+  potentialAssetId       String?
+  claimantUserId         String?
+  claimantOrganizationId String?
+  ownerType              OwnerType?
+  status                 AssetClaimStatus @default(PENDING)
+  claimNote              String?
+  reviewNote             String?
+  reviewedById           String?
+  createdAt              DateTime         @default(now())
+  reviewedAt             DateTime?
+  updatedAt              DateTime         @updatedAt
+
+  @@index([potentialAssetId, status])
+  @@index([claimantUserId])
+  @@index([claimantOrganizationId])
+  @@index([reviewedById])
+}
+
+model AssetOwnershipHistory {
+  id                String          @id @default(cuid())
+  potentialAssetId  String?
+  previousOwnerType OwnerType?
+  previousOwnerName String?
+  newOwnerType      OwnerType?
+  newOwnerName      String?
+  status            OwnershipStatus @default(PENDING)
+  reason            String?
+  changedById       String?
+  createdAt         DateTime        @default(now())
+
+  @@index([potentialAssetId, createdAt])
+  @@index([changedById])
+  @@index([status])
 }
 
 model Report {
