@@ -1,5 +1,11 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
-import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
+import {
+  AssignmentOutcome,
+  BillingStatus,
+  OrganizationStatus,
+  ReportStatus,
+  UserRole,
+} from '@prisma/client';
 import { ReportService } from './report.service';
 
 describe('ReportService workflow validators', () => {
@@ -285,6 +291,72 @@ describe('ReportService provider tenant access', () => {
         },
       ),
     ).rejects.toThrow('Discussion is read-only for this report');
+  });
+});
+
+describe('ReportService organization candidates', () => {
+  const service = new ReportService({} as any);
+
+  it('marks ready organizations eligible when provider category coverage exists', () => {
+    const candidate = (service as any).serializeOrganizationCandidate(
+      {
+        id: 'org-1',
+        name: 'Hunslow',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@hunslow.test',
+        contactPhone: null,
+        country: 'Nigeria',
+        state: 'Kaduna',
+        lga: 'Hunslow',
+        address: null,
+        users: [],
+        providerLinks: [
+          {
+            active: true,
+            provider: {
+              id: 'provider-1',
+              accountStatus: 'ACTIVE',
+              serviceCategories: ['Road'],
+              coverageAreas: ['Hunslow'],
+            },
+          },
+        ],
+      },
+      'Road',
+    );
+
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.activeProviderCount).toBe(1);
+    expect(candidate.coveredCategories).toContain('Road');
+  });
+
+  it('marks not-ready organizations unavailable with reasons', () => {
+    const candidate = (service as any).serializeOrganizationCandidate(
+      {
+        id: 'org-2',
+        name: 'No Providers',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: null,
+        contactPhone: null,
+        country: 'Nigeria',
+        state: null,
+        lga: null,
+        address: null,
+        users: [],
+        providerLinks: [],
+      },
+      'Water',
+    );
+
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.reasons).toContain(
+      'No accepted active provider membership is linked.',
+    );
+    expect(candidate.reasons).toContain(
+      'Organization contact channel is missing.',
+    );
   });
 });
 

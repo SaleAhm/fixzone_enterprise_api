@@ -8,12 +8,19 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
+import {
+  AssignmentOutcome,
+  BillingStatus,
+  OrganizationStatus,
+  ReportStatus,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadSecurityService } from '../security/upload-security.service';
 import { TrustService } from '../trust/trust.service';
 import { WorkflowOrchestratorService } from '../business-logic/workflow-orchestrator.service';
 import { AssignProviderDto } from './dto/assign-provider.dto';
+import { AssignOrganizationDto } from './dto/assign-organization.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
@@ -370,6 +377,214 @@ export class ReportService {
     user: JwtUser,
   ) {
     return this.assignProviderById(reportId, dto.providerId, user);
+  }
+
+  async getAssignmentCandidates(reportId: string, user: JwtUser) {
+    if (
+      !this.isAdmin(user) &&
+      !this.isDispatch(user) &&
+      !this.isSuperAdmin(user)
+    ) {
+      throw new ForbiddenException('Not allowed');
+    }
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (!this.isSuperAdmin(user) && report.organizationId !== user.organizationId) {
+      throw new ForbiddenException('Cross-org not allowed');
+    }
+
+    const scopedOrganizationWhere = this.isSuperAdmin(user)
+      ? { status: { not: OrganizationStatus.ARCHIVED } }
+      : { id: user.organizationId ?? '' };
+    const [providers, organizations] = await Promise.all([
+      this.prisma.user.findMany({
+        where: {
+          role: UserRole.PROVIDER,
+          accountStatus: 'ACTIVE',
+          OR: [
+            { organizationId: report.organizationId },
+            {
+              providerOrganizations: {
+                some: { organizationId: report.organizationId, active: true },
+              },
+            },
+          ],
+        },
+        orderBy: { fullName: 'asc' },
+        select: {
+          id: true,
+          fullName: true,
+          providerId: true,
+          serviceCategories: true,
+          coverageAreas: true,
+          organizationId: true,
+        },
+      }),
+      this.prisma.organization.findMany({
+        where: scopedOrganizationWhere,
+        orderBy: { name: 'asc' },
+        include: {
+          providerLinks: {
+            where: { active: true },
+            include: {
+              provider: {
+                select: {
+                  id: true,
+                  accountStatus: true,
+                  serviceCategories: true,
+                  coverageAreas: true,
+                },
+              },
+            },
+          },
+          users: {
+            where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
+            select: {
+              id: true,
+              serviceCategories: true,
+              coverageAreas: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    return {
+      reportId,
+      reportCategory: report.category,
+      assignedOrganization: (report as any).assignedOrganization ?? null,
+      assignedProvider: report.assignedProvider ?? null,
+      providers: providers.map((provider) => ({
+        type: 'PROVIDER',
+        id: provider.id,
+        name: provider.fullName,
+        providerId: provider.providerId,
+        eligible: this.providerMatchesCategory(provider, report.category),
+        serviceCategories: this.jsonStringList(provider.serviceCategories),
+        coverageAreas: this.jsonStringList(provider.coverageAreas),
+      })),
+      organizations: organizations.map((organization) =>
+        this.serializeOrganizationCandidate(organization, report.category),
+      ),
+    };
+  }
+
+  async assignOrganization(
+    reportId: string,
+    dto: AssignOrganizationDto,
+    user: JwtUser,
+  ) {
+    if (
+      !this.isAdmin(user) &&
+      !this.isDispatch(user) &&
+      !this.isSuperAdmin(user)
+    ) {
+      throw new ForbiddenException('Not allowed');
+    }
+    const actorId = user.id ?? user.userId ?? user.sub;
+    if (!actorId) throw new ForbiddenException('Actor missing');
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (!this.isSuperAdmin(user) && report.organizationId !== user.organizationId) {
+      throw new ForbiddenException('Cross-org not allowed');
+    }
+    if (normalizeReportStatus(report.status) !== ReportStatus.PENDING) {
+      throw new ForbiddenException(
+        'Report cannot be assigned in its current status',
+      );
+    }
+    if (report.assignedProviderId) {
+      throw new ForbiddenException('Report already has an assigned provider');
+    }
+    if (!this.isSuperAdmin(user) && dto.organizationId !== user.organizationId) {
+      throw new ForbiddenException('Organization assignment scope denied');
+    }
+
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: dto.organizationId },
+      include: {
+        providerLinks: {
+          where: { active: true },
+          include: {
+            provider: {
+              select: {
+                id: true,
+                accountStatus: true,
+                serviceCategories: true,
+                coverageAreas: true,
+              },
+            },
+          },
+        },
+        users: {
+          where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
+          select: {
+            id: true,
+            serviceCategories: true,
+            coverageAreas: true,
+          },
+        },
+      },
+    });
+    if (!organization) throw new NotFoundException('Organization not found');
+    const candidate = this.serializeOrganizationCandidate(
+      organization,
+      report.category,
+    );
+    if (!candidate.eligible) {
+      throw new ForbiddenException({
+        code: 'ORGANIZATION_NOT_READY',
+        message: 'Organization is not eligible for this assignment.',
+        reasons: candidate.reasons,
+      });
+    }
+
+    const updated = await this.prisma.report.update({
+      where: { id: reportId },
+      data: {
+        assignedOrganizationId: organization.id,
+        organizationAssignedById: actorId,
+        organizationAssignedAt: new Date(),
+        organizationAssignmentSource:
+          dto.reason?.trim() || 'Manual organization assignment',
+        lastAssignmentOutcome: null,
+        lastAssignmentReason: null,
+        lastAssignmentAt: new Date(),
+        lastAssignmentProviderId: null,
+      } as any,
+      include: this.includeRelations(),
+    });
+
+    await this.audit('Report Assigned To Organization', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      assignedOrganizationId: organization.id,
+      organizationId: updated.organizationId,
+      reason: dto.reason?.trim() || null,
+    });
+    await this.recordReportActivity(reportId, 'ORGANIZATION_ASSIGNED', user, {
+      organizationId: updated.organizationId,
+      fromStatus: report.status,
+      toStatus: updated.status,
+      reason: dto.reason?.trim() || undefined,
+      metadata: {
+        assignedOrganizationId: organization.id,
+        assignedOrganizationName: organization.name,
+      },
+    });
+    await this.notifyOrganizationOperators(organization.id, {
+      reportId,
+      type: 'organization_assignment',
+      title: 'Report assigned to organization',
+      message: `"${updated.title}" was assigned to ${organization.name}.`,
+    });
+    return updated;
   }
 
   async processOverdueAssignments(user: JwtUser) {
@@ -1325,7 +1540,105 @@ export class ReportService {
       citizen: true,
       assignedProvider: true,
       organization: true,
+      assignedOrganization: true,
     };
+  }
+
+  private serializeOrganizationCandidate(organization: any, category: string) {
+    const activeProviders = this.organizationActiveProviders(organization);
+    const coveredCategories = this.collectStringList(
+      activeProviders.flatMap((provider) =>
+        this.jsonStringList(provider.serviceCategories),
+      ),
+    );
+    const coverageAreas = this.collectStringList(
+      activeProviders.flatMap((provider) =>
+        this.jsonStringList(provider.coverageAreas),
+      ),
+    );
+    const reasons: string[] = [];
+    if (organization.status !== OrganizationStatus.ACTIVE) {
+      reasons.push('Organization is not active.');
+    }
+    if (
+      organization.billingStatus === BillingStatus.SUSPENDED ||
+      organization.billingStatus === BillingStatus.CANCELLED
+    ) {
+      reasons.push('Organization billing status blocks dispatch.');
+    }
+    if (!organization.contactEmail && !organization.contactPhone) {
+      reasons.push('Organization contact channel is missing.');
+    }
+    if (!organization.state && !organization.lga && !organization.address) {
+      reasons.push('Organization jurisdiction or address is missing.');
+    }
+    if (activeProviders.length === 0) {
+      reasons.push('No accepted active provider membership is linked.');
+    }
+    if (!coveredCategories.length) {
+      reasons.push('Provider service categories are not configured.');
+    } else if (
+      category &&
+      !coveredCategories.some(
+        (item) => item.toLowerCase() === category.toLowerCase(),
+      )
+    ) {
+      reasons.push(`No active provider covers ${category}.`);
+    }
+
+    return {
+      type: 'ORGANIZATION',
+      id: organization.id,
+      name: organization.name,
+      eligible: reasons.length === 0,
+      ready: reasons.length === 0,
+      reasons,
+      activeProviderCount: activeProviders.length,
+      coveredCategories,
+      jurisdictionSummary: {
+        country: organization.country,
+        state: organization.state,
+        lga: organization.lga,
+        address: organization.address,
+        coverageAreas,
+      },
+    };
+  }
+
+  private organizationActiveProviders(organization: any) {
+    const providers = new Map<string, any>();
+    for (const provider of organization.users ?? []) {
+      if (provider.id) providers.set(provider.id, provider);
+    }
+    for (const link of organization.providerLinks ?? []) {
+      const provider = link.provider;
+      if (provider?.id && provider.accountStatus === 'ACTIVE') {
+        providers.set(provider.id, provider);
+      }
+    }
+    return Array.from(providers.values());
+  }
+
+  private providerMatchesCategory(
+    provider: { serviceCategories?: unknown },
+    category: string,
+  ) {
+    const categories = this.jsonStringList(provider.serviceCategories);
+    return (
+      categories.length === 0 ||
+      categories.some((item) => item.toLowerCase() === category.toLowerCase())
+    );
+  }
+
+  private jsonStringList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter((item) => item.length > 0);
+  }
+
+  private collectStringList(values: string[]) {
+    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
   }
 
   private locationSourceFor(dto: {

@@ -75,6 +75,16 @@ export class UsersController {
     return this.usersService.revokeInvitation(id, user);
   }
 
+  @Post('admin/invitations/:id/cancel')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  cancelInvitation(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.cancelInvitation(id, user);
+  }
+
   @Post('admin/invitations/:id/resend')
   @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)

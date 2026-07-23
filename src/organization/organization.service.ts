@@ -235,7 +235,7 @@ export class OrganizationService {
 
   async getReadiness(id: string, user: JwtUser) {
     const organization = await this.getById(id, user);
-    const [adminCount, dispatchCount, providerCount] = await Promise.all([
+    const [adminCount, dispatchCount, providers] = await Promise.all([
       this.prisma.user.count({
         where: {
           organizationId: id,
@@ -250,7 +250,7 @@ export class OrganizationService {
           accountStatus: 'ACTIVE',
         },
       }),
-      this.prisma.user.count({
+      this.prisma.user.findMany({
         where: {
           role: UserRole.PROVIDER,
           accountStatus: 'ACTIVE',
@@ -263,12 +263,27 @@ export class OrganizationService {
             },
           ],
         },
+        select: { serviceCategories: true, coverageAreas: true },
       }),
     ]);
+    const providerCount = providers.length;
+    const coveredCategories = this.collectStringList(
+      providers.flatMap((provider) => this.jsonStringList(provider.serviceCategories)),
+    );
+    const providerCoverageAreas = this.collectStringList(
+      providers.flatMap((provider) => this.jsonStringList(provider.coverageAreas)),
+    );
     const moduleSummary = this.platformModules.organizationModuleSummary(
       organization.enabledModules,
     );
     const checks = [
+      this.readinessCheck(
+        'status',
+        'Organization status',
+        organization.status === OrganizationStatus.ACTIVE,
+        'Organization is active.',
+        'Activate the organization before dispatch.',
+      ),
       this.readinessCheck(
         'profile',
         'Organization profile',
@@ -305,9 +320,15 @@ export class OrganizationService {
         'providers',
         'Provider coverage',
         providerCount > 0,
-        'At least one active provider is linked.',
-        'No provider is linked. Manual dispatch coverage is required.',
-        'warning',
+        'At least one accepted active provider membership is linked.',
+        'Accept at least one provider membership invitation before dispatch.',
+      ),
+      this.readinessCheck(
+        'categories',
+        'Service categories',
+        coveredCategories.length > 0,
+        'Provider service category coverage is configured.',
+        'Configure provider service categories for dispatch matching.',
       ),
       this.readinessCheck(
         'module',
@@ -338,6 +359,18 @@ export class OrganizationService {
       organizationId: id,
       organizationName: organization.name,
       accountStatus: organization.status,
+      ready: blockers.length === 0,
+      blockingReasons: blockers.map((check) => check.message),
+      warnings: warnings.map((check) => check.message),
+      activeProviderCount: providerCount,
+      coveredCategories,
+      jurisdictionSummary: {
+        country: organization.country,
+        state: organization.state,
+        lga: organization.lga,
+        address: organization.address,
+        providerCoverageAreas,
+      },
       subscriptionStatus: organization.billingStatus,
       plan: organization.subscriptionPlan,
       operationalReadiness:
@@ -348,6 +381,8 @@ export class OrganizationService {
           : 'NOT_READY',
       providerCoverage: {
         activeProviders: providerCount,
+        coveredCategories,
+        coverageAreas: providerCoverageAreas,
         state: providerCount > 0 ? 'AVAILABLE' : 'MANUAL_DISPATCH_REQUIRED',
       },
       moduleState: moduleSummary,
@@ -753,6 +788,17 @@ export class OrganizationService {
       status: passed ? 'pass' : failureStatus,
       message: passed ? passMessage : failMessage,
     };
+  }
+
+  private jsonStringList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter((item) => item.length > 0);
+  }
+
+  private collectStringList(values: string[]) {
+    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
   }
 
   private parsePlan(value: unknown) {

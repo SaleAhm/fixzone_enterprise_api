@@ -1,0 +1,11 @@
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+
+export class AssignOrganizationDto {
+  @IsString()
+  @IsNotEmpty()
+  organizationId: string;
+
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}

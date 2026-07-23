@@ -298,6 +298,7 @@ model Organization {
   children            Organization[]               @relation("OrganizationHierarchy")
   providerLinks       ProviderOrganization[]
   invitations         Invitation[]
+  assignedReports     Report[]                     @relation("AssignedOrganizationReports")
   upgradeRequests     OrganizationUpgradeRequest[]
   evidenceRecords     EvidenceRecord[]
   disputeCases        DisputeCase[]
@@ -970,6 +971,10 @@ model Report {
   organizationId               String
   citizenId                    String
   assignedProviderId           String?
+  assignedOrganizationId       String?
+  organizationAssignedById     String?
+  organizationAssignedAt       DateTime?
+  organizationAssignmentSource String?
   assignedAt                   DateTime?
   assignmentDeadlineAt         DateTime?
   lastAssignmentOutcome        AssignmentOutcome?
@@ -998,16 +1003,18 @@ model Report {
   createdAt                    DateTime           @default(now())
   updatedAt                    DateTime           @updatedAt
 
-  organization     Organization     @relation(fields: [organizationId], references: [id])
-  citizen          User             @relation("CitizenReports", fields: [citizenId], references: [id])
-  assignedProvider User?            @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
-  notifications    Notification[]
-  activities       ReportActivity[]
-  messages         ReportMessage[]
+  organization         Organization     @relation(fields: [organizationId], references: [id])
+  assignedOrganization Organization?    @relation("AssignedOrganizationReports", fields: [assignedOrganizationId], references: [id])
+  citizen              User             @relation("CitizenReports", fields: [citizenId], references: [id])
+  assignedProvider     User?            @relation("AssignedProviderReports", fields: [assignedProviderId], references: [id])
+  notifications        Notification[]
+  activities           ReportActivity[]
+  messages             ReportMessage[]
 
   @@index([organizationId])
   @@index([citizenId])
   @@index([assignedProviderId])
+  @@index([assignedOrganizationId])
   @@index([status])
   @@index([isDemo])
   @@index([demoBatchId])

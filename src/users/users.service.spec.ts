@@ -113,7 +113,7 @@ describe('UsersService invitation lifecycle', () => {
       { sub: 'admin-1', role: UserRole.SUPER_ADMIN },
     );
 
-    expect(result.invitation.status).toBe('PENDING');
+    expect((result as any).invitation.status).toBe('PENDING');
     expect(prisma.providerOrganization.create).not.toHaveBeenCalled();
     expect(prisma.invitation.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -125,5 +125,98 @@ describe('UsersService invitation lifecycle', () => {
         }),
       }),
     );
+  });
+
+  it('blocks duplicate pending provider invitations with a stable code', async () => {
+    const prisma = {
+      organization: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'org-1',
+          name: 'Demo Org',
+          allowedUsers: null,
+          allowedProviders: null,
+        }),
+      },
+      user: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'provider-1',
+          role: UserRole.PROVIDER,
+          accountStatus: 'ACTIVE',
+          organizationId: 'other-org',
+          email: 'provider@example.com',
+          phone: null,
+          fullName: 'Existing Provider',
+          providerId: 'PRV-1',
+        }),
+      },
+      providerOrganization: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      invitation: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'inv-existing' }),
+      },
+    };
+    const service = new UsersService(prisma as any);
+
+    await expect(
+      service.inviteUser(
+        {
+          role: UserRole.PROVIDER,
+          organizationId: 'org-1',
+          email: 'provider@example.com',
+          fullName: 'Existing Provider',
+          confirmExistingUser: true,
+        },
+        { sub: 'admin-1', role: UserRole.SUPER_ADMIN },
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: 'DUPLICATE_PENDING_INVITATION',
+      }),
+    });
+  });
+
+  it('reports an active provider membership with the membership code', async () => {
+    const prisma = {
+      organization: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'org-1',
+          name: 'Demo Org',
+          allowedUsers: null,
+          allowedProviders: null,
+        }),
+      },
+      user: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'provider-1',
+          role: UserRole.PROVIDER,
+          accountStatus: 'ACTIVE',
+          organizationId: 'other-org',
+          email: 'provider@example.com',
+          phone: null,
+          fullName: 'Existing Provider',
+          providerId: 'PRV-1',
+        }),
+      },
+      providerOrganization: {
+        findUnique: jest.fn().mockResolvedValue({
+          active: true,
+          isPrimary: false,
+        }),
+      },
+    };
+    const service = new UsersService(prisma as any);
+
+    const result = await service.inviteUser(
+      {
+        role: UserRole.PROVIDER,
+        organizationId: 'org-1',
+        email: 'provider@example.com',
+        fullName: 'Existing Provider',
+      },
+      { sub: 'admin-1', role: UserRole.SUPER_ADMIN },
+    );
+
+    expect((result as any).code).toBe('MEMBERSHIP_ALREADY_ACTIVE');
   });
 });

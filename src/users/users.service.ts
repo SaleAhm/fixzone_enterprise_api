@@ -329,7 +329,7 @@ export class UsersService {
         existingMembership?.active
       ) {
         return {
-          code: 'USER_ALREADY_MEMBER',
+          code: 'MEMBERSHIP_ALREADY_ACTIVE',
           message: 'This provider already belongs to this organization.',
           existingUser: this.existingUserSummary(existing),
           membership: {
@@ -379,7 +379,7 @@ export class UsersService {
     });
     if (activeDuplicate) {
       throw new ConflictException({
-        code: 'MEMBERSHIP_INVITATION_PENDING',
+        code: 'DUPLICATE_PENDING_INVITATION',
         message: 'A pending invitation already exists.',
       });
     }
@@ -470,30 +470,44 @@ export class UsersService {
   }
 
   async revokeInvitation(id: string, user: JwtUser) {
+    return this.cancelInvitation(id, user, InvitationStatus.REVOKED);
+  }
+
+  async cancelInvitation(
+    id: string,
+    user: JwtUser,
+    status: InvitationStatus = InvitationStatus.CANCELLED,
+  ) {
     const invitation = await this.prisma.invitation.findFirst({
       where: { id, ...this.buildInvitationScope(user) },
       include: this.invitationInclude(),
     });
-    if (!invitation) throw new ForbiddenException('Invitation not found');
+    if (!invitation) {
+      throw new ForbiddenException(this.domainError('INVITATION_NOT_FOUND'));
+    }
     if (invitation.status !== InvitationStatus.PENDING) {
-      throw new ConflictException('Only pending invitations can be revoked');
+      throw new ConflictException(
+        this.domainError('INVITATION_ALREADY_RESOLVED'),
+      );
     }
 
     const revoked = await this.prisma.invitation.update({
       where: { id },
-      data: { status: InvitationStatus.REVOKED, revokedAt: new Date() },
+      data: { status, revokedAt: new Date() },
       include: this.invitationInclude(),
     });
 
     await this.notifyInvitedIdentity(invitation, {
-      type: 'ORGANIZATION_INVITATION_REVOKED',
-      title: 'Organization invitation revoked',
-      message: `${invitation.organization?.name ?? 'An organization'} revoked an invitation.`,
+      type: 'ORGANIZATION_INVITATION_CANCELLED',
+      title: 'Organization invitation cancelled',
+      message: `${invitation.organization?.name ?? 'An organization'} cancelled an invitation.`,
     });
 
-    await this.audit('Invitation Revoked', user, {
+    await this.audit('Invitation Cancelled', user, {
       invitationId: id,
       role: invitation.role,
+      organizationId: invitation.organizationId,
+      status,
     });
     return this.serializeInvitation(revoked);
   }
@@ -503,13 +517,17 @@ export class UsersService {
       where: { id, ...this.buildInvitationScope(user) },
       include: this.invitationInclude(),
     });
-    if (!invitation) throw new ForbiddenException('Invitation not found');
+    if (!invitation) {
+      throw new ForbiddenException(this.domainError('INVITATION_NOT_FOUND'));
+    }
     if (invitation.status !== InvitationStatus.PENDING) {
-      throw new ConflictException('Only pending invitations can be resent');
+      throw new ConflictException(
+        this.domainError('INVITATION_ALREADY_RESOLVED'),
+      );
     }
     if (invitation.expiresAt && invitation.expiresAt <= new Date()) {
       await this.markInvitationExpired(invitation.id);
-      throw new ConflictException('Invitation has expired');
+      throw new ConflictException(this.domainError('INVITATION_EXPIRED'));
     }
     const updated = await this.prisma.invitation.update({
       where: { id },
@@ -580,17 +598,53 @@ export class UsersService {
       where: { id },
       include: this.invitationInclude(),
     });
-    if (!invitation) throw new NotFoundException('Invitation not found');
+    if (!invitation) {
+      throw new NotFoundException(this.domainError('INVITATION_NOT_FOUND'));
+    }
     this.assertInviteeMatches(invitation, user);
     if (invitation.status !== InvitationStatus.PENDING) {
-      throw new ConflictException('Invitation is no longer pending');
+      if (
+        invitation.status === InvitationStatus.ACCEPTED &&
+        invitation.acceptedUserId === actorId
+      ) {
+        return this.serializeInvitation(invitation);
+      }
+      throw new ConflictException(
+        this.domainError(
+          invitation.status === InvitationStatus.CANCELLED ||
+            invitation.status === InvitationStatus.REVOKED
+            ? 'INVITATION_CANCELLED'
+            : invitation.status === InvitationStatus.EXPIRED
+              ? 'INVITATION_EXPIRED'
+              : 'INVITATION_ALREADY_RESOLVED',
+        ),
+      );
     }
     if (invitation.expiresAt && invitation.expiresAt <= new Date()) {
       await this.markInvitationExpired(invitation.id);
-      throw new ConflictException('Invitation has expired');
+      throw new ConflictException(this.domainError('INVITATION_EXPIRED'));
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      const freshInvitation = await tx.invitation.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, expiresAt: true },
+      });
+      if (freshInvitation.status !== InvitationStatus.PENDING) {
+        throw new ConflictException(
+          this.domainError('INVITATION_ALREADY_RESOLVED'),
+        );
+      }
+      if (
+        freshInvitation.expiresAt &&
+        freshInvitation.expiresAt <= new Date()
+      ) {
+        await tx.invitation.update({
+          where: { id },
+          data: { status: InvitationStatus.EXPIRED },
+        });
+        throw new ConflictException(this.domainError('INVITATION_EXPIRED'));
+      }
       const currentUser = await tx.user.findUniqueOrThrow({
         where: { id: actorId },
         select: {
@@ -671,6 +725,13 @@ export class UsersService {
       role: invitation.role,
       organizationId: invitation.organizationId,
     });
+    if (invitation.role === UserRole.PROVIDER && invitation.organizationId) {
+      await this.audit('Provider Membership Activated', user, {
+        invitationId: id,
+        providerId: actorId,
+        organizationId: invitation.organizationId,
+      });
+    }
     return this.serializeInvitation(updated);
   }
 
@@ -679,10 +740,28 @@ export class UsersService {
       where: { id },
       include: this.invitationInclude(),
     });
-    if (!invitation) throw new NotFoundException('Invitation not found');
+    if (!invitation) {
+      throw new NotFoundException(this.domainError('INVITATION_NOT_FOUND'));
+    }
     this.assertInviteeMatches(invitation, user);
     if (invitation.status !== InvitationStatus.PENDING) {
-      throw new ConflictException('Invitation is no longer pending');
+      if (invitation.status === InvitationStatus.DECLINED) {
+        return this.serializeInvitation(invitation);
+      }
+      throw new ConflictException(
+        this.domainError(
+          invitation.status === InvitationStatus.CANCELLED ||
+            invitation.status === InvitationStatus.REVOKED
+            ? 'INVITATION_CANCELLED'
+            : invitation.status === InvitationStatus.EXPIRED
+              ? 'INVITATION_EXPIRED'
+              : 'INVITATION_ALREADY_RESOLVED',
+        ),
+      );
+    }
+    if (invitation.expiresAt && invitation.expiresAt <= new Date()) {
+      await this.markInvitationExpired(invitation.id);
+      throw new ConflictException(this.domainError('INVITATION_EXPIRED'));
     }
     const updated = await this.prisma.invitation.update({
       where: { id },
@@ -867,7 +946,7 @@ export class UsersService {
       invitation.phone && user.phone && invitation.phone === user.phone;
     if (!emailMatches && !phoneMatches) {
       throw new ForbiddenException(
-        'Invitation is not assigned to this account',
+        this.domainError('INVITATION_NOT_OWNED'),
       );
     }
   }
@@ -995,6 +1074,10 @@ export class UsersService {
       acceptedAt: invitation.acceptedAt,
       declinedAt: invitation.declinedAt,
       revokedAt: invitation.revokedAt,
+      cancelledAt:
+        invitation.status === InvitationStatus.CANCELLED
+          ? invitation.revokedAt
+          : null,
       resentAt: invitation.resentAt,
       createdAt: invitation.createdAt,
       updatedAt: invitation.updatedAt,
@@ -1080,5 +1163,21 @@ export class UsersService {
     await this.prisma.demoAuditLog.create({
       data: { action, actorUserId, metadata },
     });
+  }
+
+  private domainError(code: string, message?: string) {
+    const messages: Record<string, string> = {
+      INVITATION_NOT_FOUND: 'Invitation was not found.',
+      INVITATION_NOT_OWNED: 'Invitation is not assigned to this account.',
+      INVITATION_ALREADY_RESOLVED: 'Invitation is no longer pending.',
+      INVITATION_EXPIRED: 'Invitation has expired.',
+      INVITATION_CANCELLED: 'Invitation has been cancelled.',
+      MEMBERSHIP_ALREADY_ACTIVE:
+        'This provider already has an active organization membership.',
+      DUPLICATE_PENDING_INVITATION:
+        'A pending invitation already exists for this provider and organization.',
+      ORGANIZATION_NOT_AUTHORIZED: 'Organization access denied.',
+    };
+    return { code, message: message ?? messages[code] ?? code };
   }
 }

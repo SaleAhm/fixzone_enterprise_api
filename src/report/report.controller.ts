@@ -14,6 +14,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { AssignProviderDto } from './dto/assign-provider.dto';
+import { AssignOrganizationDto } from './dto/assign-organization.dto';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
@@ -224,6 +225,27 @@ export class ReportController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.reportService.assignProvider(id, dto, user);
+  }
+
+  @Get(':id/assignment-candidates')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getAssignmentCandidates(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.getAssignmentCandidates(id, user);
+  }
+
+  @Patch(':id/assign-organization')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  assignOrganization(
+    @Param('id') id: string,
+    @Body() dto: AssignOrganizationDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.assignOrganization(id, dto, user);
   }
 
   @Post('admin/assignments/expire-overdue')
