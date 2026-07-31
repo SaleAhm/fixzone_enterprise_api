@@ -127,6 +127,12 @@ export class PlatformToolsService {
       format: 'fixzone-json-db-backup-v1',
       createdAt: createdAt.toISOString(),
       metadata: {
+        backupType: 'metadata_snapshot',
+        operationalBackup: false,
+        includesPostgresDump: false,
+        includesUploadsArchive: false,
+        restorePolicy:
+          'Governance-controlled metadata restore only; production restore uses the approved VPS backup process.',
         applicationName: 'SecureZone Platform',
         activeModule: 'FixZone Maintenance Services',
         applicationVersion: process.env.npm_package_version ?? '0.0.1',
@@ -205,12 +211,34 @@ export class PlatformToolsService {
     }
 
     const backup = await this.findBackup(id);
+    if (
+      process.env.NODE_ENV === 'production' &&
+      process.env.ALLOW_PLATFORM_METADATA_RESTORE !== 'true'
+    ) {
+      await this.audit('Backup Restore Blocked', actorUserId, {
+        metadata: {
+          backupId: id,
+          fileName: backup.fileName,
+          reason: 'production_metadata_restore_disabled',
+        },
+      });
+      throw new ForbiddenException(
+        'Production restore is governed by the approved operational backup process and is disabled in Platform Tools.',
+      );
+    }
+
     const parsed = JSON.parse(await readFile(backup.filePath, 'utf8')) as {
       format?: string;
+      metadata?: Record<string, unknown>;
       tables?: Record<string, unknown[]>;
     };
     if (parsed.format !== 'fixzone-json-db-backup-v1' || !parsed.tables) {
       throw new BadRequestException('Invalid FixZone backup file');
+    }
+    if (parsed.metadata?.backupType !== 'metadata_snapshot') {
+      throw new BadRequestException(
+        'Unsupported backup type for Platform Tools restore',
+      );
     }
     const tables = parsed.tables;
 

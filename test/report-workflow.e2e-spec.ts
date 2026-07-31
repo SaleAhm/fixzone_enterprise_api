@@ -1494,6 +1494,23 @@ describe('Report Workflow (e2e)', () => {
     expect(assignRes.status).toBe(200);
     expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
 
+    const providerToken = await signToken(provider);
+    const assignedJobs = await request(app.getHttpServer())
+      .get('/api/report/assigned')
+      .set('Authorization', `Bearer ${providerToken}`);
+
+    expect(assignedJobs.status).toBe(200);
+    expect(assignedJobs.body.map((item: { id: string }) => item.id)).toContain(
+      report.id,
+    );
+
+    const providerDetail = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${providerToken}`);
+
+    expect(providerDetail.status).toBe(200);
+    expect(providerDetail.body.id).toBe(report.id);
+
     const closeRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
       .set('Authorization', `Bearer ${superAdminToken}`)

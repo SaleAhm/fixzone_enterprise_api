@@ -45,6 +45,7 @@ describe('Platform Tools (e2e)', () => {
           in: [
             'Backup Created',
             'Backup Deleted',
+            'Backup Restore Blocked',
             'Maintenance Enabled',
             'Maintenance Disabled',
             'Cache Cleared',
@@ -124,6 +125,12 @@ describe('Platform Tools (e2e)', () => {
       .set('Authorization', `Bearer ${token}`);
     expect(list.status).toBe(200);
     expect(list.body.length).toBeGreaterThanOrEqual(1);
+    expect(list.body[0].metadata).toMatchObject({
+      backupType: 'metadata_snapshot',
+      operationalBackup: false,
+      includesPostgresDump: false,
+      includesUploadsArchive: false,
+    });
 
     const audit = await request(app.getHttpServer())
       .get('/api/platform-tools/audit?action=Backup')
@@ -153,6 +160,44 @@ describe('Platform Tools (e2e)', () => {
     expect(second.status).toBe(201);
     expect(first.body.fileName).not.toBe(second.body.fileName);
     expect(first.body.filePath).not.toBe(second.body.filePath);
+  });
+
+  it('blocks metadata restore in production without explicit governance override', async () => {
+    const superAdmin = await createUser(UserRole.SUPER_ADMIN);
+    const token = await tokenFor(superAdmin);
+    const backup = await request(app.getHttpServer())
+      .post('/api/platform-tools/backups')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(backup.status).toBe(201);
+
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousRestoreOverride = process.env.ALLOW_PLATFORM_METADATA_RESTORE;
+    process.env.NODE_ENV = 'production';
+    delete process.env.ALLOW_PLATFORM_METADATA_RESTORE;
+
+    try {
+      const restore = await request(app.getHttpServer())
+        .post(`/api/platform-tools/backups/${backup.body.id}/restore`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ confirm: true });
+
+      expect(restore.status).toBe(403);
+      expect(restore.body.message).toContain(
+        'approved operational backup process',
+      );
+    } finally {
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+      if (previousRestoreOverride === undefined) {
+        delete process.env.ALLOW_PLATFORM_METADATA_RESTORE;
+      } else {
+        process.env.ALLOW_PLATFORM_METADATA_RESTORE = previousRestoreOverride;
+      }
+    }
   });
 
   it('enforces maintenance mode for citizen/provider APIs while allowing admin bypass', async () => {

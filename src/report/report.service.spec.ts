@@ -217,7 +217,7 @@ describe('ReportService monthly quota guard', () => {
 });
 
 describe('ReportService provider tenant access', () => {
-  it('lists only assignments from active provider organizations', async () => {
+  it('lists directly assigned jobs even when provider organization membership is missing', async () => {
     const service = new ReportService({
       providerOrganization: {
         findMany: jest.fn().mockResolvedValue([{ organizationId: 'org-b' }]),
@@ -237,13 +237,13 @@ describe('ReportService provider tenant access', () => {
       expect.objectContaining({
         where: {
           assignedProviderId: 'provider-1',
-          organizationId: { in: ['org-a', 'org-b'] },
         },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
     );
   });
 
-  it('denies assigned provider direct access after membership is inactive', async () => {
+  it('allows an explicitly assigned provider to open the assigned report', async () => {
     const service = new ReportService({
       providerOrganization: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -264,7 +264,34 @@ describe('ReportService provider tenant access', () => {
         role: UserRole.PROVIDER,
         organizationId: 'org-a',
       }),
-    ).rejects.toThrow('Provider organization access denied');
+    ).resolves.toMatchObject({
+      id: 'report-1',
+      assignedProviderId: 'provider-1',
+    });
+  });
+
+  it('denies unassigned provider direct access without active organization membership', async () => {
+    const service = new ReportService({
+      providerOrganization: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      report: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'report-1',
+          citizenId: 'citizen-1',
+          assignedProviderId: 'provider-2',
+          organizationId: 'org-b',
+        }),
+      },
+    } as any);
+
+    await expect(
+      service.getReportById('report-1', {
+        id: 'provider-1',
+        role: UserRole.PROVIDER,
+        organizationId: 'org-a',
+      }),
+    ).rejects.toThrow('Access denied');
   });
 
   it('keeps closed report discussions read-only', async () => {

@@ -266,14 +266,12 @@ export class ReportService {
     }
 
     await this.expireOverdueAssignments({ providerId: userId });
-    const organizationIds = await this.authorizedProviderOrganizationIds(user);
 
     const reports = await this.prisma.report.findMany({
       where: {
         assignedProviderId: userId,
-        organizationId: { in: organizationIds },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: this.includeRelations(),
     });
     return reports.map((report) => this.withProtectedEvidenceUrls(report));
@@ -318,7 +316,6 @@ export class ReportService {
     }
 
     if (report.assignedProviderId === userId && this.isProvider(user)) {
-      await this.assertProviderCanAccessReport(user, report.organizationId);
       return this.withEnterpriseReportDetails(report);
     }
 
@@ -1943,13 +1940,13 @@ export class ReportService {
     if (user.role === UserRole.CITIZEN && report.citizenId === userId) return;
 
     if (this.isProvider(user)) {
-      await this.assertProviderCanAccessReport(user, report.organizationId);
       if (
         report.assignedProviderId === userId ||
         report.lastAssignmentProviderId === userId
       ) {
         return;
       }
+      await this.assertProviderCanAccessReport(user, report.organizationId);
     }
 
     const sameOrg =
