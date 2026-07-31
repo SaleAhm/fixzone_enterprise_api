@@ -160,3 +160,74 @@ Recommended order after explicit authorization:
 9. Run authenticated smoke tests and monitor for at least 60 minutes.
 
 Immediate rollback triggers: migration failure, backend startup failure, repeated 5xx, authentication regression, cross-tenant access, evidence upload failure, assignment/completion regression, or abnormal database locks/connections.
+
+## Tranche 2 Local Hardening Update
+
+This local tranche adds production-safe JWT configuration and protected report evidence delivery without migrations, deployments, production data access, or infrastructure changes.
+
+### JWT Secret Policy
+
+`JWT_ACCESS_SECRET` is now resolved through a single backend helper used by `AuthModule`, `AuthService`, and `JwtStrategy`.
+
+- `development` and `test` may use the explicit local-only fallback `fixzone_local_development_jwt_secret`.
+- `staging` and `production` must provide `JWT_ACCESS_SECRET`.
+- Missing, empty, whitespace-only, known fallback, or obvious placeholder values are rejected during application configuration/startup.
+- Error messages name the required variable but do not print the configured secret value.
+
+Production prerequisite: configure a strong non-placeholder `JWT_ACCESS_SECRET` before deploying this tranche. No production secret was read, rotated, generated, or modified during local work.
+
+### Protected Evidence Architecture
+
+Private report evidence remains stored under the existing persistent upload roots:
+
+- `uploads/report-evidence/<reportId>/<fileName>`
+- `uploads/report-completion/<reportId>/<fileName>`
+
+The database continues to preserve existing path/url fields for compatibility, but API responses now prefer authenticated routes for private report evidence:
+
+- `GET /api/report/:reportId/evidence/:fileName`
+- `GET /api/report/:reportId/completion-evidence/:fileName`
+
+The endpoints require JWT authentication, validate the requested report/file pairing, restrict file resolution to approved upload roots, stream the file, and set `Content-Type`, `Content-Disposition`, `Cache-Control: private, no-store`, and `X-Content-Type-Options: nosniff`.
+
+### Evidence Authorization Matrix
+
+Allowed:
+
+- Citizen owner of the report.
+- Currently or historically assigned provider when the provider is active and authorized for the report organization.
+- Active organization admin or dispatch officer in the report organization.
+- Super administrator.
+
+Denied:
+
+- Unauthenticated requests.
+- Cross-citizen access.
+- Unassigned provider access.
+- Cross-organization admin/dispatch access.
+- Invalid report/evidence pairings.
+- Path traversal and missing-file requests.
+
+### Static Upload Decision
+
+`/uploads/demo` remains public static content with hardened static headers for demo/sample assets. Private `report-evidence` and `report-completion` roots are no longer served from the root `/uploads` static route in backend startup code. Deployment must preserve the upload volume and avoid exposing private runtime evidence through a separate web server or reverse proxy alias.
+
+### Frontend Evidence Access
+
+Flutter report detail surfaces now normalize private report evidence to the protected API routes and render them through authenticated byte fetches using the normal bearer token header. Tokens are not placed in query strings. Demo assets can still render from `/uploads/demo`.
+
+### Dependency Advisory Triage
+
+Controlled non-force dependency remediation was applied only to compatible package families:
+
+- Nest runtime/testing packages moved from `11.1.17` to `11.1.28`.
+- `@nestjs/config` moved from `4.0.3` to `4.0.4`.
+- Backend `firebase-admin` moved from `13.9.0` to `13.10.0`.
+- Frontend Node tooling `firebase-admin` moved from `13.7.0` to `13.10.0`.
+- Frontend Node tooling `firebase` moved from `12.15.0` to `12.17.0`.
+
+Remaining critical/high advisories are documented for a separate dependency tranche where upstream major upgrades or package overrides can be reviewed independently. Do not use `npm audit fix --force` without a separate compatibility review.
+
+### UAT Impact
+
+Authenticated browser UAT should verify evidence rendering through the API, not direct private `/uploads` URLs. Negative tests should confirm guessed private upload URLs do not succeed without authorization while demo assets remain unaffected.
