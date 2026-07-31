@@ -9,6 +9,7 @@ import { Prisma, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TrustService } from '../trust/trust.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
+import { getJwtAccessSecret } from './jwt-secret';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -518,13 +519,11 @@ export class AuthService {
     actorUserId: string,
     metadata: Record<string, unknown> = {},
   ) {
-    const audit = (this.prisma as any).demoAuditLog;
-    if (!audit?.create) return;
-    await audit.create({
+    await this.prisma.demoAuditLog.create({
       data: {
         action,
         actorUserId,
-        metadata,
+        metadata: metadata as Prisma.InputJsonValue,
       },
     });
   }
@@ -597,7 +596,7 @@ export class AuthService {
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
-      secret: process.env.JWT_ACCESS_SECRET || 'fixzone_access_secret',
+      secret: getJwtAccessSecret(),
       expiresIn: '1d',
     });
 
