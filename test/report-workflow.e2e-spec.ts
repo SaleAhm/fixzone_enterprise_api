@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -151,14 +151,16 @@ describe('Report Workflow (e2e)', () => {
 
   async function cleanupUploadArtifacts(reportIds: string[]) {
     for (const reportId of reportIds) {
-      const uploadDirectory = join(
-        process.cwd(),
-        'uploads',
-        'report-completion',
-        reportId,
-      );
-      if (existsSync(uploadDirectory)) {
-        rmSync(uploadDirectory, { recursive: true, force: true });
+      for (const folder of ['report-completion', 'report-evidence']) {
+        const uploadDirectory = join(
+          process.cwd(),
+          'uploads',
+          folder,
+          reportId,
+        );
+        if (existsSync(uploadDirectory)) {
+          rmSync(uploadDirectory, { recursive: true, force: true });
+        }
       }
     }
   }
@@ -228,6 +230,25 @@ describe('Report Workflow (e2e)', () => {
       role: user.role,
       organizationId: user.organizationId,
     });
+  }
+
+  function writeEvidenceFile(params: {
+    reportId: string;
+    folder: 'report-evidence' | 'report-completion';
+    fileName: string;
+  }) {
+    const directory = join(
+      process.cwd(),
+      'uploads',
+      params.folder,
+      params.reportId,
+    );
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, params.fileName),
+      Buffer.from(onePixelPngBase64, 'base64'),
+    );
+    return `${params.folder}/${params.reportId}/${params.fileName}`;
   }
 
   it('allows the strict happy path from PENDING to CLOSED', async () => {
@@ -626,7 +647,7 @@ describe('Report Workflow (e2e)', () => {
         new RegExp(`^report-completion/${report.id}/.+\\.png$`),
       ),
       completionImageUrl: expect.stringMatching(
-        new RegExp(`^/uploads/report-completion/${report.id}/.+\\.png$`),
+        new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
       ),
     });
 
@@ -644,7 +665,9 @@ describe('Report Workflow (e2e)', () => {
     expect(completedRes.body).toMatchObject({
       status: ReportStatus.COMPLETED_BY_PROVIDER,
       completionImagePath: uploadRes.body.completionImagePath,
-      completionImageUrl: uploadRes.body.completionImageUrl,
+      completionImageUrl: expect.stringMatching(
+        new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+      ),
     });
 
     const storedReport = await prisma.report.findUniqueOrThrow({
@@ -655,7 +678,7 @@ describe('Report Workflow (e2e)', () => {
       uploadRes.body.completionImagePath,
     );
     expect(storedReport.completionImageUrl).toBe(
-      uploadRes.body.completionImageUrl,
+      `/uploads/${uploadRes.body.completionImagePath}`,
     );
 
     const reviewRes = await request(app.getHttpServer())
@@ -665,12 +688,176 @@ describe('Report Workflow (e2e)', () => {
     expect(reviewRes.status).toBe(200);
     expect(reviewRes.body).toMatchObject({
       completionImagePath: uploadRes.body.completionImagePath,
-      completionImageUrl: uploadRes.body.completionImageUrl,
+      completionImageUrl: expect.stringMatching(
+        new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+      ),
       completion: {
         imagePath: uploadRes.body.completionImagePath,
-        imageUrl: uploadRes.body.completionImageUrl,
+        imageUrl: expect.stringMatching(
+          new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+        ),
       },
     });
+  });
+
+  it('protects report evidence retrieval by role, tenant, pairing, path, and auth', async () => {
+    const org = await createOrganization('Workflow Protected Evidence Org');
+    const otherOrg = await createOrganization('Workflow Other Evidence Org');
+    const admin = await createUser({
+      email: 'wf-admin-evidence@test.com',
+      fullName: 'Workflow Evidence Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const otherAdmin = await createUser({
+      email: 'wf-other-admin-evidence@test.com',
+      fullName: 'Workflow Other Evidence Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-evidence@test.com',
+      fullName: 'Workflow Evidence Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+      providerId: 'PRV-WF-EVID-1',
+    });
+    const otherProvider = await createUser({
+      email: 'wf-other-provider-evidence@test.com',
+      fullName: 'Workflow Other Evidence Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+      providerId: 'PRV-WF-EVID-2',
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-evidence@test.com',
+      fullName: 'Workflow Evidence Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherCitizen = await createUser({
+      email: 'wf-other-citizen-evidence@test.com',
+      fullName: 'Workflow Other Evidence Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const superAdmin = await createUser({
+      email: 'wf-super-evidence@test.com',
+      fullName: 'Workflow Evidence Super',
+      role: UserRole.SUPER_ADMIN,
+      organizationId: null,
+    });
+    const report = await createReport({
+      title: 'WF protected evidence',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const otherReport = await createReport({
+      title: 'WF protected evidence pairing',
+      status: ReportStatus.PENDING,
+      organizationId: org.id,
+      citizenId: citizen.id,
+    });
+    const evidencePath = writeEvidenceFile({
+      reportId: report.id,
+      folder: 'report-evidence',
+      fileName: 'citizen-evidence.png',
+    });
+    const completionPath = writeEvidenceFile({
+      reportId: report.id,
+      folder: 'report-completion',
+      fileName: 'completion-evidence.png',
+    });
+    await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        evidenceImagePath: evidencePath,
+        evidenceImageUrl: `/uploads/${evidencePath}`,
+        completionImagePath: completionPath,
+        completionImageUrl: `/uploads/${completionPath}`,
+      },
+    });
+
+    const citizenToken = await signToken(citizen);
+    const otherCitizenToken = await signToken(otherCitizen);
+    const providerToken = await signToken(provider);
+    const otherProviderToken = await signToken(otherProvider);
+    const adminToken = await signToken(admin);
+    const otherAdminToken = await signToken(otherAdmin);
+    const superAdminToken = await signToken(superAdmin);
+    const evidenceUrl = `/api/report/${report.id}/evidence/citizen-evidence.png`;
+    const completionUrl = `/api/report/${report.id}/completion-evidence/completion-evidence.png`;
+
+    const ownerRes = await request(app.getHttpServer())
+      .get(evidenceUrl)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(ownerRes.status).toBe(200);
+    expect(ownerRes.headers['content-type']).toContain('image/png');
+    expect(ownerRes.headers['content-disposition']).toContain('inline');
+    expect(ownerRes.headers['x-content-type-options']).toBe('nosniff');
+    expect(ownerRes.headers['cache-control']).toContain('no-store');
+
+    expect(
+      await request(app.getHttpServer())
+        .get(evidenceUrl)
+        .set('Authorization', `Bearer ${otherCitizenToken}`),
+    ).toHaveProperty('status', 403);
+    expect(
+      await request(app.getHttpServer())
+        .get(evidenceUrl)
+        .set('Authorization', `Bearer ${providerToken}`),
+    ).toHaveProperty('status', 200);
+    expect(
+      await request(app.getHttpServer())
+        .get(evidenceUrl)
+        .set('Authorization', `Bearer ${otherProviderToken}`),
+    ).toHaveProperty('status', 403);
+    expect(
+      await request(app.getHttpServer())
+        .get(evidenceUrl)
+        .set('Authorization', `Bearer ${adminToken}`),
+    ).toHaveProperty('status', 200);
+    expect(
+      await request(app.getHttpServer())
+        .get(evidenceUrl)
+        .set('Authorization', `Bearer ${otherAdminToken}`),
+    ).toHaveProperty('status', 403);
+    expect(
+      await request(app.getHttpServer())
+        .get(evidenceUrl)
+        .set('Authorization', `Bearer ${superAdminToken}`),
+    ).toHaveProperty('status', 200);
+    expect(await request(app.getHttpServer()).get(evidenceUrl)).toHaveProperty(
+      'status',
+      401,
+    );
+    expect(
+      await request(app.getHttpServer())
+        .get(`/api/report/${otherReport.id}/evidence/citizen-evidence.png`)
+        .set('Authorization', `Bearer ${citizenToken}`),
+    ).toHaveProperty('status', 404);
+    expect(
+      await request(app.getHttpServer())
+        .get(`/api/report/${report.id}/evidence/..%2Fsecret.png`)
+        .set('Authorization', `Bearer ${citizenToken}`),
+    ).toHaveProperty('status', 404);
+    expect(
+      await request(app.getHttpServer())
+        .get(`/api/report/${report.id}/evidence/missing.png`)
+        .set('Authorization', `Bearer ${citizenToken}`),
+    ).toHaveProperty('status', 404);
+    expect(
+      await request(app.getHttpServer()).get(
+        '/uploads/report-evidence/guessed.png',
+      ),
+    ).toHaveProperty('status', 404);
+    expect(
+      await request(app.getHttpServer())
+        .get(completionUrl)
+        .set('Authorization', `Bearer ${citizenToken}`),
+    ).toHaveProperty('status', 200);
   });
 
   it('enforces citizen completion review ownership and required rating', async () => {

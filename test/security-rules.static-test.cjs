@@ -5,7 +5,9 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/^\uFEFF/, '');
+  return fs
+    .readFileSync(path.join(root, relativePath), 'utf8')
+    .replace(/^\uFEFF/, '');
 }
 
 function assertIncludes(file, text, message) {
@@ -147,9 +149,21 @@ for (const file of [
   'src/governance/governance.controller.ts',
 ]) {
   assertIncludes(file, 'UseGuards', 'Protected controllers must use guards');
-  assertIncludes(file, 'JwtAuthGuard', 'Protected controllers must require JWT auth');
-  assertIncludes(file, 'RolesGuard', 'Protected controllers must enforce roles');
-  assertIncludes(file, '@Roles(', 'Protected controllers must declare allowed roles');
+  assertIncludes(
+    file,
+    'JwtAuthGuard',
+    'Protected controllers must require JWT auth',
+  );
+  assertIncludes(
+    file,
+    'RolesGuard',
+    'Protected controllers must enforce roles',
+  );
+  assertIncludes(
+    file,
+    '@Roles(',
+    'Protected controllers must declare allowed roles',
+  );
 }
 
 assertIncludes(
@@ -212,18 +226,38 @@ assertIncludes(
 );
 assertIncludes(
   'src/main.ts',
+  "'/uploads/demo'",
+  'Only demo uploads should remain publicly static',
+);
+assertIncludes(
+  'src/main.ts',
   "dotfiles: 'deny'",
-  'Static upload serving must deny dotfiles',
+  'Static demo upload serving must deny dotfiles',
 );
 assertIncludes(
   'src/main.ts',
   'X-Content-Type-Options',
-  'Static upload responses must set nosniff',
+  'Static demo upload responses must set nosniff',
 );
 assertIncludes(
   'src/main.ts',
   'Content-Security-Policy',
-  'Static upload responses must set a restrictive CSP',
+  'Static demo upload responses must set a restrictive CSP',
+);
+assertNotIncludes(
+  'src/main.ts',
+  "app.use(\r\n    '/uploads',",
+  'Private runtime evidence must not be served by the root uploads static route',
+);
+assertIncludes(
+  'src/report/report.controller.ts',
+  "@Get(':id/evidence/:fileName')",
+  'Report evidence retrieval must use a guarded API endpoint',
+);
+assertIncludes(
+  'src/report/report.controller.ts',
+  "@Get(':id/completion-evidence/:fileName')",
+  'Completion evidence retrieval must use a guarded API endpoint',
 );
 
 const envFiles = ['.env', '.env.local', '.env.production.local'];
@@ -267,8 +301,16 @@ const sourceFilesToScan = controllerFiles().concat([
 ]);
 
 for (const file of sourceFilesToScan) {
-  assertNotIncludes(file, 'console.log(', 'Release source must avoid raw console.log debugging');
-  assertNotIncludes(file, 'passwordHash: true', 'API selects must not expose password hashes');
+  assertNotIncludes(
+    file,
+    'console.log(',
+    'Release source must avoid raw console.log debugging',
+  );
+  assertNotIncludes(
+    file,
+    'passwordHash: true',
+    'API selects must not expose password hashes',
+  );
 }
 
 console.log('Backend static security release checks passed.');

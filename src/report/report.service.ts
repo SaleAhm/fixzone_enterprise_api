@@ -11,10 +11,14 @@ import {
 import {
   AssignmentOutcome,
   BillingStatus,
+  AccountStatus,
   OrganizationStatus,
   ReportStatus,
   UserRole,
 } from '@prisma/client';
+import { createReadStream } from 'fs';
+import { access } from 'fs/promises';
+import { basename, extname, posix, resolve, relative, sep } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadSecurityService } from '../security/upload-security.service';
 import { TrustService } from '../trust/trust.service';
@@ -43,6 +47,39 @@ type JwtUser = {
   fullName?: string | null;
   role: UserRole;
   organizationId?: string | null;
+};
+
+type EvidenceKind = 'report-evidence' | 'report-completion';
+
+type ReportWithEvidence = {
+  id: string;
+  organizationId: string;
+  citizenId: string;
+  assignedProviderId: string | null;
+  lastAssignmentProviderId?: string | null;
+  status?: ReportStatus;
+  evidenceImageUrl?: string | null;
+  evidenceImagePath?: string | null;
+  completionImageUrl?: string | null;
+  completionImagePath?: string | null;
+};
+
+type EnterpriseReportWithEvidence = ReportWithEvidence & {
+  completionNote?: string | null;
+  completedByProviderAt?: Date | string | null;
+  completionLatitude?: number | null;
+  completionLongitude?: number | null;
+  completionAccuracy?: number | null;
+  completionLocationCapturedAt?: Date | string | null;
+  completionLocationSource?: string | null;
+  citizenRating?: number | null;
+  citizenFeedback?: string | null;
+  completionRejectionReason?: string | null;
+  assignedAt?: Date | string | null;
+  assignmentDeadlineAt?: Date | string | null;
+  lastAssignmentOutcome?: AssignmentOutcome | null;
+  lastAssignmentReason?: string | null;
+  assignedProvider?: unknown;
 };
 
 @Injectable()
@@ -142,7 +179,7 @@ export class ReportService {
         });
       }
 
-      return reports;
+      return reports.map((report) => this.withProtectedEvidenceUrls(report));
     } catch (error) {
       const prismaError = error as {
         code?: string;
@@ -231,7 +268,7 @@ export class ReportService {
     await this.expireOverdueAssignments({ providerId: userId });
     const organizationIds = await this.authorizedProviderOrganizationIds(user);
 
-    return this.prisma.report.findMany({
+    const reports = await this.prisma.report.findMany({
       where: {
         assignedProviderId: userId,
         organizationId: { in: organizationIds },
@@ -239,6 +276,7 @@ export class ReportService {
       orderBy: { createdAt: 'desc' },
       include: this.includeRelations(),
     });
+    return reports.map((report) => this.withProtectedEvidenceUrls(report));
   }
 
   // ===================== ORGANIZATION =====================
@@ -249,11 +287,12 @@ export class ReportService {
       organizationId: where.organizationId,
     });
 
-    return this.prisma.report.findMany({
+    const reports = await this.prisma.report.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       include: this.includeRelations(),
     });
+    return reports.map((report) => this.withProtectedEvidenceUrls(report));
   }
 
   // ===================== SINGLE REPORT =====================
@@ -334,6 +373,7 @@ export class ReportService {
     if (report.status === ReportStatus.CLOSED) {
       throw new ForbiddenException('Discussion is read-only for this report');
     }
+    // eslint-disable-next-line no-control-regex
     const safeMessage = text.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const message = await this.prisma.reportMessage.create({
       data: {
@@ -379,6 +419,58 @@ export class ReportService {
     return this.assignProviderById(reportId, dto.providerId, user);
   }
 
+  async openEvidenceFile(
+    reportId: string,
+    kind: EvidenceKind,
+    fileName: string,
+    user: JwtUser,
+  ) {
+    this.assertSafeEvidenceFileName(fileName);
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      select: {
+        id: true,
+        organizationId: true,
+        citizenId: true,
+        assignedProviderId: true,
+        lastAssignmentProviderId: true,
+        status: true,
+        evidenceImagePath: true,
+        completionImagePath: true,
+      },
+    });
+
+    if (!report) throw new NotFoundException('Evidence not found');
+    await this.assertCanAccessEvidence(report, kind, user);
+
+    const storedPath =
+      kind === 'report-evidence'
+        ? report.evidenceImagePath
+        : report.completionImagePath;
+    const normalizedStoredPath = this.extractLocalUploadPath(storedPath);
+    const expectedPath = posix.join(kind, reportId, fileName);
+
+    if (normalizedStoredPath !== expectedPath) {
+      throw new NotFoundException('Evidence not found');
+    }
+
+    const uploadRoot = resolve(process.cwd(), 'uploads');
+    const absolutePath = resolve(uploadRoot, kind, reportId, fileName);
+    this.assertInsideUploadRoot(uploadRoot, absolutePath);
+
+    try {
+      await access(absolutePath);
+    } catch {
+      throw new NotFoundException('Evidence not found');
+    }
+
+    return {
+      stream: createReadStream(absolutePath),
+      fileName,
+      contentType: this.contentTypeForEvidenceFile(fileName),
+    };
+  }
+
   async getAssignmentCandidates(reportId: string, user: JwtUser) {
     if (
       !this.isAdmin(user) &&
@@ -392,7 +484,10 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (!this.isSuperAdmin(user) && report.organizationId !== user.organizationId) {
+    if (
+      !this.isSuperAdmin(user) &&
+      report.organizationId !== user.organizationId
+    ) {
       throw new ForbiddenException('Cross-org not allowed');
     }
 
@@ -491,7 +586,10 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (!this.isSuperAdmin(user) && report.organizationId !== user.organizationId) {
+    if (
+      !this.isSuperAdmin(user) &&
+      report.organizationId !== user.organizationId
+    ) {
       throw new ForbiddenException('Cross-org not allowed');
     }
     if (normalizeReportStatus(report.status) !== ReportStatus.PENDING) {
@@ -502,7 +600,10 @@ export class ReportService {
     if (report.assignedProviderId) {
       throw new ForbiddenException('Report already has an assigned provider');
     }
-    if (!this.isSuperAdmin(user) && dto.organizationId !== user.organizationId) {
+    if (
+      !this.isSuperAdmin(user) &&
+      dto.organizationId !== user.organizationId
+    ) {
       throw new ForbiddenException('Organization assignment scope denied');
     }
 
@@ -584,7 +685,7 @@ export class ReportService {
       title: 'Report assigned to organization',
       message: `"${updated.title}" was assigned to ${organization.name}.`,
     });
-    return updated;
+    return this.withProtectedEvidenceUrls(updated);
   }
 
   async processOverdueAssignments(user: JwtUser) {
@@ -681,7 +782,7 @@ export class ReportService {
       title: 'Assignment returned to dispatch',
       message: `"${updated.title}" was returned to the dispatch queue.`,
     });
-    return updated;
+    return this.withProtectedEvidenceUrls(updated);
   }
 
   async reassignProvider(
@@ -1001,7 +1102,7 @@ export class ReportService {
         },
       },
     );
-    return updated;
+    return this.withProtectedEvidenceUrls(updated);
   }
 
   async uploadCompletionEvidence(
@@ -1061,7 +1162,12 @@ export class ReportService {
 
     return {
       completionImagePath: saved.imagePath,
-      completionImageUrl: saved.imageUrl,
+      completionImageUrl:
+        this.protectedEvidenceUrl(
+          reportId,
+          'report-completion',
+          saved.imagePath,
+        ) ?? saved.imageUrl,
     };
   }
 
@@ -1118,7 +1224,7 @@ export class ReportService {
         metadata: { imagePath: saved.imagePath, imageUrl: saved.imageUrl },
       },
     );
-    return updated;
+    return this.withProtectedEvidenceUrls(updated);
   }
 
   async confirmCitizenCompletion(
@@ -1244,16 +1350,17 @@ export class ReportService {
     }
 
     const awaitingReview = report.status === ReportStatus.COMPLETED_BY_PROVIDER;
+    const protectedReport = this.withProtectedEvidenceUrls(report);
     return {
-      ...report,
+      ...protectedReport,
       completion: {
-        note: report.completionNote,
-        imageUrl: report.completionImageUrl,
-        imagePath: report.completionImagePath,
-        submittedAt: report.completedByProviderAt,
-        location: this.completionLocationMetadata(report),
+        note: protectedReport.completionNote,
+        imageUrl: protectedReport.completionImageUrl,
+        imagePath: protectedReport.completionImagePath,
+        submittedAt: protectedReport.completedByProviderAt,
+        location: this.completionLocationMetadata(protectedReport),
       },
-      provider: report.assignedProvider,
+      provider: protectedReport.assignedProvider,
       availableActions: {
         confirm: awaitingReview,
         markIncomplete: awaitingReview,
@@ -1764,9 +1871,9 @@ export class ReportService {
     return path;
   }
 
-  private async withEnterpriseReportDetails<T extends { id: string }>(
-    report: T,
-  ) {
+  private async withEnterpriseReportDetails<
+    T extends EnterpriseReportWithEvidence,
+  >(report: T) {
     const [timeline, notifications] = await Promise.all([
       (this.prisma as any).reportActivity?.findMany
         ? (this.prisma as any).reportActivity.findMany({
@@ -1783,36 +1890,146 @@ export class ReportService {
         : [],
     ]);
 
+    const protectedReport = this.withProtectedEvidenceUrls(report);
     return {
-      ...report,
+      ...protectedReport,
       enterpriseDetails: {
         originalEvidence: {
-          imageUrl: (report as any).evidenceImageUrl ?? null,
-          imagePath: (report as any).evidenceImagePath ?? null,
+          imageUrl: protectedReport.evidenceImageUrl ?? null,
+          imagePath: protectedReport.evidenceImagePath ?? null,
         },
         completionEvidence: {
-          note: (report as any).completionNote ?? null,
-          imageUrl: (report as any).completionImageUrl ?? null,
-          imagePath: (report as any).completionImagePath ?? null,
-          submittedAt: (report as any).completedByProviderAt ?? null,
-          location: this.completionLocationMetadata(report as any),
+          note: protectedReport.completionNote ?? null,
+          imageUrl: protectedReport.completionImageUrl ?? null,
+          imagePath: protectedReport.completionImagePath ?? null,
+          submittedAt: protectedReport.completedByProviderAt ?? null,
+          location: this.completionLocationMetadata(protectedReport),
         },
         citizenReview: {
-          rating: (report as any).citizenRating ?? null,
-          feedback: (report as any).citizenFeedback ?? null,
-          incompleteReason: (report as any).completionRejectionReason ?? null,
+          rating: protectedReport.citizenRating ?? null,
+          feedback: protectedReport.citizenFeedback ?? null,
+          incompleteReason: protectedReport.completionRejectionReason ?? null,
         },
         assignment: {
-          assignedAt: (report as any).assignedAt ?? null,
-          deadlineAt: (report as any).assignmentDeadlineAt ?? null,
-          lastOutcome: (report as any).lastAssignmentOutcome ?? null,
-          lastReason: (report as any).lastAssignmentReason ?? null,
-          lastProviderId: (report as any).lastAssignmentProviderId ?? null,
+          assignedAt: protectedReport.assignedAt ?? null,
+          deadlineAt: protectedReport.assignmentDeadlineAt ?? null,
+          lastOutcome: protectedReport.lastAssignmentOutcome ?? null,
+          lastReason: protectedReport.lastAssignmentReason ?? null,
+          lastProviderId: protectedReport.lastAssignmentProviderId ?? null,
         },
         timeline,
         notifications,
       },
     };
+  }
+
+  private async assertCanAccessEvidence(
+    report: ReportWithEvidence,
+    kind: EvidenceKind,
+    user: JwtUser,
+  ) {
+    const userId = this.getUserId(user);
+    const activeUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { accountStatus: true, role: true, organizationId: true },
+    });
+
+    if (!activeUser || activeUser.accountStatus !== AccountStatus.ACTIVE) {
+      throw new ForbiddenException('Evidence not available');
+    }
+
+    if (this.isSuperAdmin(user)) return;
+
+    if (user.role === UserRole.CITIZEN && report.citizenId === userId) return;
+
+    if (this.isProvider(user)) {
+      await this.assertProviderCanAccessReport(user, report.organizationId);
+      if (
+        report.assignedProviderId === userId ||
+        report.lastAssignmentProviderId === userId
+      ) {
+        return;
+      }
+    }
+
+    const sameOrg =
+      activeUser.organizationId &&
+      activeUser.organizationId === report.organizationId;
+    if ((this.isAdmin(user) || this.isDispatch(user)) && sameOrg) return;
+
+    throw new ForbiddenException('Evidence not available');
+  }
+
+  private withProtectedEvidenceUrls<T extends ReportWithEvidence>(
+    report: T,
+  ): T {
+    return {
+      ...report,
+      evidenceImageUrl:
+        this.protectedEvidenceUrl(
+          report.id,
+          'report-evidence',
+          report.evidenceImagePath ?? report.evidenceImageUrl,
+        ) ?? report.evidenceImageUrl,
+      completionImageUrl:
+        this.protectedEvidenceUrl(
+          report.id,
+          'report-completion',
+          report.completionImagePath ?? report.completionImageUrl,
+        ) ?? report.completionImageUrl,
+    };
+  }
+
+  private protectedEvidenceUrl(
+    reportId: string,
+    kind: EvidenceKind,
+    value?: string | null,
+  ) {
+    const path = this.extractLocalUploadPath(value);
+    if (!path) return null;
+
+    const parts = path.split('/');
+    if (parts.length !== 3 || parts[0] !== kind || parts[1] !== reportId) {
+      return null;
+    }
+
+    return `/api/report/${reportId}/${kind === 'report-evidence' ? 'evidence' : 'completion-evidence'}/${parts[2]}`;
+  }
+
+  private assertSafeEvidenceFileName(fileName: string) {
+    if (
+      fileName !== basename(fileName) ||
+      !/^[A-Za-z0-9._~-]+$/.test(fileName)
+    ) {
+      throw new NotFoundException('Evidence not found');
+    }
+  }
+
+  private contentTypeForEvidenceFile(fileName: string) {
+    switch (extname(fileName).toLowerCase()) {
+      case '.jpg':
+      case '.jpeg':
+        return 'image/jpeg';
+      case '.png':
+        return 'image/png';
+      case '.webp':
+        return 'image/webp';
+      default:
+        throw new NotFoundException('Evidence not found');
+    }
+  }
+
+  private assertInsideUploadRoot(uploadRoot: string, targetPath: string) {
+    const relativePath = relative(uploadRoot, targetPath);
+
+    if (
+      relativePath === '' ||
+      relativePath.startsWith('..') ||
+      relativePath.includes(`..${sep}`) ||
+      resolve(uploadRoot, relativePath) !== targetPath
+    ) {
+      throw new NotFoundException('Evidence not found');
+    }
   }
 
   private async createNotification(data: {

@@ -9,8 +9,8 @@ async function bootstrap() {
 
   configureApp(app);
   app.use(
-    '/uploads',
-    express.static(join(process.cwd(), 'uploads'), {
+    '/uploads/demo',
+    express.static(join(process.cwd(), 'uploads', 'demo'), {
       dotfiles: 'deny',
       index: false,
       setHeaders: (res) => {
@@ -23,4 +23,4 @@ async function bootstrap() {
 
   await app.listen(process.env.PORT ?? 3000);
 }
-bootstrap();
+void bootstrap();

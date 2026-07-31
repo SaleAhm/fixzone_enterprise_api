@@ -6,9 +6,12 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
+import type { Response } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -212,6 +215,64 @@ export class ReportController {
   )
   getReportById(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getReportById(id, user);
+  }
+
+  @Get(':id/evidence/:fileName')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  async getReportEvidence(
+    @Param('id') id: string,
+    @Param('fileName') fileName: string,
+    @CurrentUser() user: CurrentAuthUser,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const evidence = await this.reportService.openEvidenceFile(
+      id,
+      'report-evidence',
+      fileName,
+      user,
+    );
+    res.set({
+      'Content-Type': evidence.contentType,
+      'Content-Disposition': `inline; filename="${evidence.fileName}"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return new StreamableFile(evidence.stream);
+  }
+
+  @Get(':id/completion-evidence/:fileName')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.ORG_ADMIN,
+    UserRole.DISPATCH_OFFICER,
+    UserRole.PROVIDER,
+    UserRole.CITIZEN,
+  )
+  async getCompletionEvidence(
+    @Param('id') id: string,
+    @Param('fileName') fileName: string,
+    @CurrentUser() user: CurrentAuthUser,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const evidence = await this.reportService.openEvidenceFile(
+      id,
+      'report-completion',
+      fileName,
+      user,
+    );
+    res.set({
+      'Content-Type': evidence.contentType,
+      'Content-Disposition': `inline; filename="${evidence.fileName}"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return new StreamableFile(evidence.stream);
   }
 
   // ===================== ACTIONS =====================
