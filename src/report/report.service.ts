@@ -646,6 +646,7 @@ export class ReportService {
     const updated = await this.prisma.report.update({
       where: { id: reportId },
       data: {
+        organizationId: organization.id,
         assignedOrganizationId: organization.id,
         organizationAssignedById: actorId,
         organizationAssignedAt: new Date(),
@@ -662,6 +663,7 @@ export class ReportService {
     await this.audit('Report Assigned To Organization', user, {
       targetType: 'Report',
       targetId: reportId,
+      previousOrganizationId: report.organizationId,
       assignedOrganizationId: organization.id,
       organizationId: updated.organizationId,
       reason: dto.reason?.trim() || null,
@@ -672,6 +674,7 @@ export class ReportService {
       toStatus: updated.status,
       reason: dto.reason?.trim() || undefined,
       metadata: {
+        previousOrganizationId: report.organizationId,
         assignedOrganizationId: organization.id,
         assignedOrganizationName: organization.name,
       },
@@ -1498,15 +1501,25 @@ export class ReportService {
   }
 
   async getProviderPerformance(user: JwtUser) {
-    const providers = await this.prisma.user.findMany({
-      where: {
-        role: UserRole.PROVIDER,
-        ...(this.isSuperAdmin(user)
-          ? {}
-          : { organizationId: user.organizationId }),
-      },
+    const where: any = { role: UserRole.PROVIDER };
+    if (!this.isSuperAdmin(user)) {
+      const organizationId = this.requireUserOrganizationId(user);
+      where.OR = [
+        { organizationId },
+        {
+          providerOrganizations: {
+            some: {
+              organizationId,
+              active: true,
+            },
+          },
+        },
+      ];
+    }
+    const providers = (await this.prisma.user.findMany({
+      where,
       include: { assignedReports: true },
-    });
+    })) as any[];
 
     return providers.map((p) => {
       const completed = p.assignedReports.filter(
@@ -1604,6 +1617,11 @@ export class ReportService {
     const id = user.id ?? user.userId ?? user.sub;
     if (!id) throw new ForbiddenException('User id missing');
     return id;
+  }
+
+  private requireUserOrganizationId(user: JwtUser) {
+    if (!user.organizationId) throw new ForbiddenException('No org');
+    return user.organizationId;
   }
 
   private buildOrgScope(user: JwtUser, period?: string) {
@@ -1886,13 +1904,13 @@ export class ReportService {
       (this.prisma as any).reportActivity?.findMany
         ? (this.prisma as any).reportActivity.findMany({
             where: { reportId: report.id },
-            orderBy: { createdAt: 'asc' },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
           })
         : [],
       (this.prisma as any).notification?.findMany
         ? (this.prisma as any).notification.findMany({
             where: { reportId: report.id },
-            orderBy: { createdAt: 'desc' },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: 25,
           })
         : [],

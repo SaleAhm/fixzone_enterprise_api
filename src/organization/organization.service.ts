@@ -61,7 +61,7 @@ export class OrganizationService {
     const where = this.organizationScope(user);
     const organizations = await this.prisma.organization.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
     return Promise.all(organizations.map((org) => this.withStats(org)));
@@ -160,7 +160,7 @@ export class OrganizationService {
     await this.assertCanAccessOrganization(id, user);
     return this.prisma.user.findMany({
       where: { organizationId: id },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: {
         id: true,
         fullName: true,
@@ -188,7 +188,7 @@ export class OrganizationService {
           },
         ],
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       select: {
         id: true,
         fullName: true,
@@ -198,6 +198,7 @@ export class OrganizationService {
         accountStatus: true,
         serviceCategories: true,
         coverageAreas: true,
+        profileData: true,
         subscriptionPlan: true,
       },
     });
@@ -207,7 +208,7 @@ export class OrganizationService {
     await this.assertCanAccessOrganization(id, user);
     return this.prisma.report.findMany({
       where: { organizationId: id },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: {
         citizen: {
           select: { id: true, fullName: true, email: true, phone: true },
@@ -268,10 +269,14 @@ export class OrganizationService {
     ]);
     const providerCount = providers.length;
     const coveredCategories = this.collectStringList(
-      providers.flatMap((provider) => this.jsonStringList(provider.serviceCategories)),
+      providers.flatMap((provider) =>
+        this.jsonStringList(provider.serviceCategories),
+      ),
     );
     const providerCoverageAreas = this.collectStringList(
-      providers.flatMap((provider) => this.jsonStringList(provider.coverageAreas)),
+      providers.flatMap((provider) =>
+        this.jsonStringList(provider.coverageAreas),
+      ),
     );
     const moduleSummary = this.platformModules.organizationModuleSummary(
       organization.enabledModules,
@@ -470,7 +475,7 @@ export class OrganizationService {
             })();
     return this.prisma.organizationUpgradeRequest.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: { organization: { select: { id: true, name: true } } },
       take: 100,
     });

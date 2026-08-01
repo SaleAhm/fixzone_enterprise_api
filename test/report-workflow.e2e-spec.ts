@@ -1846,4 +1846,132 @@ describe('Report Workflow (e2e)', () => {
       AssignmentOutcome.REJECTED,
     );
   });
+
+  it('routes report ownership to an organization and enforces tenant isolation', async () => {
+    const sourceOrg = await createOrganization('Workflow Source Routing Org');
+    const hunslowOrg = await prisma.organization.create({
+      data: {
+        name: 'Workflow Hunslow Routing Org',
+        contactEmail: 'workflow-hunslow-routing@test.com',
+        state: 'FCT',
+        lga: 'Bwari',
+        address: 'Kubwa Township',
+      },
+    });
+    createdOrgIds.push(hunslowOrg.id);
+    const otherOrg = await createOrganization('Workflow Other Routing Org');
+    const superAdmin = await createUser({
+      email: 'wf-super-routing@test.com',
+      fullName: 'Workflow Super Routing',
+      role: UserRole.SUPER_ADMIN,
+      organizationId: null,
+    });
+    const sourceAdmin = await createUser({
+      email: 'wf-source-admin-routing@test.com',
+      fullName: 'Workflow Source Admin Routing',
+      role: UserRole.ORG_ADMIN,
+      organizationId: sourceOrg.id,
+    });
+    const hunslowAdmin = await createUser({
+      email: 'wf-hunslow-admin-routing@test.com',
+      fullName: 'Workflow Hunslow Admin Routing',
+      role: UserRole.ORG_ADMIN,
+      organizationId: hunslowOrg.id,
+    });
+    const otherAdmin = await createUser({
+      email: 'wf-other-admin-routing@test.com',
+      fullName: 'Workflow Other Admin Routing',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-routing@test.com',
+      fullName: 'Workflow Citizen Routing',
+      role: UserRole.CITIZEN,
+      organizationId: sourceOrg.id,
+    });
+    const hunslowProvider = await createUser({
+      email: 'wf-hunslow-provider-routing@test.com',
+      fullName: 'Workflow Hunslow Provider Routing',
+      role: UserRole.PROVIDER,
+      organizationId: null,
+      providerId: 'PRV-WF-HUNSLOW-ROUTE',
+      serviceCategories: ['Road'],
+      coverageAreas: ['Kubwa Township'],
+    });
+    await prisma.providerOrganization.create({
+      data: {
+        providerId: hunslowProvider.id,
+        organizationId: hunslowOrg.id,
+        active: true,
+      },
+    });
+
+    const report = await createReport({
+      title: 'WF tenant routing report',
+      organizationId: sourceOrg.id,
+      citizenId: citizen.id,
+      status: ReportStatus.PENDING,
+    });
+
+    const sourceAdminToken = await signToken(sourceAdmin);
+    const hunslowAdminToken = await signToken(hunslowAdmin);
+    const otherAdminToken = await signToken(otherAdmin);
+    const superAdminToken = await signToken(superAdmin);
+
+    expect(
+      await request(app.getHttpServer())
+        .get(`/api/report/${report.id}`)
+        .set('Authorization', `Bearer ${hunslowAdminToken}`),
+    ).toHaveProperty('status', 403);
+
+    const routeRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign-organization`)
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        organizationId: hunslowOrg.id,
+        reason: 'Super admin routed report to Hunslow jurisdiction',
+      });
+    expect(routeRes.status).toBe(200);
+    expect(routeRes.body.organizationId).toBe(hunslowOrg.id);
+    expect(routeRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
+
+    const stored = await prisma.report.findUniqueOrThrow({
+      where: { id: report.id },
+    });
+    expect(stored.organizationId).toBe(hunslowOrg.id);
+    expect(stored.assignedOrganizationId).toBe(hunslowOrg.id);
+
+    const sourceReadAfterRoute = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${sourceAdminToken}`);
+    expect(sourceReadAfterRoute.status).toBe(403);
+
+    const hunslowReadAfterRoute = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`);
+    expect(hunslowReadAfterRoute.status).toBe(200);
+    expect(hunslowReadAfterRoute.body.organizationId).toBe(hunslowOrg.id);
+
+    const hunslowSummary = await request(app.getHttpServer())
+      .get('/api/report/admin/dashboard/summary')
+      .set('Authorization', `Bearer ${hunslowAdminToken}`);
+    expect(hunslowSummary.status).toBe(200);
+    expect(hunslowSummary.body.total).toBeGreaterThanOrEqual(1);
+    expect(hunslowSummary.body.pending).toBeGreaterThanOrEqual(1);
+
+    const hunslowCandidates = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}/assignment-candidates`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`);
+    expect(hunslowCandidates.status).toBe(200);
+    expect(
+      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+    ).toContain(hunslowProvider.id);
+
+    const otherRouteAttempt = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign-organization`)
+      .set('Authorization', `Bearer ${otherAdminToken}`)
+      .send({ organizationId: otherOrg.id, reason: 'Cross tenant attempt' });
+    expect(otherRouteAttempt.status).toBe(403);
+  });
 });

@@ -1009,13 +1009,22 @@ export class PlatformConfigurationService {
   async getProviderCapabilitySummary(user: PlatformUser, providerId: string) {
     await this.assertCanManageProvider(user, providerId);
     const provider = await this.getProviderForCapabilities(providerId);
-    return this.providerCapabilitySummary(provider.profileData);
+    return this.providerCapabilitySummary(
+      provider.profileData,
+      provider.serviceCategories,
+      provider.coverageAreas,
+    );
   }
 
-  providerCapabilitySummary(profileData: unknown) {
+  providerCapabilitySummary(
+    profileData: unknown,
+    serviceCategories: unknown = [],
+    coverageAreas: unknown = [],
+  ) {
     const assignments = this.readProviderCapabilityAssignments(
       this.asRecord(profileData),
     );
+    const inheritedServiceCategories = this.stringList(serviceCategories);
     const catalog = new Map(
       this.getProviderCapabilities().map((item) => [item.id, item]),
     );
@@ -1025,6 +1034,16 @@ export class PlatformConfigurationService {
         capability: catalog.get(assignment.id) ?? null,
       })),
       catalog: this.getProviderCapabilities(),
+      source:
+        assignments.length > 0
+          ? 'ASSIGNED_CAPABILITIES'
+          : inheritedServiceCategories.length > 0
+            ? 'INHERITED_PROVIDER_PROFILE'
+            : 'NONE_CONFIGURED',
+      inheritedProfile: {
+        serviceCategories: inheritedServiceCategories,
+        coverageAreas: this.stringList(coverageAreas),
+      },
       activeCount: assignments.filter((item) => item.status === 'ACTIVE')
         .length,
       inactiveCount: assignments.filter((item) => item.status === 'INACTIVE')
@@ -1420,6 +1439,8 @@ export class PlatformConfigurationService {
         id: true,
         role: true,
         organizationId: true,
+        serviceCategories: true,
+        coverageAreas: true,
         profileData: true,
       },
     });
@@ -1505,9 +1526,19 @@ export class PlatformConfigurationService {
       throw new ForbiddenException('No organization scope');
     const provider = await this.prisma.user.findUnique({
       where: { id: providerId },
-      select: { organizationId: true },
+      select: {
+        organizationId: true,
+        providerOrganizations: {
+          where: { organizationId: user.organizationId, active: true },
+          select: { id: true },
+        },
+      },
     });
-    if (!provider || provider.organizationId !== user.organizationId) {
+    if (
+      !provider ||
+      (provider.organizationId !== user.organizationId &&
+        provider.providerOrganizations.length === 0)
+    ) {
       throw new ForbiddenException('Provider is outside your organization');
     }
   }
@@ -1526,6 +1557,13 @@ export class PlatformConfigurationService {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? { ...(value as Record<string, unknown>) }
       : {};
+  }
+
+  private stringList(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => String(item ?? '').trim())
+      .filter((item) => item.length > 0);
   }
 
   private asBooleanRecord(value: unknown): Record<string, boolean> | null {

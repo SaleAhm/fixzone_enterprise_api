@@ -299,6 +299,89 @@ describe('Platform Configuration (e2e)', () => {
     });
   });
 
+  it('allows organization admins to load capabilities for accepted provider memberships only', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const hunslow = await prisma.organization.create({
+      data: { name: 'Platform Config Hunslow Membership' },
+    });
+    const primaryOrg = await prisma.organization.create({
+      data: { name: 'Platform Config Provider Primary' },
+    });
+    const otherOrg = await prisma.organization.create({
+      data: { name: 'Platform Config Other Tenant' },
+    });
+    createdOrgIds.push(hunslow.id, primaryOrg.id, otherOrg.id);
+    const hunslowAdmin = await prisma.user.create({
+      data: {
+        email: `platform-config-hunslow-admin-${suffix}@test.com`,
+        fullName: 'Platform Config Hunslow Admin',
+        role: UserRole.ORG_ADMIN,
+        organizationId: hunslow.id,
+      },
+    });
+    const otherAdmin = await prisma.user.create({
+      data: {
+        email: `platform-config-other-admin-${suffix}@test.com`,
+        fullName: 'Platform Config Other Admin',
+        role: UserRole.ORG_ADMIN,
+        organizationId: otherOrg.id,
+      },
+    });
+    const provider = await prisma.user.create({
+      data: {
+        email: `platform-config-linked-provider-${suffix}@test.com`,
+        fullName: 'Platform Config Linked Provider',
+        role: UserRole.PROVIDER,
+        organizationId: primaryOrg.id,
+        serviceCategories: ['Road', 'Drainage'],
+        coverageAreas: ['Kubwa'],
+      },
+    });
+    createdUserIds.push(hunslowAdmin.id, otherAdmin.id, provider.id);
+    await prisma.providerOrganization.create({
+      data: {
+        providerId: provider.id,
+        organizationId: hunslow.id,
+        active: true,
+      },
+    });
+    const hunslowToken = await jwtService.signAsync({
+      sub: hunslowAdmin.id,
+      email: hunslowAdmin.email,
+      fullName: hunslowAdmin.fullName,
+      role: hunslowAdmin.role,
+      organizationId: hunslowAdmin.organizationId,
+    });
+    const otherToken = await jwtService.signAsync({
+      sub: otherAdmin.id,
+      email: otherAdmin.email,
+      fullName: otherAdmin.fullName,
+      role: otherAdmin.role,
+      organizationId: otherAdmin.organizationId,
+    });
+
+    const summaryRes = await request(app.getHttpServer())
+      .get(`/api/platform/providers/${provider.id}/capabilities`)
+      .set('Authorization', `Bearer ${hunslowToken}`);
+    expect(summaryRes.status).toBe(200);
+    expect(summaryRes.body.source).toBe('INHERITED_PROVIDER_PROFILE');
+    expect(summaryRes.body.inheritedProfile.serviceCategories).toEqual(
+      expect.arrayContaining(['Road', 'Drainage']),
+    );
+
+    const assignRes = await request(app.getHttpServer())
+      .post(`/api/platform/providers/${provider.id}/capabilities`)
+      .set('Authorization', `Bearer ${hunslowToken}`)
+      .send({ capabilityIds: ['civil_works'] });
+    expect(assignRes.status).toBe(201);
+    expect(assignRes.body.activeCount).toBe(1);
+
+    const otherRes = await request(app.getHttpServer())
+      .get(`/api/platform/providers/${provider.id}/capabilities`)
+      .set('Authorization', `Bearer ${otherToken}`);
+    expect(otherRes.status).toBe(403);
+  });
+
   it('exposes rollout governance metadata without activating future modules', async () => {
     const { token } = await createContext();
 
