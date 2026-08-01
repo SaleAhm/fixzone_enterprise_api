@@ -1783,4 +1783,67 @@ describe('Report Workflow (e2e)', () => {
     expect(newAcceptRes.body.status).toBe(ReportStatus.IN_PROGRESS);
     expect(newAcceptRes.body.assignedProviderId).toBe(providerB.id);
   });
+
+  it('allows a directly assigned provider to act despite membership drift', async () => {
+    const org = await createOrganization('Workflow Membership Drift Org');
+    const driftedProvider = await createUser({
+      email: 'wf-provider-membership-drift@test.com',
+      fullName: 'Workflow Provider Membership Drift',
+      role: UserRole.PROVIDER,
+      organizationId: null,
+    });
+    const otherProvider = await createUser({
+      email: 'wf-provider-membership-drift-other@test.com',
+      fullName: 'Workflow Other Provider Membership Drift',
+      role: UserRole.PROVIDER,
+      organizationId: null,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-membership-drift@test.com',
+      fullName: 'Workflow Citizen Membership Drift',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const acceptReport = await createReport({
+      title: 'WF membership drift accept',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: driftedProvider.id,
+    });
+    const rejectReport = await createReport({
+      title: 'WF membership drift reject',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ASSIGNED,
+      assignedProviderId: driftedProvider.id,
+    });
+
+    const otherProviderToken = await signToken(otherProvider);
+    const otherAcceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${acceptReport.id}/status`)
+      .set('Authorization', `Bearer ${otherProviderToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(otherAcceptRes.status).toBe(403);
+
+    const driftedProviderToken = await signToken(driftedProvider);
+    const acceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${acceptReport.id}/status`)
+      .set('Authorization', `Bearer ${driftedProviderToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(acceptRes.status).toBe(200);
+    expect(acceptRes.body.status).toBe(ReportStatus.IN_PROGRESS);
+    expect(acceptRes.body.assignedProviderId).toBe(driftedProvider.id);
+
+    const rejectRes = await request(app.getHttpServer())
+      .post(`/api/report/provider/${rejectReport.id}/reject`)
+      .set('Authorization', `Bearer ${driftedProviderToken}`)
+      .send({ reason: 'Outside current route' });
+    expect(rejectRes.status).toBe(201);
+    expect(rejectRes.body.status).toBe(ReportStatus.PENDING);
+    expect(rejectRes.body.assignedProviderId).toBeNull();
+    expect(rejectRes.body.lastAssignmentOutcome).toBe(
+      AssignmentOutcome.REJECTED,
+    );
+  });
 });

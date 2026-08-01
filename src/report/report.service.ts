@@ -166,7 +166,7 @@ export class ReportService {
     try {
       const reports = await this.prisma.report.findMany({
         where: { citizenId: userId },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         include: this.includeRelations(),
       });
 
@@ -287,7 +287,7 @@ export class ReportService {
 
     const reports = await this.prisma.report.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: this.includeRelations(),
     });
     return reports.map((report) => this.withProtectedEvidenceUrls(report));
@@ -947,10 +947,14 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
-    await this.assertProviderCanAccessReport(user, report.organizationId);
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
     }
+    await this.assertProviderCanAccessReport(
+      user,
+      report.organizationId,
+      report.assignedProviderId,
+    );
     await this.assertAssignmentStillAcceptable(report, user, userId);
     if (report.status !== ReportStatus.ASSIGNED) {
       throw new ForbiddenException('Only new assignments can be rejected');
@@ -1006,7 +1010,11 @@ export class ReportService {
     if (!report) throw new NotFoundException('Report not found');
     if (this.isProvider(user)) await this.assertActiveProvider(userId);
     if (this.isProvider(user)) {
-      await this.assertProviderCanAccessReport(user, report.organizationId);
+      await this.assertProviderCanAccessReport(
+        user,
+        report.organizationId,
+        report.assignedProviderId,
+      );
     }
     if (
       this.isProvider(user) &&
@@ -1119,11 +1127,14 @@ export class ReportService {
     });
 
     if (!report) throw new NotFoundException('Report not found');
-    await this.assertProviderCanAccessReport(user, report.organizationId);
-
     if (report.assignedProviderId !== userId) {
       throw new ForbiddenException('Not your report');
     }
+    await this.assertProviderCanAccessReport(
+      user,
+      report.organizationId,
+      report.assignedProviderId,
+    );
 
     if (report.status !== ReportStatus.IN_PROGRESS) {
       throw new ForbiddenException(
@@ -1558,7 +1569,7 @@ export class ReportService {
     });
     return this.prisma.report.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 10,
       include: this.includeRelations(),
     });
@@ -1946,7 +1957,11 @@ export class ReportService {
       ) {
         return;
       }
-      await this.assertProviderCanAccessReport(user, report.organizationId);
+      await this.assertProviderCanAccessReport(
+        user,
+        report.organizationId,
+        report.assignedProviderId,
+      );
     }
 
     const sameOrg =
@@ -2273,8 +2288,12 @@ export class ReportService {
   private async assertProviderCanAccessReport(
     user: JwtUser,
     organizationId: string,
+    assignedProviderId?: string | null,
   ) {
     if (!this.isProvider(user)) return;
+    if (assignedProviderId && assignedProviderId === this.getUserId(user)) {
+      return;
+    }
     const organizationIds = await this.authorizedProviderOrganizationIds(user);
     if (!organizationIds.includes(organizationId)) {
       throw new ForbiddenException('Provider organization access denied');

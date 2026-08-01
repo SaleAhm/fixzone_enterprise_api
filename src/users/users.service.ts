@@ -41,7 +41,7 @@ export class UsersService {
   async getRecentUsers(user: JwtUser) {
     return this.prisma.user.findMany({
       where: this.buildAdminScope(user),
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 10,
       select: this.adminUserSelect(),
     });
@@ -50,7 +50,7 @@ export class UsersService {
   async getInvitations(user: JwtUser) {
     const invitations = await this.prisma.invitation.findMany({
       where: this.buildInvitationScope(user),
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 100,
       include: this.invitationInclude(),
     });
@@ -571,7 +571,7 @@ export class UsersService {
         status: InvitationStatus.PENDING,
         OR: filters,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: this.invitationInclude(),
     });
     const now = new Date();

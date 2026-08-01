@@ -170,7 +170,7 @@ export class PlatformToolsService {
   async listBackups(user: JwtUser) {
     this.requireSuperAdmin(user);
     const backups = await this.prisma.platformBackup.findMany({
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 100,
     });
     return Promise.all(
@@ -414,7 +414,7 @@ export class PlatformToolsService {
       this.prisma.demoAuditLog.count({ where }),
       this.prisma.demoAuditLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -426,7 +426,7 @@ export class PlatformToolsService {
   async exportAuditLogs(user: JwtUser) {
     this.requireSuperAdmin(user);
     const items = await this.prisma.demoAuditLog.findMany({
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 5000,
     });
     return items
