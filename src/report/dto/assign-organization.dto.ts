@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class AssignOrganizationDto {
   @IsString()
@@ -8,4 +8,8 @@ export class AssignOrganizationDto {
   @IsString()
   @IsOptional()
   reason?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  overrideReadiness?: boolean;
 }

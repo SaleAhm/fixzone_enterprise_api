@@ -93,6 +93,13 @@ const SUPER_ADMIN_TRIAGE_SOURCE = 'Super Admin triage';
 const AUTOMATIC_ORGANIZATION_REVIEW_SOURCE = 'Automatic intake match';
 const ORGANIZATION_ACCEPTED_SOURCE = 'Organization accepted report';
 const ORGANIZATION_REJECTED_SOURCE = 'Organization rejected report';
+const PROVIDER_CAPABILITIES_KEY = 'secureZoneProviderCapabilities';
+const ACTIVE_MAINTENANCE_CAPABILITIES = new Set([
+  'electrical',
+  'plumbing',
+  'mechanical',
+  'civil_works',
+]);
 
 @Injectable()
 export class ReportService {
@@ -566,32 +573,40 @@ export class ReportService {
             where: { active: true },
             include: {
               provider: {
-                select: {
-                  id: true,
-                  accountStatus: true,
-                  serviceCategories: true,
-                  coverageAreas: true,
-                },
+              select: {
+                id: true,
+                accountStatus: true,
+                serviceCategories: true,
+                coverageAreas: true,
+                profileData: true,
               },
             },
           },
-          users: {
-            where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
-            select: {
-              id: true,
-              serviceCategories: true,
-              coverageAreas: true,
-            },
+        },
+        users: {
+          where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
+          select: {
+            id: true,
+            accountStatus: true,
+            serviceCategories: true,
+            coverageAreas: true,
+            profileData: true,
           },
+        },
         },
       }),
     ]);
+
+    const organizationCandidates = organizations.map((organization) =>
+      this.serializeOrganizationCandidate(organization, report.category, report),
+    );
 
     return {
       reportId,
       reportCategory: report.category,
       assignedOrganization: (report as any).assignedOrganization ?? null,
       assignedProvider: report.assignedProvider ?? null,
+      routing: this.routingDiagnostics(report, organizationCandidates),
       providers: providers.map((provider) => ({
         type: 'PROVIDER',
         id: provider.id,
@@ -601,9 +616,7 @@ export class ReportService {
         serviceCategories: this.jsonStringList(provider.serviceCategories),
         coverageAreas: this.jsonStringList(provider.coverageAreas),
       })),
-      organizations: organizations.map((organization) =>
-        this.serializeOrganizationCandidate(organization, report.category),
-      ),
+      organizations: organizationCandidates,
     };
   }
 
@@ -664,6 +677,7 @@ export class ReportService {
                 accountStatus: true,
                 serviceCategories: true,
                 coverageAreas: true,
+                profileData: true,
               },
             },
           },
@@ -672,8 +686,10 @@ export class ReportService {
           where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
           select: {
             id: true,
+            accountStatus: true,
             serviceCategories: true,
             coverageAreas: true,
+            profileData: true,
           },
         },
       },
@@ -682,8 +698,10 @@ export class ReportService {
     const candidate = this.serializeOrganizationCandidate(
       organization,
       report.category,
+      report,
     );
-    if (!candidate.eligible) {
+    const overrideReadiness = dto.overrideReadiness === true;
+    if (!candidate.eligible && !(this.isSuperAdmin(user) && overrideReadiness)) {
       throw new ForbiddenException({
         code: 'ORGANIZATION_NOT_READY',
         message: 'Organization is not eligible for this assignment.',
@@ -692,6 +710,9 @@ export class ReportService {
     }
 
     const routeReason = dto.reason?.trim() || 'Manual organization assignment';
+    const routeSource = overrideReadiness
+      ? `Super Admin override: ${routeReason}`
+      : routeReason;
     const updated = await this.prisma.$transaction(async (tx) => {
       const routed = await tx.report.update({
         where: { id: reportId },
@@ -700,7 +721,7 @@ export class ReportService {
           assignedOrganizationId: organization.id,
           organizationAssignedById: actorId,
           organizationAssignedAt: new Date(),
-          organizationAssignmentSource: routeReason,
+          organizationAssignmentSource: routeSource,
           status: ReportStatus.ORG_REVIEW,
           lastAssignmentOutcome: null,
           lastAssignmentReason: null,
@@ -723,6 +744,9 @@ export class ReportService {
               assignedOrganizationId: organization.id,
               organizationId: routed.organizationId,
               reason: dto.reason?.trim() || null,
+              overrideReadiness,
+              readinessReasons: candidate.reasons,
+              readinessSummary: candidate.readiness,
             },
           },
         });
@@ -745,6 +769,9 @@ export class ReportService {
               previousOrganizationId: report.organizationId,
               assignedOrganizationId: organization.id,
               assignedOrganizationName: organization.name,
+              overrideReadiness,
+              readinessReasons: candidate.reasons,
+              readinessSummary: candidate.readiness,
             },
           },
         });
@@ -1975,11 +2002,29 @@ export class ReportService {
     };
   }
 
-  private serializeOrganizationCandidate(organization: any, category: string) {
+  private serializeOrganizationCandidate(
+    organization: any,
+    category: string,
+    report?: { location?: string | null; description?: string | null; title?: string | null },
+  ) {
     const activeProviders = this.organizationActiveProviders(organization);
-    const coveredCategories = this.collectStringList(
+    const acceptedProviders = this.organizationAcceptedProviders(organization);
+    const explicitCapabilityProviders = activeProviders.filter((provider) =>
+      this.activeProviderCapabilityIds(provider).some((id) =>
+        ACTIVE_MAINTENANCE_CAPABILITIES.has(id),
+      ),
+    );
+    const inheritedProfileProviders = activeProviders.filter(
+      (provider) => this.jsonStringList(provider.serviceCategories).length > 0,
+    );
+    const inheritedCategories = this.collectStringList(
       activeProviders.flatMap((provider) =>
         this.jsonStringList(provider.serviceCategories),
+      ),
+    );
+    const explicitCapabilities = this.collectStringList(
+      activeProviders.flatMap((provider) =>
+        this.activeProviderCapabilityIds(provider),
       ),
     );
     const coverageAreas = this.collectStringList(
@@ -1987,9 +2032,43 @@ export class ReportService {
         this.jsonStringList(provider.coverageAreas),
       ),
     );
+    const serviceModuleReady = this.maintenanceModuleEnabled(
+      organization.enabledModules,
+    );
+    const normalizedCategory = category.trim().toLowerCase();
+    const inheritedCategoryMatch =
+      !normalizedCategory ||
+      inheritedCategories.some((item) => item.toLowerCase() === normalizedCategory);
+    const explicitCapabilityBacked = explicitCapabilityProviders.length > 0;
+    const locationText = [
+      report?.location,
+      report?.description,
+      report?.title,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const jurisdiction = [
+      organization.lga,
+      organization.state,
+      organization.address,
+      ...coverageAreas,
+    ]
+      .filter(
+        (item): item is string =>
+          typeof item === 'string' && item.trim().length > 0,
+      )
+      .map((item) => item.toLowerCase());
+    const jurisdictionMatch =
+      jurisdiction.length === 0 ||
+      !locationText ||
+      jurisdiction.some((item) => locationText.includes(item));
     const reasons: string[] = [];
     if (organization.status !== OrganizationStatus.ACTIVE) {
       reasons.push('Organization is not active.');
+    }
+    if (!serviceModuleReady) {
+      reasons.push('Maintenance Services is not enabled for this organization.');
     }
     if (
       organization.billingStatus === BillingStatus.SUSPENDED ||
@@ -2006,26 +2085,63 @@ export class ReportService {
     if (activeProviders.length === 0) {
       reasons.push('No accepted active provider membership is linked.');
     }
-    if (!coveredCategories.length) {
-      reasons.push('Provider service categories are not configured.');
-    } else if (
-      category &&
-      !coveredCategories.some(
-        (item) => item.toLowerCase() === category.toLowerCase(),
-      )
-    ) {
-      reasons.push(`No active provider covers ${category}.`);
+    if (!inheritedCategories.length) {
+      reasons.push('No inherited provider profile categories are configured.');
+    } else if (!inheritedCategoryMatch) {
+      reasons.push(`No active provider profile covers ${category}.`);
     }
+    if (!explicitCapabilityBacked) {
+      reasons.push('No active provider has explicit approved maintenance capability metadata.');
+    }
+    if (!jurisdictionMatch) {
+      reasons.push('Organization jurisdiction or provider coverage does not match the report location.');
+    }
+    const eligible = reasons.length === 0;
+    const confidence = !eligible
+      ? explicitCapabilityBacked || inheritedCategoryMatch
+        ? 'LOW'
+        : 'NONE'
+      : explicitCapabilityBacked && jurisdictionMatch
+        ? 'HIGH'
+        : 'MEDIUM';
 
     return {
       type: 'ORGANIZATION',
       id: organization.id,
       name: organization.name,
-      eligible: reasons.length === 0,
-      ready: reasons.length === 0,
+      eligible,
+      ready: eligible,
       reasons,
+      exclusionReasons: reasons,
+      categoryMatch: {
+        requestedCategory: category,
+        matched: inheritedCategoryMatch,
+        source: explicitCapabilityBacked
+          ? 'EXPLICIT_CAPABILITY_METADATA'
+          : inheritedCategoryMatch
+            ? 'INHERITED_PROVIDER_PROFILE'
+            : 'NONE',
+      },
+      jurisdictionMatch,
+      serviceModuleReady,
+      confidence,
       activeProviderCount: activeProviders.length,
-      coveredCategories,
+      acceptedProviderCount: acceptedProviders.length,
+      capabilityBackedProviderCount: explicitCapabilityProviders.length,
+      inheritedProfileProviderCount: inheritedProfileProviders.length,
+      verifiedCapabilityProviderCount: explicitCapabilityProviders.length,
+      coveredCategories: inheritedCategories,
+      inheritedProfileCategories: inheritedCategories,
+      explicitCapabilities,
+      readiness: {
+        organizationMembers: (organization.users ?? []).length,
+        acceptedProviders: acceptedProviders.length,
+        activeProviders: activeProviders.length,
+        providersWithExplicitCapabilityMetadata: explicitCapabilityProviders.length,
+        providersWithInheritedProfileCategories: inheritedProfileProviders.length,
+        verifiedCapabilities: explicitCapabilities,
+        maintenanceServicesEnabled: serviceModuleReady,
+      },
       jurisdictionSummary: {
         country: organization.country,
         state: organization.state,
@@ -2038,9 +2154,22 @@ export class ReportService {
 
   private organizationActiveProviders(organization: any) {
     const providers = new Map<string, any>();
-    for (const provider of organization.users ?? []) {
-      if (provider.id) providers.set(provider.id, provider);
+    for (const link of organization.providerLinks ?? []) {
+      const provider = link.provider;
+      if (provider?.id && provider.accountStatus === 'ACTIVE') {
+        providers.set(provider.id, provider);
+      }
     }
+    for (const provider of organization.users ?? []) {
+      if (provider.id && provider.accountStatus === 'ACTIVE') {
+        providers.set(provider.id, provider);
+      }
+    }
+    return Array.from(providers.values());
+  }
+
+  private organizationAcceptedProviders(organization: any) {
+    const providers = new Map<string, any>();
     for (const link of organization.providerLinks ?? []) {
       const provider = link.provider;
       if (provider?.id && provider.accountStatus === 'ACTIVE') {
@@ -2048,6 +2177,62 @@ export class ReportService {
       }
     }
     return Array.from(providers.values());
+  }
+
+  private activeProviderCapabilityIds(provider: any) {
+    const profileData =
+      provider?.profileData && typeof provider.profileData === 'object'
+        ? (provider.profileData as Record<string, unknown>)
+        : {};
+    const assignments = profileData[PROVIDER_CAPABILITIES_KEY];
+    if (!Array.isArray(assignments)) return [];
+    return assignments
+      .filter((item): item is Record<string, unknown> => {
+        if (!item || typeof item !== 'object') return false;
+        return (item.status?.toString() || 'ACTIVE') === 'ACTIVE';
+      })
+      .map((item) => item.id?.toString().trim() ?? '')
+      .filter((item) => item.length > 0);
+  }
+
+  private maintenanceModuleEnabled(value: unknown) {
+    if (value == null) return true;
+    if (Array.isArray(value)) {
+      return value.length === 0 || value.map(String).includes('maintenance');
+    }
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      if (record.maintenance === false) return false;
+      const modules = record.modules;
+      if (Array.isArray(modules)) return modules.map(String).includes('maintenance');
+      const enabledModules = record.enabledModules;
+      if (Array.isArray(enabledModules)) {
+        return enabledModules.map(String).includes('maintenance');
+      }
+    }
+    return true;
+  }
+
+  private routingDiagnostics(report: any, candidates: any[]) {
+    const eligible = candidates.filter((candidate) => candidate.eligible);
+    return {
+      status: report.status,
+      automaticRouting: {
+        source: report.organizationAssignmentSource ?? null,
+        skipped: report.status === ReportStatus.TRIAGE,
+        matchCount: eligible.length,
+        reason:
+          report.status !== ReportStatus.TRIAGE
+            ? 'Report was routed to organization review.'
+            : eligible.length === 0
+              ? 'Automatic routing skipped because no deterministic eligible organization matched.'
+              : eligible.length === 1
+                ? 'Automatic routing is available for one eligible organization but was not applied to this existing report.'
+                : 'Automatic routing skipped because multiple eligible organizations matched.',
+      },
+      eligibleOrganizationCount: eligible.length,
+      candidateCount: candidates.length,
+    };
   }
 
   private async findEligibleIntakeOrganization(dto: CreateReportDto): Promise<{
@@ -2067,6 +2252,7 @@ export class ReportService {
                 accountStatus: true,
                 serviceCategories: true,
                 coverageAreas: true,
+                profileData: true,
               },
             },
           },
@@ -2075,8 +2261,10 @@ export class ReportService {
           where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
           select: {
             id: true,
+            accountStatus: true,
             serviceCategories: true,
             coverageAreas: true,
+            profileData: true,
           },
         },
       },
@@ -2091,6 +2279,7 @@ export class ReportService {
         candidate: this.serializeOrganizationCandidate(
           organization,
           dto.category,
+          dto,
         ),
       }))
       .filter(({ organization, candidate }) => {
@@ -2283,9 +2472,12 @@ export class ReportService {
     ]);
 
     const protectedReport = this.withProtectedEvidenceUrls(report);
+    const evidenceItems = this.reportEvidenceItems(protectedReport);
     return {
       ...protectedReport,
+      evidenceItems,
       enterpriseDetails: {
+        evidenceItems,
         originalEvidence: {
           imageUrl: protectedReport.evidenceImageUrl ?? null,
           imagePath: protectedReport.evidenceImagePath ?? null,
@@ -2313,6 +2505,49 @@ export class ReportService {
         notifications,
       },
     };
+  }
+
+  private reportEvidenceItems(report: EnterpriseReportWithEvidence) {
+    const items: Array<{
+      kind: EvidenceKind;
+      imageUrl: string;
+      imagePath: string | null;
+      source: string;
+    }> = [];
+    const seen = new Set<string>();
+    const add = (
+      kind: EvidenceKind,
+      imageUrl?: string | null,
+      imagePath?: string | null,
+      source = 'report',
+    ) => {
+      const url = imageUrl?.trim();
+      const path = this.extractLocalUploadPath(imagePath) ?? this.extractLocalUploadPath(url);
+      if (!url && !path) return;
+      const key = `${kind}:${path ?? url}`.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push({
+        kind,
+        imageUrl: url ?? `/uploads/${path}`,
+        imagePath: path,
+        source,
+      });
+    };
+
+    add(
+      'report-evidence',
+      report.evidenceImageUrl,
+      report.evidenceImagePath,
+      'citizen',
+    );
+    add(
+      'report-completion',
+      report.completionImageUrl,
+      report.completionImagePath,
+      'provider_completion',
+    );
+    return items;
   }
 
   private async assertCanAccessEvidence(

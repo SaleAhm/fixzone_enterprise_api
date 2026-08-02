@@ -183,6 +183,7 @@ describe('Report Workflow (e2e)', () => {
     providerId?: string | null;
     serviceCategories?: string[];
     coverageAreas?: string[];
+    profileData?: Record<string, unknown>;
   }) {
     const user = await prisma.user.create({
       data,
@@ -1916,6 +1917,11 @@ describe('Report Workflow (e2e)', () => {
       providerId: 'PRV-WF-HUNSLOW-ROUTE',
       serviceCategories: ['Road'],
       coverageAreas: ['Kubwa Township'],
+      profileData: {
+        secureZoneProviderCapabilities: [
+          { id: 'civil_works', status: 'ACTIVE' },
+        ],
+      },
     });
     await prisma.providerOrganization.create({
       data: {
@@ -1949,6 +1955,7 @@ describe('Report Workflow (e2e)', () => {
       .send({
         organizationId: hunslowOrg.id,
         reason: 'Super admin routed report to Hunslow jurisdiction',
+        overrideReadiness: true,
       });
     expect(routeRes.status).toBe(200);
     expect(routeRes.body.organizationId).toBe(hunslowOrg.id);
@@ -2065,6 +2072,11 @@ describe('Report Workflow (e2e)', () => {
       organizationId: routedOrg.id,
       serviceCategories: [category],
       coverageAreas: ['Kubwa'],
+      profileData: {
+        secureZoneProviderCapabilities: [
+          { id: 'civil_works', status: 'ACTIVE' },
+        ],
+      },
     });
 
     const citizenToken = await signToken(citizen);
@@ -2123,6 +2135,11 @@ describe('Report Workflow (e2e)', () => {
       organizationId: ambiguousOrgA.id,
       serviceCategories: [ambiguousCategory],
       coverageAreas: ['Jabi'],
+      profileData: {
+        secureZoneProviderCapabilities: [
+          { id: 'civil_works', status: 'ACTIVE' },
+        ],
+      },
     });
     await createUser({
       email: `wf-auto-amb-b-provider-${unique}@test.com`,
@@ -2131,6 +2148,11 @@ describe('Report Workflow (e2e)', () => {
       organizationId: ambiguousOrgB.id,
       serviceCategories: [ambiguousCategory],
       coverageAreas: ['Jabi'],
+      profileData: {
+        secureZoneProviderCapabilities: [
+          { id: 'civil_works', status: 'ACTIVE' },
+        ],
+      },
     });
 
     const ambiguousRes = await request(app.getHttpServer())

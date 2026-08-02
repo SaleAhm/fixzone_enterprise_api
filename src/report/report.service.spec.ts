@@ -324,7 +324,7 @@ describe('ReportService provider tenant access', () => {
 describe('ReportService organization candidates', () => {
   const service = new ReportService({} as any);
 
-  it('marks ready organizations eligible when provider category coverage exists', () => {
+  it('marks ready organizations eligible when provider category and explicit capability coverage exist', () => {
     const candidate = (service as any).serializeOrganizationCandidate(
       {
         id: 'org-1',
@@ -346,6 +346,11 @@ describe('ReportService organization candidates', () => {
               accountStatus: 'ACTIVE',
               serviceCategories: ['Road'],
               coverageAreas: ['Hunslow'],
+              profileData: {
+                secureZoneProviderCapabilities: [
+                  { id: 'civil_works', status: 'ACTIVE' },
+                ],
+              },
             },
           },
         ],
@@ -355,7 +360,46 @@ describe('ReportService organization candidates', () => {
 
     expect(candidate.eligible).toBe(true);
     expect(candidate.activeProviderCount).toBe(1);
+    expect(candidate.capabilityBackedProviderCount).toBe(1);
     expect(candidate.coveredCategories).toContain('Road');
+  });
+
+  it('exposes inherited profile coverage without treating it as capability-ready', () => {
+    const candidate = (service as any).serializeOrganizationCandidate(
+      {
+        id: 'org-1',
+        name: 'Hunslow',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@hunslow.test',
+        contactPhone: null,
+        country: 'Nigeria',
+        state: 'Kaduna',
+        lga: 'Hunslow',
+        address: null,
+        users: [],
+        providerLinks: [
+          {
+            active: true,
+            provider: {
+              id: 'provider-1',
+              accountStatus: 'ACTIVE',
+              serviceCategories: ['Waste Management'],
+              coverageAreas: ['Hunslow'],
+            },
+          },
+        ],
+      },
+      'Waste Management',
+    );
+
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.inheritedProfileProviderCount).toBe(1);
+    expect(candidate.capabilityBackedProviderCount).toBe(0);
+    expect(candidate.categoryMatch.source).toBe('INHERITED_PROVIDER_PROFILE');
+    expect(candidate.reasons).toContain(
+      'No active provider has explicit approved maintenance capability metadata.',
+    );
   });
 
   it('marks not-ready organizations unavailable with reasons', () => {
