@@ -53,11 +53,14 @@ type EvidenceKind = 'report-evidence' | 'report-completion';
 
 type ReportWithEvidence = {
   id: string;
+  description?: string | null;
+  createdAt?: Date | string | null;
   organizationId: string;
   citizenId: string;
   assignedProviderId: string | null;
   lastAssignmentProviderId?: string | null;
   status?: ReportStatus;
+  priority?: string | null;
   evidenceImageUrl?: string | null;
   evidenceImagePath?: string | null;
   completionImageUrl?: string | null;
@@ -111,7 +114,15 @@ export class ReportService {
       throw new ForbiddenException('Citizen must belong to an organization');
     }
 
-    await this.enforceMonthlyReportQuota(user.organizationId);
+    const intakeOrganization =
+      (await this.findEligibleIntakeOrganization(dto)) ??
+      (await this.prisma.organization.findUnique({
+        where: { id: user.organizationId },
+        select: { id: true, name: true },
+      }));
+    const organizationId = intakeOrganization?.id ?? user.organizationId;
+
+    await this.enforceMonthlyReportQuota(organizationId);
 
     const report = await this.prisma.report.create({
       data: {
@@ -122,7 +133,12 @@ export class ReportService {
         locationSource: dto.locationSource ?? this.locationSourceFor(dto),
         status: ReportStatus.PENDING,
         citizenId: userId,
-        organizationId: user.organizationId,
+        organizationId,
+        assignedOrganizationId: organizationId,
+        organizationAssignedAt: new Date(),
+        organizationAssignmentSource: intakeOrganization
+          ? 'Automatic intake match'
+          : 'Citizen organization',
       },
       include: this.includeRelations(),
     });
@@ -141,6 +157,7 @@ export class ReportService {
       citizenId: report.citizenId,
       firebaseUid: user.firebaseUid,
       organizationId: report.organizationId,
+      assignedOrganizationId: report.assignedOrganizationId,
     });
 
     await this.audit('Report Created', user, {
@@ -152,10 +169,20 @@ export class ReportService {
     await this.recordReportActivity(report.id, 'REPORT_CREATED', user, {
       organizationId: report.organizationId,
       toStatus: report.status,
-      metadata: { category: report.category },
+      metadata: {
+        category: report.category,
+        assignedOrganizationId: report.assignedOrganizationId,
+        routingSource: report.organizationAssignmentSource,
+      },
+    });
+    await this.notifyOrganizationOperators(report.organizationId, {
+      reportId: report.id,
+      type: 'organization_report_offered',
+      title: 'Incoming report for review',
+      message: `"${report.title}" is available in your organization queue.`,
     });
 
-    return report;
+    return this.withProtectedEvidenceUrls(report);
   }
 
   // ===================== CITIZEN =====================
@@ -413,7 +440,7 @@ export class ReportService {
     dto: AssignProviderDto,
     user: JwtUser,
   ) {
-    return this.assignProviderById(reportId, dto.providerId, user);
+    return this.assignProviderById(reportId, dto.providerId, user, dto);
   }
 
   async openEvidenceFile(
@@ -868,6 +895,10 @@ export class ReportService {
     reportId: string,
     providerId: string,
     user: JwtUser,
+    options: Pick<
+      AssignProviderDto,
+      'overrideOrganizationRouting' | 'overrideReason'
+    > = {},
   ) {
     if (
       !this.isAdmin(user) &&
@@ -895,12 +926,30 @@ export class ReportService {
       throw new ForbiddenException('Provider account is suspended');
     }
 
+    const providerLinkedToReportOrg = provider.providerOrganizations.some(
+      (link) => link.organizationId === report.organizationId && link.active,
+    );
+    const providerPrimaryInReportOrg =
+      provider.organizationId === report.organizationId;
+    const requiresSuperAdminOverride =
+      this.isSuperAdmin(user) &&
+      !providerPrimaryInReportOrg &&
+      !providerLinkedToReportOrg;
+    const overrideReason = options.overrideReason?.trim();
+    if (requiresSuperAdminOverride) {
+      if (!options.overrideOrganizationRouting || !overrideReason) {
+        throw new ForbiddenException({
+          code: 'ORGANIZATION_ROUTING_OVERRIDE_REQUIRED',
+          message:
+            'Direct provider assignment bypasses the owning organization and requires an override reason.',
+        });
+      }
+    }
+
     this.assertAssignmentAllowed(
       report,
       provider.organizationId,
-      provider.providerOrganizations.some(
-        (link) => link.organizationId === report.organizationId && link.active,
-      ),
+      providerLinkedToReportOrg,
       user,
       providerId,
     );
@@ -944,12 +993,16 @@ export class ReportService {
       targetId: reportId,
       providerId,
       organizationId: updated.organizationId,
+      override: requiresSuperAdminOverride,
+      overrideReason: overrideReason ?? null,
     });
     await this.recordReportActivity(reportId, 'PROVIDER_ASSIGNED', user, {
       organizationId: updated.organizationId,
       fromStatus: report.status,
       toStatus: updated.status,
       providerId,
+      reason: overrideReason,
+      metadata: { override: requiresSuperAdminOverride },
     });
     return updated;
   }
@@ -1776,6 +1829,69 @@ export class ReportService {
     return Array.from(providers.values());
   }
 
+  private async findEligibleIntakeOrganization(dto: CreateReportDto) {
+    const organizations = await this.prisma.organization.findMany({
+      where: { status: OrganizationStatus.ACTIVE },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      include: {
+        providerLinks: {
+          where: { active: true },
+          include: {
+            provider: {
+              select: {
+                id: true,
+                accountStatus: true,
+                serviceCategories: true,
+                coverageAreas: true,
+              },
+            },
+          },
+        },
+        users: {
+          where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
+          select: {
+            id: true,
+            serviceCategories: true,
+            coverageAreas: true,
+          },
+        },
+      },
+    });
+    const location = [dto.location, dto.description, dto.title]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    const eligible = organizations
+      .map((organization) => ({
+        organization,
+        candidate: this.serializeOrganizationCandidate(
+          organization,
+          dto.category,
+        ),
+      }))
+      .filter(({ organization, candidate }) => {
+        if (!candidate.eligible) return false;
+        const jurisdiction = [
+          organization.lga,
+          organization.state,
+          organization.address,
+          ...candidate.jurisdictionSummary.coverageAreas,
+        ]
+          .filter(
+            (item): item is string =>
+              typeof item === 'string' && item.trim().length > 0,
+          )
+          .map((item) => item.toLowerCase());
+        return (
+          jurisdiction.length === 0 ||
+          jurisdiction.some((item) => location.includes(item))
+        );
+      });
+
+    if (eligible.length !== 1) return null;
+    return eligible[0].organization;
+  }
+
   private providerMatchesCategory(
     provider: { serviceCategories?: unknown },
     category: string,
@@ -2019,6 +2135,7 @@ export class ReportService {
   ): T {
     return {
       ...report,
+      priority: report.priority ?? this.resolveReportPriority(report),
       evidenceImageUrl:
         this.protectedEvidenceUrl(
           report.id,
@@ -2031,7 +2148,53 @@ export class ReportService {
           'report-completion',
           report.completionImagePath ?? report.completionImageUrl,
         ) ?? report.completionImageUrl,
-    };
+    } as T;
+  }
+
+  private resolveReportPriority(report: {
+    description?: string | null;
+    createdAt?: Date | string | null;
+    status?: ReportStatus | string;
+  }) {
+    const text = (report.description ?? '').toLowerCase();
+    let priority = 'Low';
+
+    if (
+      text.includes('fire') ||
+      text.includes('accident') ||
+      text.includes('collapsed') ||
+      text.includes('emergency') ||
+      text.includes('injury')
+    ) {
+      priority = 'High';
+    } else if (
+      text.includes('blocked') ||
+      text.includes('flood') ||
+      text.includes('outage')
+    ) {
+      priority = 'Medium';
+    }
+
+    const createdAt =
+      report.createdAt instanceof Date
+        ? report.createdAt
+        : report.createdAt
+          ? new Date(report.createdAt)
+          : null;
+    if (
+      createdAt &&
+      !Number.isNaN(createdAt.getTime()) &&
+      normalizeReportStatus(report.status ?? ReportStatus.PENDING) ===
+        ReportStatus.PENDING
+    ) {
+      const ageMinutes = Date.now() - createdAt.getTime();
+      const minutes = ageMinutes / (1000 * 60);
+      if (minutes >= 60 && priority === 'High') return 'Critical';
+      if (minutes >= 30 && priority === 'Medium') return 'High';
+      if (minutes >= 20 && priority === 'Low') return 'Medium';
+    }
+
+    return priority;
   }
 
   private protectedEvidenceUrl(

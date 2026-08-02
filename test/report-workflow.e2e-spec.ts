@@ -1486,10 +1486,24 @@ describe('Report Workflow (e2e)', () => {
     });
 
     const superAdminToken = await signToken(superAdmin);
-    const assignRes = await request(app.getHttpServer())
+    const silentBypassRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/assign`)
       .set('Authorization', `Bearer ${superAdminToken}`)
       .send({ providerId: provider.id });
+
+    expect(silentBypassRes.status).toBe(403);
+    expect(silentBypassRes.body.code).toBe(
+      'ORGANIZATION_ROUTING_OVERRIDE_REQUIRED',
+    );
+
+    const assignRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        providerId: provider.id,
+        overrideOrganizationRouting: true,
+        overrideReason: 'Emergency specialist override',
+      });
 
     expect(assignRes.status).toBe(200);
     expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
