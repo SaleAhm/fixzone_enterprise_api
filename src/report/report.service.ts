@@ -482,7 +482,9 @@ export class ReportService {
         assignedProviderId: true,
         lastAssignmentProviderId: true,
         status: true,
+        evidenceImageUrl: true,
         evidenceImagePath: true,
+        completionImageUrl: true,
         completionImagePath: true,
       },
     });
@@ -492,8 +494,8 @@ export class ReportService {
 
     const storedPath =
       kind === 'report-evidence'
-        ? report.evidenceImagePath
-        : report.completionImagePath;
+        ? (report.evidenceImagePath ?? report.evidenceImageUrl)
+        : (report.completionImagePath ?? report.completionImageUrl);
     const normalizedStoredPath = this.extractLocalUploadPath(storedPath);
     const expectedPath = posix.join(kind, reportId, fileName);
 
@@ -1656,8 +1658,10 @@ export class ReportService {
 
     const awaitingReview = report.status === ReportStatus.COMPLETED_BY_PROVIDER;
     const protectedReport = this.withProtectedEvidenceUrls(report);
+    const evidenceItems = this.reportEvidenceItems(protectedReport, report);
     return {
       ...protectedReport,
+      evidenceItems,
       completion: {
         note: protectedReport.completionNote,
         imageUrl: protectedReport.completionImageUrl,
@@ -2472,7 +2476,7 @@ export class ReportService {
     ]);
 
     const protectedReport = this.withProtectedEvidenceUrls(report);
-    const evidenceItems = this.reportEvidenceItems(protectedReport);
+    const evidenceItems = this.reportEvidenceItems(protectedReport, report);
     return {
       ...protectedReport,
       evidenceItems,
@@ -2507,45 +2511,77 @@ export class ReportService {
     };
   }
 
-  private reportEvidenceItems(report: EnterpriseReportWithEvidence) {
+  private reportEvidenceItems(
+    report: EnterpriseReportWithEvidence,
+    storedReport: EnterpriseReportWithEvidence = report,
+  ) {
     const items: Array<{
+      id: string;
       kind: EvidenceKind;
+      source: 'CITIZEN_REPORT' | 'PROVIDER_COMPLETION';
+      url: string;
       imageUrl: string;
       imagePath: string | null;
-      source: string;
+      filename: string | null;
+      mimeType: string | null;
+      uploadedAt: Date | string | null;
+      uploadedByRole: UserRole;
     }> = [];
     const seen = new Set<string>();
     const add = (
       kind: EvidenceKind,
       imageUrl?: string | null,
       imagePath?: string | null,
-      source = 'report',
+      source: 'CITIZEN_REPORT' | 'PROVIDER_COMPLETION' = 'CITIZEN_REPORT',
+      uploadedAt: Date | string | null = null,
+      uploadedByRole: UserRole = UserRole.CITIZEN,
+      storedImageUrl?: string | null,
     ) => {
       const url = imageUrl?.trim();
-      const path = this.extractLocalUploadPath(imagePath) ?? this.extractLocalUploadPath(url);
+      const path =
+        this.extractLocalUploadPath(imagePath) ??
+        this.extractLocalUploadPath(storedImageUrl) ??
+        this.extractLocalUploadPath(url);
       if (!url && !path) return;
       const key = `${kind}:${path ?? url}`.toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
+      const filename = path ? path.split('/').at(-1) ?? null : null;
+      const canonicalUrl =
+        this.protectedEvidenceUrl(report.id, kind, path ?? url) ??
+        url ??
+        `/uploads/${path}`;
       items.push({
+        id: key,
         kind,
-        imageUrl: url ?? `/uploads/${path}`,
-        imagePath: path,
         source,
+        url: canonicalUrl,
+        imageUrl: canonicalUrl,
+        imagePath: path,
+        filename,
+        mimeType: filename ? this.safeEvidenceContentType(filename) : null,
+        uploadedAt,
+        uploadedByRole,
       });
     };
 
     add(
       'report-evidence',
       report.evidenceImageUrl,
-      report.evidenceImagePath,
-      'citizen',
+      report.evidenceImagePath ?? storedReport.evidenceImagePath,
+      'CITIZEN_REPORT',
+      report.createdAt ?? null,
+      UserRole.CITIZEN,
+      storedReport.evidenceImageUrl,
     );
     add(
       'report-completion',
       report.completionImageUrl,
-      report.completionImagePath,
-      'provider_completion',
+      report.completionImagePath ?? storedReport.completionImagePath,
+      'PROVIDER_COMPLETION',
+      report.completedByProviderAt ?? null,
+      UserRole.PROVIDER,
+      storedReport.completionImageUrl,
     );
     return items;
   }
@@ -2694,6 +2730,14 @@ export class ReportService {
         return 'image/webp';
       default:
         throw new NotFoundException('Evidence not found');
+    }
+  }
+
+  private safeEvidenceContentType(fileName: string) {
+    try {
+      return this.contentTypeForEvidenceFile(fileName);
+    } catch {
+      return null;
     }
   }
 

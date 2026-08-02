@@ -186,7 +186,7 @@ describe('Report Workflow (e2e)', () => {
     profileData?: Record<string, unknown>;
   }) {
     const user = await prisma.user.create({
-      data,
+      data: data as any,
     });
 
     createdUserIds.push(user.id);
@@ -705,6 +705,62 @@ describe('Report Workflow (e2e)', () => {
     });
   });
 
+  it('persists citizen report evidence and returns canonical detail metadata', async () => {
+    const org = await createOrganization('Workflow Citizen Evidence Upload Org');
+    const citizen = await createUser({
+      email: 'wf-citizen-evidence-upload@test.com',
+      fullName: 'Workflow Citizen Evidence Upload',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF citizen evidence upload',
+      status: ReportStatus.TRIAGE,
+      organizationId: org.id,
+      citizenId: citizen.id,
+    });
+    const citizenToken = await signToken(citizen);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/evidence`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        fileName: 'report.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+
+    expect(uploadRes.status).toBe(201);
+    expect(uploadRes.body.evidenceImagePath).toMatch(
+      new RegExp(`^report-evidence/${report.id}/.+\\.png$`),
+    );
+    expect(uploadRes.body.evidenceImageUrl).toMatch(
+      new RegExp(`^/api/report/${report.id}/evidence/.+\\.png$`),
+    );
+
+    const stored = await prisma.report.findUniqueOrThrow({
+      where: { id: report.id },
+    });
+    expect(stored.evidenceImagePath).toBe(uploadRes.body.evidenceImagePath);
+    expect(stored.evidenceImageUrl).toBe(
+      `/uploads/${uploadRes.body.evidenceImagePath}`,
+    );
+
+    const detailRes = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.evidenceItems).toHaveLength(1);
+    expect(detailRes.body.evidenceItems[0]).toMatchObject({
+      kind: 'report-evidence',
+      source: 'CITIZEN_REPORT',
+      imagePath: uploadRes.body.evidenceImagePath,
+      imageUrl: uploadRes.body.evidenceImageUrl,
+      mimeType: 'image/png',
+      uploadedByRole: UserRole.CITIZEN,
+    });
+  });
+
   it('protects report evidence retrieval by role, tenant, pairing, path, and auth', async () => {
     const org = await createOrganization('Workflow Protected Evidence Org');
     const otherOrg = await createOrganization('Workflow Other Evidence Org');
@@ -765,10 +821,22 @@ describe('Report Workflow (e2e)', () => {
       organizationId: org.id,
       citizenId: citizen.id,
     });
+    const legacyUrlOnlyReport = await createReport({
+      title: 'WF legacy URL-only citizen evidence',
+      status: ReportStatus.CLOSED,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
     const evidencePath = writeEvidenceFile({
       reportId: report.id,
       folder: 'report-evidence',
       fileName: 'citizen-evidence.png',
+    });
+    const legacyEvidencePath = writeEvidenceFile({
+      reportId: legacyUrlOnlyReport.id,
+      folder: 'report-evidence',
+      fileName: 'legacy-citizen-evidence.png',
     });
     const completionPath = writeEvidenceFile({
       reportId: report.id,
@@ -782,6 +850,13 @@ describe('Report Workflow (e2e)', () => {
         evidenceImageUrl: `/uploads/${evidencePath}`,
         completionImagePath: completionPath,
         completionImageUrl: `/uploads/${completionPath}`,
+      },
+    });
+    await prisma.report.update({
+      where: { id: legacyUrlOnlyReport.id },
+      data: {
+        evidenceImagePath: null,
+        evidenceImageUrl: `/uploads/${legacyEvidencePath}`,
       },
     });
 
@@ -863,6 +938,28 @@ describe('Report Workflow (e2e)', () => {
         .get(completionUrl)
         .set('Authorization', `Bearer ${citizenToken}`),
     ).toHaveProperty('status', 200);
+
+    const legacyEvidenceUrl = `/api/report/${legacyUrlOnlyReport.id}/evidence/legacy-citizen-evidence.png`;
+    const legacyOwnerRes = await request(app.getHttpServer())
+      .get(legacyEvidenceUrl)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(legacyOwnerRes.status).toBe(200);
+    expect(legacyOwnerRes.headers['content-type']).toContain('image/png');
+
+    const legacyDetailRes = await request(app.getHttpServer())
+      .get(`/api/report/${legacyUrlOnlyReport.id}`)
+      .set('Authorization', `Bearer ${superAdminToken}`);
+    expect(legacyDetailRes.status).toBe(200);
+    expect(legacyDetailRes.body.evidenceItems).toHaveLength(1);
+    expect(legacyDetailRes.body.evidenceItems[0]).toMatchObject({
+      kind: 'report-evidence',
+      source: 'CITIZEN_REPORT',
+      imagePath: legacyEvidencePath,
+      url: legacyEvidenceUrl,
+      imageUrl: legacyEvidenceUrl,
+      mimeType: 'image/png',
+      uploadedByRole: UserRole.CITIZEN,
+    });
   });
 
   it('enforces citizen completion review ownership and required rating', async () => {
