@@ -9,6 +9,7 @@ import {
   AccountStatus,
   InvitationStatus,
   Prisma,
+  ReportStatus,
   UserRole,
 } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -57,6 +58,252 @@ export class UsersService {
     return invitations.map((invitation) =>
       this.serializeInvitation(invitation),
     );
+  }
+
+  async discoverProviders(user: JwtUser, query: Record<string, unknown> = {}) {
+    const organizationId = this.resolveDiscoveryOrganization(query, user);
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        state: true,
+        lga: true,
+        country: true,
+        profileData: true,
+      },
+    });
+    if (!organization) throw new ForbiddenException('Organization not found');
+
+    const filters = this.discoveryFilters(query);
+    const providers = await this.prisma.user.findMany({
+      where: {
+        role: UserRole.PROVIDER,
+        accountStatus: AccountStatus.ACTIVE,
+      },
+      orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        fullName: true,
+        providerId: true,
+        serviceCategories: true,
+        coverageAreas: true,
+        profileData: true,
+        identityVerificationStatus: true,
+        trustScore: true,
+        createdAt: true,
+        organizationId: true,
+        organization: { select: { id: true, name: true, type: true } },
+        providerOrganizations: {
+          where: { active: true },
+          select: {
+            organizationId: true,
+            isPrimary: true,
+            createdAt: true,
+            organization: { select: { id: true, name: true, type: true } },
+          },
+        },
+        assignedReports: {
+          select: {
+            id: true,
+            status: true,
+            organizationId: true,
+            category: true,
+            citizenRating: true,
+            citizenFeedback: true,
+            completionRejectionReason: true,
+            assignedAt: true,
+            completedByProviderAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    const invitations = await this.prisma.invitation.findMany({
+      where: { organizationId, role: UserRole.PROVIDER },
+      select: {
+        id: true,
+        status: true,
+        email: true,
+        phone: true,
+        acceptedUserId: true,
+        metadata: true,
+        expiresAt: true,
+      },
+    });
+    const invitationByProvider = new Map<
+      string,
+      (typeof invitations)[number]
+    >();
+    for (const invitation of invitations) {
+      const metadata = this.objectMetadata(invitation.metadata);
+      const discoveredProviderId =
+        typeof metadata.discoveredProviderId === 'string'
+          ? metadata.discoveredProviderId
+          : invitation.acceptedUserId;
+      if (discoveredProviderId) {
+        invitationByProvider.set(discoveredProviderId, invitation);
+      }
+    }
+
+    const results = providers
+      .map((provider) =>
+        this.serializeProviderDiscoveryResult(
+          provider,
+          organization,
+          filters,
+          invitationByProvider.get(provider.id),
+        ),
+      )
+      .filter((result) => this.discoveryResultMatches(result, filters))
+      .sort((a, b) => {
+        if (b.recommendationScore !== a.recommendationScore) {
+          return b.recommendationScore - a.recommendationScore;
+        }
+        return a.providerName.localeCompare(b.providerName);
+      })
+      .slice(0, 50);
+
+    await this.audit('Provider Directory Viewed', user, {
+      organizationId,
+      filters,
+      resultCount: results.length,
+    });
+
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        type: organization.type,
+        state: organization.state,
+        lga: organization.lga,
+      },
+      scoringModel: {
+        version: 'provider-discovery-rules-v1',
+        formula:
+          'category 25, coverage 20, verified citizen rating 25, completion history 10, availability/workload 10, verification/KYC 5, organisation fit 5; sparse history is capped with low confidence.',
+        privacy:
+          'Email, phone, exact private location, identity evidence, private pricing and internal dispute details are not returned.',
+      },
+      results,
+    };
+  }
+
+  async inviteDiscoveredProvider(
+    providerId: string,
+    dto: Record<string, unknown>,
+    user: JwtUser,
+  ) {
+    const organizationId = this.resolveDiscoveryOrganization(dto, user);
+    const provider = await this.prisma.user.findFirst({
+      where: {
+        id: providerId,
+        role: UserRole.PROVIDER,
+        accountStatus: AccountStatus.ACTIVE,
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        role: true,
+        accountStatus: true,
+        organizationId: true,
+        providerId: true,
+      },
+    });
+    if (!provider) throw new NotFoundException('Provider not found');
+
+    const existingMembership =
+      await this.prisma.providerOrganization.findUnique({
+        where: {
+          providerId_organizationId: {
+            providerId,
+            organizationId,
+          },
+        },
+      });
+    if (existingMembership?.active) {
+      return {
+        code: 'MEMBERSHIP_ALREADY_ACTIVE',
+        message: 'This provider already belongs to this organization.',
+        providerId,
+        organizationId,
+      };
+    }
+
+    const activeInvitation = await this.prisma.invitation.findFirst({
+      where: {
+        organizationId,
+        role: UserRole.PROVIDER,
+        status: InvitationStatus.PENDING,
+        expiresAt: { gt: new Date() },
+        OR: [
+          provider.email ? { email: provider.email } : undefined,
+          provider.phone ? { phone: provider.phone } : undefined,
+          { metadata: { path: ['discoveredProviderId'], equals: providerId } },
+        ].filter(Boolean) as Prisma.InvitationWhereInput[],
+      },
+    });
+    if (activeInvitation) {
+      throw new ConflictException({
+        code: 'DUPLICATE_PENDING_INVITATION',
+        message:
+          'This provider already has a pending invitation from this organization.',
+      });
+    }
+
+    if (!provider.email && !provider.phone) {
+      throw new ForbiddenException({
+        code: 'PROVIDER_CONTACT_UNAVAILABLE',
+        message:
+          'This provider cannot be invited until a private platform contact is available.',
+      });
+    }
+
+    const result = await this.inviteUser(
+      {
+        role: UserRole.PROVIDER,
+        organizationId,
+        email: provider.email,
+        phone: provider.phone,
+        fullName: provider.fullName,
+        confirmExistingUser: true,
+        existingUserAction: 'ADD_MEMBERSHIP',
+        discoveryInvite: true,
+      },
+      user,
+    );
+
+    const invitation = (result as any).invitation;
+    if (invitation?.id) {
+      await this.prisma.invitation.update({
+        where: { id: invitation.id },
+        data: {
+          metadata: {
+            ...this.objectMetadata(invitation.metadata),
+            discoveredProviderId: providerId,
+            invitationSource: 'SMART_PROVIDER_DISCOVERY',
+          },
+        },
+      });
+    }
+    await this.audit('Provider Discovery Invitation Created', user, {
+      providerId,
+      organizationId,
+      invitationId: invitation?.id ?? null,
+    });
+
+    return {
+      ...((result as any) ?? {}),
+      provider: {
+        id: provider.id,
+        providerId: provider.providerId,
+        fullName: provider.fullName,
+      },
+    };
   }
 
   async getUser(id: string, user: JwtUser) {
@@ -922,6 +1169,343 @@ export class UsersService {
     return user.organizationId;
   }
 
+  private resolveDiscoveryOrganization(
+    dto: Record<string, unknown>,
+    user: JwtUser,
+  ) {
+    if (user.role === UserRole.SUPER_ADMIN) {
+      const requested =
+        typeof dto.organizationId === 'string' ? dto.organizationId.trim() : '';
+      const fallback = user.organizationId?.trim() ?? '';
+      const organizationId = requested || fallback;
+      if (!organizationId) {
+        throw new ForbiddenException('Organization is required for discovery');
+      }
+      return organizationId;
+    }
+    if (user.role !== UserRole.ORG_ADMIN || !user.organizationId) {
+      throw new ForbiddenException('Provider discovery requires org admin');
+    }
+    return user.organizationId;
+  }
+
+  private discoveryFilters(query: Record<string, unknown>) {
+    return {
+      serviceCategory: this.optionalString(query.serviceCategory),
+      expertise: this.optionalString(query.expertise),
+      coverageArea: this.optionalString(query.coverageArea),
+      availability: this.optionalString(query.availability),
+      verificationStatus: this.optionalString(query.verificationStatus),
+      membershipStatus: this.optionalString(query.membershipStatus),
+      invitationStatus: this.optionalString(query.invitationStatus),
+      minimumRating: this.optionalNumber(query.minimumRating),
+    };
+  }
+
+  private serializeProviderDiscoveryResult(
+    provider: any,
+    organization: {
+      id: string;
+      name: string;
+      type: string;
+      state: string | null;
+      lga: string | null;
+      country: string | null;
+      profileData: unknown;
+    },
+    filters: ReturnType<UsersService['discoveryFilters']>,
+    invitation?: {
+      id: string;
+      status: InvitationStatus;
+      expiresAt: Date | null;
+    },
+  ) {
+    const serviceCategories = this.stringList(provider.serviceCategories);
+    const coverageAreas = this.stringList(provider.coverageAreas);
+    const orgNeeds = this.organizationServiceNeeds(organization, filters);
+    const profileText = JSON.stringify(
+      provider.profileData ?? {},
+    ).toLowerCase();
+    const closedJobs = provider.assignedReports.filter(
+      (report: any) => report.status === ReportStatus.CLOSED,
+    );
+    const verifiedRatings = closedJobs.filter(
+      (report: any) => typeof report.citizenRating === 'number',
+    );
+    const ratingCount = verifiedRatings.length;
+    const rawAverage =
+      ratingCount === 0
+        ? null
+        : verifiedRatings.reduce(
+            (sum: number, report: any) => sum + report.citizenRating,
+            0,
+          ) / ratingCount;
+    const bayesianRating =
+      rawAverage == null
+        ? null
+        : (ratingCount * rawAverage + 5 * 3.8) / (ratingCount + 5);
+    const activeWorkload = provider.assignedReports.filter((report: any) =>
+      [ReportStatus.ASSIGNED, ReportStatus.IN_PROGRESS].includes(report.status),
+    ).length;
+    const rejectedCompletions = provider.assignedReports.filter(
+      (report: any) => report.completionRejectionReason,
+    ).length;
+    const organizationMembership = provider.providerOrganizations.find(
+      (link: any) => link.organizationId === organization.id,
+    );
+    const membershipStatus = organizationMembership
+      ? 'MEMBER'
+      : provider.providerOrganizations.length > 0 ||
+          provider.organizationId !== null
+        ? 'ACTIVE_ELSEWHERE'
+        : 'INDEPENDENT';
+    const invitationStatus = invitation
+      ? invitation.status === InvitationStatus.PENDING &&
+        invitation.expiresAt &&
+        invitation.expiresAt <= new Date()
+        ? InvitationStatus.EXPIRED
+        : invitation.status
+      : 'NONE';
+
+    let score = 0;
+    const recommendationReasons: string[] = [];
+    const cautionReasons: string[] = [];
+    const matchedCategory =
+      this.containsAny(serviceCategories, orgNeeds) ||
+      (filters.serviceCategory
+        ? this.containsText(serviceCategories, filters.serviceCategory)
+        : false);
+    if (matchedCategory) {
+      score += 25;
+      recommendationReasons.push(
+        `Matches ${filters.serviceCategory ?? orgNeeds[0] ?? 'service needs'}`,
+      );
+    }
+
+    const locationNeeds = [
+      organization.lga,
+      organization.state,
+      organization.country,
+      filters.coverageArea,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase());
+    const coversArea =
+      coverageAreas.length === 0
+        ? false
+        : locationNeeds.some((need) =>
+            coverageAreas.some((area) => area.toLowerCase().includes(need)),
+          );
+    if (coversArea) {
+      score += 20;
+      recommendationReasons.push("Covers the organization's service area");
+    } else if (coverageAreas.length === 0) {
+      cautionReasons.push('Coverage area not verified');
+    }
+
+    if (bayesianRating != null) {
+      score += Math.min(25, Math.max(0, ((bayesianRating - 3) / 2) * 25));
+      recommendationReasons.push(
+        `${rawAverage!.toFixed(1)} verified citizen rating from ${ratingCount} completed job${ratingCount === 1 ? '' : 's'}`,
+      );
+    } else {
+      cautionReasons.push('Insufficient verified history');
+    }
+
+    if (closedJobs.length > 0) {
+      score += Math.min(10, closedJobs.length * 2);
+      recommendationReasons.push(
+        `${closedJobs.length} completed job${closedJobs.length === 1 ? '' : 's'}`,
+      );
+    }
+
+    if (activeWorkload === 0) {
+      score += 10;
+      recommendationReasons.push('Currently available');
+    } else if (activeWorkload <= 2) {
+      score += 5;
+      recommendationReasons.push('Moderate active workload');
+    } else {
+      cautionReasons.push('High active workload');
+    }
+
+    const verified = provider.identityVerificationStatus !== 'UNVERIFIED';
+    if (verified) {
+      score += 5;
+      recommendationReasons.push('Verification in progress or completed');
+    } else {
+      cautionReasons.push('Verification not completed');
+    }
+
+    if (this.organizationTypeMatchesProfile(organization.type, profileText)) {
+      score += 5;
+      recommendationReasons.push(`Profile aligns with ${organization.type}`);
+    }
+
+    if (membershipStatus === 'MEMBER') {
+      recommendationReasons.push('Already an active organization member');
+    } else if (membershipStatus === 'ACTIVE_ELSEWHERE') {
+      cautionReasons.push('Already active in another organization');
+    }
+    if (invitationStatus === InvitationStatus.PENDING) {
+      cautionReasons.push('Organization invitation pending');
+    }
+    if (rejectedCompletions > 0) {
+      cautionReasons.push('Has citizen rework or rejection history');
+    }
+
+    const confidenceLevel =
+      ratingCount >= 10 && closedJobs.length >= 10
+        ? 'HIGH'
+        : ratingCount >= 3 || closedJobs.length >= 5
+          ? 'MEDIUM'
+          : 'LOW';
+    if (confidenceLevel === 'LOW') {
+      cautionReasons.push('Limited verified history');
+      score = Math.min(score, 74);
+    }
+
+    return {
+      providerId: provider.id,
+      publicProviderId: provider.providerId,
+      providerName: provider.fullName,
+      serviceCategories,
+      broadCoverageAreas: coverageAreas,
+      verificationStatus: provider.identityVerificationStatus,
+      recommendationScore: Math.round(score),
+      confidenceLevel,
+      recommendationReasons,
+      cautionReasons: [...new Set(cautionReasons)],
+      ratingSummary: {
+        verifiedCitizenAverage:
+          rawAverage == null ? null : Number(rawAverage.toFixed(2)),
+        bayesianAverage:
+          bayesianRating == null ? null : Number(bayesianRating.toFixed(2)),
+        verifiedRatingCount: ratingCount,
+      },
+      completedJobCount: closedJobs.length,
+      acceptanceRate: null,
+      acceptanceRateStatus: 'Insufficient verified assignment response data',
+      activeWorkload,
+      membershipStatus,
+      invitationStatus,
+      primaryProfileOrganization: provider.organization
+        ? {
+            id: provider.organization.id,
+            name: provider.organization.name,
+            type: provider.organization.type,
+          }
+        : null,
+      activeMembershipCount: provider.providerOrganizations.length,
+    };
+  }
+
+  private discoveryResultMatches(
+    result: ReturnType<UsersService['serializeProviderDiscoveryResult']>,
+    filters: ReturnType<UsersService['discoveryFilters']>,
+  ) {
+    if (
+      filters.serviceCategory &&
+      !this.containsText(result.serviceCategories, filters.serviceCategory)
+    ) {
+      return false;
+    }
+    if (
+      filters.coverageArea &&
+      !this.containsText(result.broadCoverageAreas, filters.coverageArea)
+    ) {
+      return false;
+    }
+    if (
+      filters.verificationStatus &&
+      result.verificationStatus !== filters.verificationStatus
+    ) {
+      return false;
+    }
+    if (
+      filters.membershipStatus &&
+      result.membershipStatus !== filters.membershipStatus
+    ) {
+      return false;
+    }
+    if (
+      filters.invitationStatus &&
+      result.invitationStatus !== filters.invitationStatus
+    ) {
+      return false;
+    }
+    if (
+      filters.minimumRating != null &&
+      (result.ratingSummary.verifiedCitizenAverage == null ||
+        result.ratingSummary.verifiedCitizenAverage < filters.minimumRating)
+    ) {
+      return false;
+    }
+    if (filters.availability === 'available' && result.activeWorkload > 0) {
+      return false;
+    }
+    return true;
+  }
+
+  private organizationServiceNeeds(
+    organization: { type: string; profileData: unknown },
+    filters: ReturnType<UsersService['discoveryFilters']>,
+  ) {
+    const configured = this.stringList(
+      this.objectMetadata(organization.profileData).serviceNeeds,
+    );
+    return [
+      filters.serviceCategory,
+      ...configured,
+      ...this.defaultNeedsForOrganizationType(organization.type),
+    ].filter((value): value is string => Boolean(value));
+  }
+
+  private defaultNeedsForOrganizationType(type: string) {
+    const normalized = type.toUpperCase();
+    if (normalized.includes('UTILITY')) return ['Electricity', 'Water'];
+    if (normalized.includes('ESTATE') || normalized.includes('FACILITY')) {
+      return ['Waste', 'Water', 'Electricity', 'Roads'];
+    }
+    if (normalized.includes('GOVERNMENT') || normalized.includes('AGENCY')) {
+      return ['Roads', 'Drainage', 'Electricity', 'Waste', 'Water'];
+    }
+    return ['Roads', 'Drainage', 'Electricity', 'Waste', 'Water'];
+  }
+
+  private organizationTypeMatchesProfile(type: string, profileText: string) {
+    return type
+      .toLowerCase()
+      .split('_')
+      .some((part) => part.length > 3 && profileText.includes(part));
+  }
+
+  private containsAny(values: string[], needles: string[]) {
+    return needles.some((needle) => this.containsText(values, needle));
+  }
+
+  private containsText(values: string[], needle: string) {
+    const normalized = needle.trim().toLowerCase();
+    return values.some((value) => value.toLowerCase().includes(normalized));
+  }
+
+  private optionalString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private optionalNumber(value: unknown) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private stringList(value: unknown) {
+    return Array.isArray(value)
+      ? value
+          .map((item) => String(item ?? '').trim())
+          .filter((item) => item.length > 0)
+      : [];
+  }
+
   private inviteeFilters(user: JwtUser) {
     const filters: Array<{ email: string } | { phone: string }> = [];
     const email = user.email?.toLowerCase().trim();
@@ -945,9 +1529,7 @@ export class UsersService {
     const phoneMatches =
       invitation.phone && user.phone && invitation.phone === user.phone;
     if (!emailMatches && !phoneMatches) {
-      throw new ForbiddenException(
-        this.domainError('INVITATION_NOT_OWNED'),
-      );
+      throw new ForbiddenException(this.domainError('INVITATION_NOT_OWNED'));
     }
   }
 

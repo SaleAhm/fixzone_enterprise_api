@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
@@ -53,6 +54,27 @@ export class UsersController {
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getInvitations(@CurrentUser() user: CurrentAuthUser) {
     return this.usersService.getInvitations(user);
+  }
+
+  @Get('admin/provider-discovery')
+  @Roles(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  discoverProviders(
+    @CurrentUser() user: CurrentAuthUser,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.usersService.discoverProviders(user, query);
+  }
+
+  @Post('admin/provider-discovery/:providerId/invite')
+  @Roles(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  inviteDiscoveredProvider(
+    @Param('providerId') providerId: string,
+    @Body() dto: Record<string, unknown>,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.inviteDiscoveredProvider(providerId, dto, user);
   }
 
   @Post('admin/invitations')

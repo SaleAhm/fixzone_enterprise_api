@@ -643,41 +643,65 @@ export class ReportService {
       });
     }
 
-    const updated = await this.prisma.report.update({
-      where: { id: reportId },
-      data: {
-        organizationId: organization.id,
-        assignedOrganizationId: organization.id,
-        organizationAssignedById: actorId,
-        organizationAssignedAt: new Date(),
-        organizationAssignmentSource:
-          dto.reason?.trim() || 'Manual organization assignment',
-        lastAssignmentOutcome: null,
-        lastAssignmentReason: null,
-        lastAssignmentAt: new Date(),
-        lastAssignmentProviderId: null,
-      } as any,
-      include: this.includeRelations(),
-    });
+    const routeReason = dto.reason?.trim() || 'Manual organization assignment';
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const routed = await tx.report.update({
+        where: { id: reportId },
+        data: {
+          organizationId: organization.id,
+          assignedOrganizationId: organization.id,
+          organizationAssignedById: actorId,
+          organizationAssignedAt: new Date(),
+          organizationAssignmentSource: routeReason,
+          lastAssignmentOutcome: null,
+          lastAssignmentReason: null,
+          lastAssignmentAt: new Date(),
+          lastAssignmentProviderId: null,
+        } as any,
+        include: this.includeRelations(),
+      });
 
-    await this.audit('Report Assigned To Organization', user, {
-      targetType: 'Report',
-      targetId: reportId,
-      previousOrganizationId: report.organizationId,
-      assignedOrganizationId: organization.id,
-      organizationId: updated.organizationId,
-      reason: dto.reason?.trim() || null,
-    });
-    await this.recordReportActivity(reportId, 'ORGANIZATION_ASSIGNED', user, {
-      organizationId: updated.organizationId,
-      fromStatus: report.status,
-      toStatus: updated.status,
-      reason: dto.reason?.trim() || undefined,
-      metadata: {
-        previousOrganizationId: report.organizationId,
-        assignedOrganizationId: organization.id,
-        assignedOrganizationName: organization.name,
-      },
+      const audit = (tx as any).demoAuditLog;
+      if (audit?.create) {
+        await audit.create({
+          data: {
+            action: 'Report Assigned To Organization',
+            actorUserId: actorId,
+            metadata: {
+              targetType: 'Report',
+              targetId: reportId,
+              previousOrganizationId: report.organizationId,
+              assignedOrganizationId: organization.id,
+              organizationId: routed.organizationId,
+              reason: dto.reason?.trim() || null,
+            },
+          },
+        });
+      }
+
+      const activity = (tx as any).reportActivity;
+      if (activity?.create) {
+        await activity.create({
+          data: {
+            reportId,
+            organizationId: routed.organizationId,
+            actorUserId: actorId,
+            actorRole: user.role ?? null,
+            actorName: user.fullName ?? user.email ?? null,
+            action: 'ORGANIZATION_ASSIGNED',
+            fromStatus: report.status,
+            toStatus: routed.status,
+            reason: dto.reason?.trim() || null,
+            metadata: {
+              previousOrganizationId: report.organizationId,
+              assignedOrganizationId: organization.id,
+              assignedOrganizationName: organization.name,
+            },
+          },
+        });
+      }
+
+      return routed;
     });
     await this.notifyOrganizationOperators(organization.id, {
       reportId,

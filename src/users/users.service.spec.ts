@@ -220,3 +220,119 @@ describe('UsersService invitation lifecycle', () => {
     expect((result as any).code).toBe('MEMBERSHIP_ALREADY_ACTIVE');
   });
 });
+
+describe('UsersService provider discovery', () => {
+  it('ranks providers with verified citizen ratings and hides private contact data', async () => {
+    const prisma = {
+      organization: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'org-1',
+          name: 'Hunslow International Ltd',
+          type: 'UTILITY_COMPANY',
+          state: 'Abuja',
+          lga: 'Hunslow',
+          country: 'Nigeria',
+          profileData: { serviceNeeds: ['Electricity'] },
+        }),
+      },
+      user: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'provider-1',
+            fullName: 'Abdul Kareem',
+            providerId: 'PRV-1',
+            serviceCategories: ['Electricity', 'Water'],
+            coverageAreas: ['Hunslow', 'Abuja'],
+            profileData: {},
+            identityVerificationStatus: 'ID_VERIFIED',
+            trustScore: 60,
+            createdAt: new Date(),
+            organizationId: 'demo-org',
+            organization: {
+              id: 'demo-org',
+              name: 'FixZone Demo LGA',
+              type: 'LOCAL_GOVERNMENT',
+            },
+            providerOrganizations: [
+              {
+                organizationId: 'demo-org',
+                isPrimary: true,
+                createdAt: new Date(),
+                organization: {
+                  id: 'demo-org',
+                  name: 'FixZone Demo LGA',
+                  type: 'LOCAL_GOVERNMENT',
+                },
+              },
+            ],
+            assignedReports: [
+              {
+                id: 'report-1',
+                status: 'CLOSED',
+                organizationId: 'demo-org',
+                category: 'Electricity',
+                citizenRating: 5,
+                citizenFeedback: 'Good',
+                completionRejectionReason: null,
+                assignedAt: new Date(),
+                completedByProviderAt: new Date(),
+                updatedAt: new Date(),
+              },
+              {
+                id: 'report-2',
+                status: 'CLOSED',
+                organizationId: 'demo-org',
+                category: 'Electricity',
+                citizenRating: 4,
+                citizenFeedback: 'Resolved',
+                completionRejectionReason: null,
+                assignedAt: new Date(),
+                completedByProviderAt: new Date(),
+                updatedAt: new Date(),
+              },
+            ],
+          },
+        ]),
+      },
+      invitation: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      demoAuditLog: {
+        create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+      },
+    };
+    const service = new UsersService(prisma as any);
+
+    const result = await service.discoverProviders(
+      { role: UserRole.ORG_ADMIN, organizationId: 'org-1', sub: 'admin-1' },
+      { serviceCategory: 'Electricity' },
+    );
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      providerName: 'Abdul Kareem',
+      publicProviderId: 'PRV-1',
+      ratingSummary: {
+        verifiedCitizenAverage: 4.5,
+        verifiedRatingCount: 2,
+      },
+    });
+    expect(result.results[0]).not.toHaveProperty('email');
+    expect(result.results[0]).not.toHaveProperty('phone');
+    expect(result.results[0].recommendationReasons).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Matches Electricity'),
+        expect.stringContaining('verified citizen rating'),
+      ]),
+    );
+    expect(result.scoringModel.formula).toContain('verified citizen rating 25');
+  });
+
+  it('requires a concrete organization for super admin discovery', async () => {
+    const service = new UsersService({} as any);
+
+    await expect(
+      service.discoverProviders({ role: UserRole.SUPER_ADMIN }, {}),
+    ).rejects.toThrow('Organization is required for discovery');
+  });
+});
