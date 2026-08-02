@@ -2,7 +2,9 @@ import { ReportStatus } from '@prisma/client';
 
 export const ALLOWED_REPORT_TRANSITIONS: Record<ReportStatus, ReportStatus[]> =
   {
-    [ReportStatus.PENDING]: [ReportStatus.ASSIGNED],
+    [ReportStatus.TRIAGE]: [ReportStatus.ORG_REVIEW],
+    [ReportStatus.ORG_REVIEW]: [ReportStatus.PENDING, ReportStatus.TRIAGE],
+    [ReportStatus.PENDING]: [ReportStatus.ASSIGNED, ReportStatus.ORG_REVIEW],
     [ReportStatus.ASSIGNED]: [ReportStatus.IN_PROGRESS],
     [ReportStatus.IN_PROGRESS]: [ReportStatus.COMPLETED_BY_PROVIDER],
     [ReportStatus.COMPLETED_BY_PROVIDER]: [ReportStatus.CLOSED],

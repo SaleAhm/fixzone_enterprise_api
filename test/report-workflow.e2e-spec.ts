@@ -181,6 +181,8 @@ describe('Report Workflow (e2e)', () => {
     role: UserRole;
     organizationId?: string | null;
     providerId?: string | null;
+    serviceCategories?: string[];
+    coverageAreas?: string[];
   }) {
     const user = await prisma.user.create({
       data,
@@ -197,6 +199,7 @@ describe('Report Workflow (e2e)', () => {
     organizationId: string;
     citizenId: string;
     assignedProviderId?: string | null;
+    assignedOrganizationId?: string | null;
   }) {
     const report = await prisma.report.create({
       data: {
@@ -208,6 +211,7 @@ describe('Report Workflow (e2e)', () => {
         organizationId: data.organizationId,
         citizenId: data.citizenId,
         assignedProviderId: data.assignedProviderId ?? null,
+        assignedOrganizationId: data.assignedOrganizationId ?? null,
       },
     });
 
@@ -1949,6 +1953,7 @@ describe('Report Workflow (e2e)', () => {
     expect(routeRes.status).toBe(200);
     expect(routeRes.body.organizationId).toBe(hunslowOrg.id);
     expect(routeRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
+    expect(routeRes.body.status).toBe(ReportStatus.ORG_REVIEW);
 
     const stored = await prisma.report.findUniqueOrThrow({
       where: { id: report.id },
@@ -1966,6 +1971,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${hunslowAdminToken}`);
     expect(hunslowReadAfterRoute.status).toBe(200);
     expect(hunslowReadAfterRoute.body.organizationId).toBe(hunslowOrg.id);
+    expect(hunslowReadAfterRoute.body.status).toBe(ReportStatus.ORG_REVIEW);
 
     const hunslowSummary = await request(app.getHttpServer())
       .get('/api/report/admin/dashboard/summary')
@@ -1973,6 +1979,27 @@ describe('Report Workflow (e2e)', () => {
     expect(hunslowSummary.status).toBe(200);
     expect(hunslowSummary.body.total).toBeGreaterThanOrEqual(1);
     expect(hunslowSummary.body.pending).toBeGreaterThanOrEqual(1);
+    expect(
+      hunslowSummary.body.awaitingOrganizationDecision,
+    ).toBeGreaterThanOrEqual(1);
+
+    const earlyAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ providerId: hunslowProvider.id });
+    expect(earlyAssign.status).toBe(403);
+    expect(earlyAssign.body.message).toContain(
+      'Report cannot be assigned in its current status',
+    );
+
+    const acceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/organization-accept`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ note: 'Accepted for Hunslow dispatch' });
+    expect(acceptRes.status).toBe(200);
+    expect(acceptRes.body.status).toBe(ReportStatus.PENDING);
+    expect(acceptRes.body.organizationId).toBe(hunslowOrg.id);
+    expect(acceptRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
 
     const hunslowCandidates = await request(app.getHttpServer())
       .get(`/api/report/${report.id}/assignment-candidates`)
@@ -1982,10 +2009,235 @@ describe('Report Workflow (e2e)', () => {
       hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
     ).toContain(hunslowProvider.id);
 
+    const assignRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ providerId: hunslowProvider.id });
+    expect(assignRes.status).toBe(200);
+    expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
+
     const otherRouteAttempt = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/assign-organization`)
       .set('Authorization', `Bearer ${otherAdminToken}`)
       .send({ organizationId: otherOrg.id, reason: 'Cross tenant attempt' });
     expect(otherRouteAttempt.status).toBe(403);
+  });
+
+  it('automatically routes only one deterministic eligible organization match', async () => {
+    const unique = Date.now().toString(36);
+    const category = `Auto Intake ${unique}`;
+    const sourceOrg = await createOrganization(
+      `Workflow Auto Source ${unique}`,
+    );
+    const routedOrg = await prisma.organization.create({
+      data: {
+        name: `Workflow Auto Routed ${unique}`,
+        contactEmail: `wf-auto-routed-${unique}@test.com`,
+        state: 'FCT',
+        lga: 'Bwari',
+        address: 'Kubwa Township',
+      },
+    });
+    createdOrgIds.push(routedOrg.id);
+    const otherOrg = await createOrganization(`Workflow Auto Other ${unique}`);
+    const citizen = await createUser({
+      email: `wf-auto-citizen-${unique}@test.com`,
+      fullName: 'Workflow Auto Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: sourceOrg.id,
+    });
+    const routedAdmin = await createUser({
+      email: `wf-auto-routed-admin-${unique}@test.com`,
+      fullName: 'Workflow Auto Routed Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: routedOrg.id,
+    });
+    const otherAdmin = await createUser({
+      email: `wf-auto-other-admin-${unique}@test.com`,
+      fullName: 'Workflow Auto Other Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    await createUser({
+      email: `wf-auto-provider-${unique}@test.com`,
+      fullName: 'Workflow Auto Provider',
+      role: UserRole.PROVIDER,
+      organizationId: routedOrg.id,
+      serviceCategories: [category],
+      coverageAreas: ['Kubwa'],
+    });
+
+    const citizenToken = await signToken(citizen);
+    const createRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF automatic organization intake',
+        description: 'Road issue around Kubwa',
+        category,
+        location: 'Kubwa Township',
+      });
+    expect(createRes.status).toBe(201);
+    createdReportIds.push(createRes.body.id);
+    expect(createRes.body.status).toBe(ReportStatus.ORG_REVIEW);
+    expect(createRes.body.organizationId).toBe(routedOrg.id);
+    expect(createRes.body.assignedOrganizationId).toBe(routedOrg.id);
+
+    const routedAdminToken = await signToken(routedAdmin);
+    const otherAdminToken = await signToken(otherAdmin);
+    const routedRead = await request(app.getHttpServer())
+      .get(`/api/report/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${routedAdminToken}`);
+    expect(routedRead.status).toBe(200);
+
+    const otherRead = await request(app.getHttpServer())
+      .get(`/api/report/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${otherAdminToken}`);
+    expect(otherRead.status).toBe(403);
+
+    const ambiguousOrgA = await prisma.organization.create({
+      data: {
+        name: `Workflow Auto Ambiguous A ${unique}`,
+        contactEmail: `wf-auto-amb-a-${unique}@test.com`,
+        state: 'FCT',
+        lga: 'Jabi',
+        address: 'Jabi District',
+      },
+    });
+    createdOrgIds.push(ambiguousOrgA.id);
+    const ambiguousOrgB = await prisma.organization.create({
+      data: {
+        name: `Workflow Auto Ambiguous B ${unique}`,
+        contactEmail: `wf-auto-amb-b-${unique}@test.com`,
+        state: 'FCT',
+        lga: 'Jabi',
+        address: 'Jabi District',
+      },
+    });
+    createdOrgIds.push(ambiguousOrgB.id);
+    const ambiguousCategory = `Ambiguous Intake ${unique}`;
+    await createUser({
+      email: `wf-auto-amb-a-provider-${unique}@test.com`,
+      fullName: 'Workflow Auto Ambiguous A Provider',
+      role: UserRole.PROVIDER,
+      organizationId: ambiguousOrgA.id,
+      serviceCategories: [ambiguousCategory],
+      coverageAreas: ['Jabi'],
+    });
+    await createUser({
+      email: `wf-auto-amb-b-provider-${unique}@test.com`,
+      fullName: 'Workflow Auto Ambiguous B Provider',
+      role: UserRole.PROVIDER,
+      organizationId: ambiguousOrgB.id,
+      serviceCategories: [ambiguousCategory],
+      coverageAreas: ['Jabi'],
+    });
+
+    const ambiguousRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF ambiguous organization intake',
+        description: 'Issue around Jabi',
+        category: ambiguousCategory,
+        location: 'Jabi District',
+      });
+    expect(ambiguousRes.status).toBe(201);
+    createdReportIds.push(ambiguousRes.body.id);
+    expect(ambiguousRes.body.status).toBe(ReportStatus.TRIAGE);
+    expect(ambiguousRes.body.assignedOrganizationId).toBeNull();
+
+    const noMatchRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF no match organization intake',
+        description: 'No matching category',
+        category: `No Match Intake ${unique}`,
+        location: 'Gwarinpa',
+      });
+    expect(noMatchRes.status).toBe(201);
+    createdReportIds.push(noMatchRes.body.id);
+    expect(noMatchRes.body.status).toBe(ReportStatus.TRIAGE);
+    expect(noMatchRes.body.assignedOrganizationId).toBeNull();
+
+    const superAdmin = await createUser({
+      email: `wf-auto-super-admin-${unique}@test.com`,
+      fullName: 'Workflow Auto Super Admin',
+      role: UserRole.SUPER_ADMIN,
+    });
+    const superAdminToken = await signToken(superAdmin);
+    const manualRouteRes = await request(app.getHttpServer())
+      .patch(`/api/report/${ambiguousRes.body.id}/assign-organization`)
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        organizationId: ambiguousOrgA.id,
+        reason: 'Manual triage routing',
+      });
+    expect(manualRouteRes.status).toBe(200);
+    expect(manualRouteRes.body.status).toBe(ReportStatus.ORG_REVIEW);
+    expect(manualRouteRes.body.organizationId).toBe(ambiguousOrgA.id);
+    expect(manualRouteRes.body.assignedOrganizationId).toBe(ambiguousOrgA.id);
+  });
+
+  it('returns organization-rejected reports to platform triage', async () => {
+    const org = await createOrganization('Workflow Org Intake Reject');
+    const admin = await createUser({
+      email: 'wf-org-intake-reject-admin@test.com',
+      fullName: 'Workflow Org Intake Reject Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-org-intake-reject-provider@test.com',
+      fullName: 'Workflow Org Intake Reject Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-org-intake-reject-citizen@test.com',
+      fullName: 'Workflow Org Intake Reject Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF org intake rejected',
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ORG_REVIEW,
+      assignedOrganizationId: org.id,
+    });
+    const adminToken = await signToken(admin);
+
+    const noReason = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/organization-reject`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: '' });
+    expect(noReason.status).toBe(400);
+
+    const rejectRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/organization-reject`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Outside Hunslow jurisdiction' });
+    expect(rejectRes.status).toBe(200);
+    expect(rejectRes.body.status).toBe(ReportStatus.TRIAGE);
+    expect(rejectRes.body.assignedOrganizationId).toBeNull();
+    expect(rejectRes.body.lastAssignmentReason).toBe(
+      'Outside Hunslow jurisdiction',
+    );
+
+    const orgReports = await request(app.getHttpServer())
+      .get('/api/report')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(orgReports.status).toBe(200);
+    expect(
+      orgReports.body.map((item: { id: string }) => item.id),
+    ).not.toContain(report.id);
+
+    const staleAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ providerId: provider.id });
+    expect(staleAssign.status).toBe(403);
   });
 });

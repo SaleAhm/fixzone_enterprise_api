@@ -26,6 +26,10 @@ import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
+import {
+  OrganizationAcceptReportDto,
+  OrganizationRejectReportDto,
+} from './dto/organization-intake-decision.dto';
 import { DispatchAiService } from './services/dispatch-ai.service';
 import { ReportService } from './report.service';
 import {
@@ -307,6 +311,28 @@ export class ReportController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.reportService.assignOrganization(id, dto, user);
+  }
+
+  @Patch(':id/organization-accept')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  acceptOrganizationReport(
+    @Param('id') id: string,
+    @Body() dto: OrganizationAcceptReportDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.acceptOrganizationReport(id, dto, user);
+  }
+
+  @Patch(':id/organization-reject')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  rejectOrganizationReport(
+    @Param('id') id: string,
+    @Body() dto: OrganizationRejectReportDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.rejectOrganizationReport(id, dto, user);
   }
 
   @Post('admin/assignments/expire-overdue')

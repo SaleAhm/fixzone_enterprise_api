@@ -8,7 +8,9 @@ import {
 describe('report workflow helpers', () => {
   it('defines the strict linear transition map', () => {
     expect(ALLOWED_REPORT_TRANSITIONS).toEqual({
-      [ReportStatus.PENDING]: [ReportStatus.ASSIGNED],
+      [ReportStatus.TRIAGE]: [ReportStatus.ORG_REVIEW],
+      [ReportStatus.ORG_REVIEW]: [ReportStatus.PENDING, ReportStatus.TRIAGE],
+      [ReportStatus.PENDING]: [ReportStatus.ASSIGNED, ReportStatus.ORG_REVIEW],
       [ReportStatus.ASSIGNED]: [ReportStatus.IN_PROGRESS],
       [ReportStatus.IN_PROGRESS]: [ReportStatus.COMPLETED_BY_PROVIDER],
       [ReportStatus.COMPLETED_BY_PROVIDER]: [ReportStatus.CLOSED],
@@ -17,6 +19,15 @@ describe('report workflow helpers', () => {
   });
 
   it('allows only the next status in the workflow', () => {
+    expect(
+      canTransitionReportStatus(ReportStatus.TRIAGE, ReportStatus.ORG_REVIEW),
+    ).toBe(true);
+    expect(
+      canTransitionReportStatus(ReportStatus.ORG_REVIEW, ReportStatus.PENDING),
+    ).toBe(true);
+    expect(
+      canTransitionReportStatus(ReportStatus.ORG_REVIEW, ReportStatus.TRIAGE),
+    ).toBe(true);
     expect(
       canTransitionReportStatus(ReportStatus.PENDING, ReportStatus.ASSIGNED),
     ).toBe(true);
@@ -42,6 +53,7 @@ describe('report workflow helpers', () => {
 
   it('normalizes lowercase status values before comparing workflow states', () => {
     expect(normalizeReportStatus('pending')).toBe(ReportStatus.PENDING);
+    expect(normalizeReportStatus('org_review')).toBe(ReportStatus.ORG_REVIEW);
     expect(normalizeReportStatus('assigned')).toBe(ReportStatus.ASSIGNED);
     expect(canTransitionReportStatus('pending', 'assigned')).toBe(true);
   });

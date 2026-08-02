@@ -34,6 +34,10 @@ import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
 import {
+  OrganizationAcceptReportDto,
+  OrganizationRejectReportDto,
+} from './dto/organization-intake-decision.dto';
+import {
   canTransitionReportStatus,
   normalizeReportStatus,
 } from './report-workflow';
@@ -85,6 +89,11 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   assignedProvider?: unknown;
 };
 
+const SUPER_ADMIN_TRIAGE_SOURCE = 'Super Admin triage';
+const AUTOMATIC_ORGANIZATION_REVIEW_SOURCE = 'Automatic intake match';
+const ORGANIZATION_ACCEPTED_SOURCE = 'Organization accepted report';
+const ORGANIZATION_REJECTED_SOURCE = 'Organization rejected report';
+
 @Injectable()
 export class ReportService {
   private readonly logger = new Logger(ReportService.name);
@@ -114,13 +123,10 @@ export class ReportService {
       throw new ForbiddenException('Citizen must belong to an organization');
     }
 
-    const intakeOrganization =
-      (await this.findEligibleIntakeOrganization(dto)) ??
-      (await this.prisma.organization.findUnique({
-        where: { id: user.organizationId },
-        select: { id: true, name: true },
-      }));
+    const intakeRoute = await this.findEligibleIntakeOrganization(dto);
+    const intakeOrganization = intakeRoute.organization;
     const organizationId = intakeOrganization?.id ?? user.organizationId;
+    const routedToOrganization = Boolean(intakeOrganization);
 
     await this.enforceMonthlyReportQuota(organizationId);
 
@@ -131,14 +137,18 @@ export class ReportService {
           ? new Date(dto.locationCapturedAt)
           : undefined,
         locationSource: dto.locationSource ?? this.locationSourceFor(dto),
-        status: ReportStatus.PENDING,
+        status: routedToOrganization
+          ? ReportStatus.ORG_REVIEW
+          : ReportStatus.TRIAGE,
         citizenId: userId,
         organizationId,
-        assignedOrganizationId: organizationId,
-        organizationAssignedAt: new Date(),
-        organizationAssignmentSource: intakeOrganization
-          ? 'Automatic intake match'
-          : 'Citizen organization',
+        assignedOrganizationId: routedToOrganization ? organizationId : null,
+        organizationAssignedAt: routedToOrganization ? new Date() : null,
+        organizationAssignmentSource: routedToOrganization
+          ? AUTOMATIC_ORGANIZATION_REVIEW_SOURCE
+          : intakeRoute.matchCount > 1
+            ? 'Ambiguous organization intake match'
+            : SUPER_ADMIN_TRIAGE_SOURCE,
       },
       include: this.includeRelations(),
     });
@@ -175,12 +185,14 @@ export class ReportService {
         routingSource: report.organizationAssignmentSource,
       },
     });
-    await this.notifyOrganizationOperators(report.organizationId, {
-      reportId: report.id,
-      type: 'organization_report_offered',
-      title: 'Incoming report for review',
-      message: `"${report.title}" is available in your organization queue.`,
-    });
+    if (routedToOrganization) {
+      await this.notifyOrganizationOperators(report.organizationId, {
+        reportId: report.id,
+        type: 'organization_report_offered',
+        title: 'Incoming report for review',
+        message: `"${report.title}" is awaiting your organization intake decision.`,
+      });
+    }
 
     return this.withProtectedEvidenceUrls(report);
   }
@@ -346,7 +358,11 @@ export class ReportService {
       return this.withEnterpriseReportDetails(report);
     }
 
-    if ((this.isAdmin(user) || this.isDispatch(user)) && sameOrg) {
+    if (
+      (this.isAdmin(user) || this.isDispatch(user)) &&
+      sameOrg &&
+      report.status !== ReportStatus.TRIAGE
+    ) {
       return this.withEnterpriseReportDetails(report);
     }
 
@@ -616,7 +632,12 @@ export class ReportService {
     ) {
       throw new ForbiddenException('Cross-org not allowed');
     }
-    if (normalizeReportStatus(report.status) !== ReportStatus.PENDING) {
+    const currentStatus = normalizeReportStatus(report.status);
+    const routableStatuses: ReportStatus[] = [
+      ReportStatus.PENDING,
+      ReportStatus.TRIAGE,
+    ];
+    if (!routableStatuses.includes(currentStatus as ReportStatus)) {
       throw new ForbiddenException(
         'Report cannot be assigned in its current status',
       );
@@ -680,6 +701,7 @@ export class ReportService {
           organizationAssignedById: actorId,
           organizationAssignedAt: new Date(),
           organizationAssignmentSource: routeReason,
+          status: ReportStatus.ORG_REVIEW,
           lastAssignmentOutcome: null,
           lastAssignmentReason: null,
           lastAssignmentAt: new Date(),
@@ -735,6 +757,174 @@ export class ReportService {
       type: 'organization_assignment',
       title: 'Report assigned to organization',
       message: `"${updated.title}" was assigned to ${organization.name}.`,
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async acceptOrganizationReport(
+    reportId: string,
+    dto: OrganizationAcceptReportDto,
+    user: JwtUser,
+  ) {
+    const actorId = this.getUserId(user);
+    const organizationId = this.requireUserOrganizationId(user);
+    if (!this.isAdmin(user) && !this.isDispatch(user)) {
+      throw new ForbiddenException(
+        'Only organization operators can accept reports',
+      );
+    }
+
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (
+      report.organizationId !== organizationId ||
+      report.assignedOrganizationId !== organizationId
+    ) {
+      throw new ForbiddenException('Report is not routed to your organization');
+    }
+    if (report.status === ReportStatus.PENDING) {
+      return this.withProtectedEvidenceUrls(report);
+    }
+    if (report.status !== ReportStatus.ORG_REVIEW) {
+      throw new ConflictException(
+        'Report is not awaiting organization decision',
+      );
+    }
+
+    const note = dto.note?.trim();
+    const updated = await this.prisma.report.update({
+      where: { id: reportId },
+      data: {
+        status: ReportStatus.PENDING,
+        organizationAssignmentSource: ORGANIZATION_ACCEPTED_SOURCE,
+        lastAssignmentOutcome: null,
+        lastAssignmentReason: null,
+        lastAssignmentAt: new Date(),
+      } as any,
+      include: this.includeRelations(),
+    });
+
+    await this.audit('Organization Report Accepted', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      organizationId,
+      previousStatus: report.status,
+      note: note ?? null,
+    });
+    await this.recordReportActivity(
+      reportId,
+      'ORGANIZATION_ACCEPTED_REPORT',
+      user,
+      {
+        organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        note: note || undefined,
+        metadata: {
+          assignedOrganizationId: updated.assignedOrganizationId,
+          previousStatus: report.status,
+        },
+      },
+    );
+    await this.createNotification({
+      userId: updated.citizenId,
+      reportId,
+      type: 'organization_report_accepted',
+      title: 'Report accepted for dispatch',
+      message: `"${updated.title}" was accepted by the responsible organization and is awaiting provider assignment.`,
+    });
+    await this.notifyOrganizationOperators(organizationId, {
+      reportId,
+      type: 'organization_report_accepted',
+      title: 'Report accepted',
+      message: `"${updated.title}" is now in your dispatch queue.`,
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async rejectOrganizationReport(
+    reportId: string,
+    dto: OrganizationRejectReportDto,
+    user: JwtUser,
+  ) {
+    const organizationId = this.requireUserOrganizationId(user);
+    if (!this.isAdmin(user) && !this.isDispatch(user)) {
+      throw new ForbiddenException(
+        'Only organization operators can reject reports',
+      );
+    }
+    const reason = dto.reason?.trim();
+    if (!reason) throw new BadRequestException('Rejection reason is required');
+
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (
+      report.organizationId !== organizationId ||
+      report.assignedOrganizationId !== organizationId
+    ) {
+      throw new ForbiddenException('Report is not routed to your organization');
+    }
+    if (report.status === ReportStatus.TRIAGE) {
+      return this.withProtectedEvidenceUrls(report);
+    }
+    if (report.status !== ReportStatus.ORG_REVIEW) {
+      throw new ConflictException(
+        'Report is not awaiting organization decision',
+      );
+    }
+
+    const updated = await this.prisma.report.update({
+      where: { id: reportId },
+      data: {
+        status: ReportStatus.TRIAGE,
+        assignedOrganizationId: null,
+        organizationAssignedById: null,
+        organizationAssignedAt: null,
+        organizationAssignmentSource: ORGANIZATION_REJECTED_SOURCE,
+        assignedProviderId: null,
+        assignedAt: null,
+        assignmentDeadlineAt: null,
+        lastAssignmentOutcome: AssignmentOutcome.REJECTED,
+        lastAssignmentReason: reason,
+        lastAssignmentAt: new Date(),
+      } as any,
+      include: this.includeRelations(),
+    });
+
+    await this.audit('Organization Report Rejected', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      organizationId,
+      previousStatus: report.status,
+      reason,
+    });
+    await this.recordReportActivity(
+      reportId,
+      'ORGANIZATION_REJECTED_REPORT',
+      user,
+      {
+        organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        reason,
+        metadata: {
+          returnedToSuperAdminTriage: true,
+          previousAssignedOrganizationId: organizationId,
+        },
+      },
+    );
+    await this.createNotification({
+      userId: updated.citizenId,
+      reportId,
+      type: 'organization_report_rejected',
+      title: 'Report returned for platform review',
+      message: `"${updated.title}" was returned for SecureZone platform triage.`,
     });
     return this.withProtectedEvidenceUrls(updated);
   }
@@ -1465,27 +1655,53 @@ export class ReportService {
       actor: user,
     });
 
-    const [total, pending, assigned, inProgress, completed, closed] =
-      await Promise.all([
-        this.prisma.report.count({ where }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.PENDING },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.ASSIGNED },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.IN_PROGRESS },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.COMPLETED_BY_PROVIDER },
-        }),
-        this.prisma.report.count({
-          where: { ...where, status: ReportStatus.CLOSED },
-        }),
-      ]);
+    const [
+      total,
+      pending,
+      awaitingOrganizationDecision,
+      triage,
+      assigned,
+      inProgress,
+      completed,
+      closed,
+    ] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          status: { in: [ReportStatus.PENDING, ReportStatus.ORG_REVIEW] },
+        },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.ORG_REVIEW },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.TRIAGE },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.ASSIGNED },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.IN_PROGRESS },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.COMPLETED_BY_PROVIDER },
+      }),
+      this.prisma.report.count({
+        where: { ...where, status: ReportStatus.CLOSED },
+      }),
+    ]);
 
-    return { total, pending, assigned, inProgress, completed, closed };
+    return {
+      total,
+      pending,
+      awaitingOrganizationDecision,
+      triage,
+      assigned,
+      inProgress,
+      completed,
+      closed,
+    };
   }
 
   // ===================== CHART ANALYTICS =====================
@@ -1593,9 +1809,12 @@ export class ReportService {
         },
       ];
     }
+    const reportScope = this.isSuperAdmin(user)
+      ? undefined
+      : { organizationId: this.requireUserOrganizationId(user) };
     const providers = (await this.prisma.user.findMany({
       where,
-      include: { assignedReports: true },
+      include: { assignedReports: reportScope ? { where: reportScope } : true },
     })) as any[];
 
     return providers.map((p) => {
@@ -1657,12 +1876,13 @@ export class ReportService {
       organizationId: where.organizationId,
       actor: user,
     });
-    return this.prisma.report.findMany({
+    const reports = await this.prisma.report.findMany({
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 10,
       include: this.includeRelations(),
     });
+    return reports.map((report) => this.withProtectedEvidenceUrls(report));
   }
 
   // ===================== HELPERS =====================
@@ -1707,6 +1927,7 @@ export class ReportService {
     if (!this.isSuperAdmin(user)) {
       if (!user.organizationId) throw new ForbiddenException('No org');
       where.organizationId = user.organizationId;
+      where.status = { not: ReportStatus.TRIAGE };
     }
 
     if (period) {
@@ -1829,7 +2050,10 @@ export class ReportService {
     return Array.from(providers.values());
   }
 
-  private async findEligibleIntakeOrganization(dto: CreateReportDto) {
+  private async findEligibleIntakeOrganization(dto: CreateReportDto): Promise<{
+    organization: any | null;
+    matchCount: number;
+  }> {
     const organizations = await this.prisma.organization.findMany({
       where: { status: OrganizationStatus.ACTIVE },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -1888,8 +2112,10 @@ export class ReportService {
         );
       });
 
-    if (eligible.length !== 1) return null;
-    return eligible[0].organization;
+    if (eligible.length !== 1) {
+      return { organization: null, matchCount: eligible.length };
+    }
+    return { organization: eligible[0].organization, matchCount: 1 };
   }
 
   private providerMatchesCategory(

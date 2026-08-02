@@ -26,6 +26,8 @@ enum UserRole {
 }
 
 enum ReportStatus {
+  TRIAGE
+  ORG_REVIEW
   PENDING
   ASSIGNED
   IN_PROGRESS
