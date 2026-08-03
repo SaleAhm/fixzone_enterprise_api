@@ -1,7 +1,12 @@
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
-import { AssignmentOutcome, ReportStatus, UserRole } from '@prisma/client';
+import {
+  AccountStatus,
+  AssignmentOutcome,
+  ReportStatus,
+  UserRole,
+} from '@prisma/client';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import request from 'supertest';
@@ -180,6 +185,7 @@ describe('Report Workflow (e2e)', () => {
     fullName: string;
     role: UserRole;
     organizationId?: string | null;
+    accountStatus?: AccountStatus;
     providerId?: string | null;
     serviceCategories?: string[];
     coverageAreas?: string[];
@@ -1996,6 +2002,12 @@ describe('Report Workflow (e2e)', () => {
       role: UserRole.ORG_ADMIN,
       organizationId: hunslowOrg.id,
     });
+    const hunslowDispatch = await createUser({
+      email: 'wf-hunslow-dispatch-routing@test.com',
+      fullName: 'Workflow Hunslow Dispatch Routing',
+      role: UserRole.DISPATCH_OFFICER,
+      organizationId: hunslowOrg.id,
+    });
     const otherAdmin = await createUser({
       email: 'wf-other-admin-routing@test.com',
       fullName: 'Workflow Other Admin Routing',
@@ -2022,11 +2034,46 @@ describe('Report Workflow (e2e)', () => {
         ],
       },
     });
+    const inactiveProvider = await createUser({
+      email: 'wf-inactive-provider-routing@test.com',
+      fullName: 'Workflow Inactive Provider Routing',
+      role: UserRole.PROVIDER,
+      organizationId: hunslowOrg.id,
+      accountStatus: AccountStatus.SUSPENDED,
+      providerId: 'PRV-WF-INACTIVE-ROUTE',
+      serviceCategories: ['Road'],
+      coverageAreas: ['Kubwa Township'],
+    });
+    const otherOrgProvider = await createUser({
+      email: 'wf-other-provider-routing@test.com',
+      fullName: 'Workflow Other Provider Routing',
+      role: UserRole.PROVIDER,
+      organizationId: otherOrg.id,
+      providerId: 'PRV-WF-OTHER-ROUTE',
+      serviceCategories: ['Road'],
+      coverageAreas: ['Kubwa Township'],
+    });
+    const revokedLinkedProvider = await createUser({
+      email: 'wf-revoked-provider-routing@test.com',
+      fullName: 'Workflow Revoked Provider Routing',
+      role: UserRole.PROVIDER,
+      organizationId: null,
+      providerId: 'PRV-WF-REVOKED-ROUTE',
+      serviceCategories: ['Road'],
+      coverageAreas: ['Kubwa Township'],
+    });
     await prisma.providerOrganization.create({
       data: {
         providerId: hunslowProvider.id,
         organizationId: hunslowOrg.id,
         active: true,
+      },
+    });
+    await prisma.providerOrganization.create({
+      data: {
+        providerId: revokedLinkedProvider.id,
+        organizationId: hunslowOrg.id,
+        active: false,
       },
     });
 
@@ -2039,6 +2086,7 @@ describe('Report Workflow (e2e)', () => {
 
     const sourceAdminToken = await signToken(sourceAdmin);
     const hunslowAdminToken = await signToken(hunslowAdmin);
+    const hunslowDispatchToken = await signToken(hunslowDispatch);
     const otherAdminToken = await signToken(otherAdmin);
     const superAdminToken = await signToken(superAdmin);
 
@@ -2122,13 +2170,73 @@ describe('Report Workflow (e2e)', () => {
     expect(
       hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
     ).toContain(hunslowProvider.id);
+    expect(
+      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+    ).not.toContain(inactiveProvider.id);
+    expect(
+      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+    ).not.toContain(otherOrgProvider.id);
+    expect(
+      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+    ).not.toContain(revokedLinkedProvider.id);
+
+    const inactiveAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ providerId: inactiveProvider.id });
+    expect(inactiveAssign.status).toBe(403);
+
+    const revokedAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ providerId: revokedLinkedProvider.id });
+    expect(revokedAssign.status).toBe(403);
+
+    const otherProviderAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ providerId: otherOrgProvider.id });
+    expect(otherProviderAssign.status).toBe(403);
 
     const assignRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/assign`)
-      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .set('Authorization', `Bearer ${hunslowDispatchToken}`)
       .send({ providerId: hunslowProvider.id });
     expect(assignRes.status).toBe(200);
     expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
+    expect(assignRes.body.assignedProviderId).toBe(hunslowProvider.id);
+
+    const duplicateAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign`)
+      .set('Authorization', `Bearer ${hunslowAdminToken}`)
+      .send({ providerId: hunslowProvider.id });
+    expect(duplicateAssign.status).toBe(403);
+
+    const providerToken = await signToken(hunslowProvider);
+    const providerAccept = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(providerAccept.status).toBe(200);
+    expect(providerAccept.body.status).toBe(ReportStatus.IN_PROGRESS);
+
+    const assignedNotification = await prisma.notification.findFirst({
+      where: {
+        reportId: report.id,
+        userId: hunslowProvider.id,
+        type: 'assignment',
+      },
+    });
+    expect(assignedNotification).toBeTruthy();
+
+    const assignmentActivity = await (prisma as any).reportActivity.findFirst({
+      where: {
+        reportId: report.id,
+        action: 'PROVIDER_ASSIGNED',
+        providerId: hunslowProvider.id,
+      },
+    });
+    expect(assignmentActivity).toBeTruthy();
 
     const otherRouteAttempt = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/assign-organization`)

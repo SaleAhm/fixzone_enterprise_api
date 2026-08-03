@@ -670,6 +670,19 @@ export class ReportService {
           serviceCategories: true,
           coverageAreas: true,
           organizationId: true,
+          accountStatus: true,
+          assignedReports: {
+            where: {
+              status: {
+                in: [ReportStatus.ASSIGNED, ReportStatus.IN_PROGRESS],
+              },
+            },
+            select: { id: true },
+          },
+          providerOrganizations: {
+            where: { organizationId: report.organizationId, active: true },
+            select: { organizationId: true, active: true, isPrimary: true },
+          },
         },
       }),
       this.prisma.organization.findMany({
@@ -721,11 +734,32 @@ export class ReportService {
       providers: providers.map((provider) => ({
         type: 'PROVIDER',
         id: provider.id,
+        providerId: provider.id,
         name: provider.fullName,
-        providerId: provider.providerId,
+        providerName: provider.fullName,
+        externalProviderId: provider.providerId,
         eligible: this.providerMatchesCategory(provider, report.category),
+        isAvailable: provider.assignedReports.length < 5,
+        activeJobs: provider.assignedReports.length,
+        maxActiveJobs: 5,
+        rating: null,
+        confidence: this.providerMatchesCategory(provider, report.category)
+          ? 100
+          : 60,
+        confidenceLabel: provider.providerOrganizations.length > 0
+          ? 'Active organization membership'
+          : 'Primary organization provider',
         serviceCategories: this.jsonStringList(provider.serviceCategories),
+        specialties: this.jsonStringList(provider.serviceCategories),
         coverageAreas: this.jsonStringList(provider.coverageAreas),
+        reasons: [
+          provider.providerOrganizations.length > 0
+            ? 'Active accepted organization membership'
+            : 'Primary provider account in this organization',
+          provider.assignedReports.length === 0
+            ? 'No active assignments'
+            : `${provider.assignedReports.length} active assignment(s)`,
+        ],
       })),
       organizations: organizationCandidates,
     };
@@ -1302,8 +1336,8 @@ export class ReportService {
     if (!provider || provider.role !== UserRole.PROVIDER) {
       throw new ForbiddenException('Invalid provider');
     }
-    if (provider.accountStatus === 'SUSPENDED') {
-      throw new ForbiddenException('Provider account is suspended');
+    if (provider.accountStatus !== AccountStatus.ACTIVE) {
+      throw new ForbiddenException('Provider account is not active');
     }
 
     const providerLinkedToReportOrg = provider.providerOrganizations.some(
@@ -1311,10 +1345,11 @@ export class ReportService {
     );
     const providerPrimaryInReportOrg =
       provider.organizationId === report.organizationId;
+    const providerBelongsToReportOrg =
+      providerPrimaryInReportOrg || providerLinkedToReportOrg;
     const requiresSuperAdminOverride =
       this.isSuperAdmin(user) &&
-      !providerPrimaryInReportOrg &&
-      !providerLinkedToReportOrg;
+      !providerBelongsToReportOrg;
     const overrideReason = options.overrideReason?.trim();
     if (requiresSuperAdminOverride) {
       if (!options.overrideOrganizationRouting || !overrideReason) {
@@ -1333,6 +1368,12 @@ export class ReportService {
       user,
       providerId,
     );
+
+    if (!this.isSuperAdmin(user) && !providerBelongsToReportOrg) {
+      throw new ForbiddenException(
+        'Provider must have active membership in the report organization',
+      );
+    }
 
     const updated = await this.prisma.report.update({
       where: { id: reportId },
@@ -1382,7 +1423,12 @@ export class ReportService {
       toStatus: updated.status,
       providerId,
       reason: overrideReason,
-      metadata: { override: requiresSuperAdminOverride },
+      metadata: {
+        override: requiresSuperAdminOverride,
+        assignmentDeadlineAt: updated.assignmentDeadlineAt,
+        previousProviderId: report.assignedProviderId,
+        actorRole: user.role,
+      },
     });
     return updated;
   }
