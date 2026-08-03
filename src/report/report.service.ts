@@ -114,7 +114,28 @@ const ACTIVE_MAINTENANCE_CAPABILITIES = new Set([
   'plumbing',
   'mechanical',
   'civil_works',
+  'ict',
+  'facilities',
 ]);
+const CATEGORY_CAPABILITY_ALIASES: Record<string, string[]> = {
+  telecom: ['ict', 'electrical'],
+  telecommunications: ['ict', 'electrical'],
+  internet: ['ict', 'electrical'],
+  network: ['ict', 'electrical'],
+  fibre: ['ict', 'electrical'],
+  fiber: ['ict', 'electrical'],
+  road: ['civil_works'],
+  pothole: ['civil_works'],
+  drainage: ['civil_works', 'plumbing'],
+  water: ['plumbing'],
+  plumbing: ['plumbing'],
+  electrical: ['electrical'],
+  electricity: ['electrical'],
+  light: ['electrical'],
+  lighting: ['electrical'],
+  waste: ['facilities'],
+  cleaning: ['facilities'],
+};
 
 @Injectable()
 export class ReportService {
@@ -846,9 +867,11 @@ export class ReportService {
       report,
     );
     const overrideReadiness = dto.overrideReadiness === true;
+    const establishOwnership =
+      this.isSuperAdmin(user) && dto.establishAuthoritativeOwnership === true;
     if (
       !candidate.eligible &&
-      !(this.isSuperAdmin(user) && overrideReadiness)
+      !(this.isSuperAdmin(user) && (overrideReadiness || establishOwnership))
     ) {
       throw new ForbiddenException({
         code: 'ORGANIZATION_NOT_READY',
@@ -861,8 +884,16 @@ export class ReportService {
     if (this.isSuperAdmin(user) && !dto.reason?.trim()) {
       throw new BadRequestException('Manual routing reason is required');
     }
-    const establishOwnership =
-      this.isSuperAdmin(user) && dto.establishAuthoritativeOwnership === true;
+    if (establishOwnership) {
+      if (organization.status !== OrganizationStatus.ACTIVE) {
+        throw new ForbiddenException('Organization is not active');
+      }
+      if (!this.maintenanceModuleEnabled(organization.enabledModules)) {
+        throw new ForbiddenException(
+          'Maintenance Services is not enabled for this organization.',
+        );
+      }
+    }
     const routeSource = overrideReadiness
       ? `Super Admin override: ${routeReason}`
       : routeReason;
@@ -2253,9 +2284,14 @@ export class ReportService {
     ]);
     const activeProviders = this.organizationActiveProviders(organization);
     const acceptedProviders = this.organizationAcceptedProviders(organization);
+    const normalizedCategory = this.normalizeResponsibilityCategory(category);
+    const requiredCapabilityIds =
+      this.capabilityIdsForCategory(normalizedCategory);
     const explicitCapabilityProviders = activeProviders.filter((provider) =>
       this.activeProviderCapabilityIds(provider).some((id) =>
-        ACTIVE_MAINTENANCE_CAPABILITIES.has(id),
+        requiredCapabilityIds.length
+          ? requiredCapabilityIds.includes(id)
+          : ACTIVE_MAINTENANCE_CAPABILITIES.has(id),
       ),
     );
     const inheritedProfileProviders = activeProviders.filter(
@@ -2279,19 +2315,29 @@ export class ReportService {
     const serviceModuleReady = this.maintenanceModuleEnabled(
       organization.enabledModules,
     );
-    const normalizedCategory = category.trim().toLowerCase();
+    const normalizedInheritedCategories = inheritedCategories.map((item) =>
+      this.normalizeResponsibilityCategory(item),
+    );
+    const normalizedMandateCategories = mandateCategories.map((item) =>
+      this.normalizeResponsibilityCategory(item),
+    );
+    const normalizedExcludedCategories = excludedCategories.map((item) =>
+      this.normalizeResponsibilityCategory(item),
+    );
     const inheritedCategoryMatch =
       !normalizedCategory ||
-      inheritedCategories.some(
-        (item) => item.toLowerCase() === normalizedCategory,
+      normalizedInheritedCategories.some((item) =>
+        this.categoriesCompatible(item, normalizedCategory),
       );
     const mandateCategoryMatch =
       mandateCategories.length > 0 &&
-      mandateCategories.some(
-        (item) => item.toLowerCase() === normalizedCategory,
+      normalizedMandateCategories.some((item) =>
+        this.categoriesCompatible(item, normalizedCategory),
       );
-    const explicitlyExcludedCategory = excludedCategories.some(
-      (item) => item.toLowerCase() === normalizedCategory,
+    const capabilityCategoryMatch =
+      requiredCapabilityIds.length > 0 && explicitCapabilityProviders.length > 0;
+    const explicitlyExcludedCategory = normalizedExcludedCategories.some(
+      (item) => this.categoriesCompatible(item, normalizedCategory),
     );
     const explicitCapabilityBacked = explicitCapabilityProviders.length > 0;
     const locationText = [report?.location, report?.description, report?.title]
@@ -2337,21 +2383,24 @@ export class ReportService {
     if (activeProviders.length === 0) {
       reasons.push('No accepted active provider membership is linked.');
     }
-    if (!inheritedCategories.length && !mandateCategories.length) {
+    if (
+      !inheritedCategories.length &&
+      !mandateCategories.length &&
+      !explicitCapabilityBacked
+    ) {
       reasons.push(
         'No mandate or inherited provider profile categories are configured.',
       );
-    } else if (!inheritedCategoryMatch && !mandateCategoryMatch) {
+    } else if (
+      !inheritedCategoryMatch &&
+      !mandateCategoryMatch &&
+      !capabilityCategoryMatch
+    ) {
       reasons.push(`No active provider profile covers ${category}.`);
     }
     if (explicitlyExcludedCategory) {
       reasons.push(
         `Organization has an explicit responsibility exclusion for ${category}.`,
-      );
-    }
-    if (!explicitCapabilityBacked) {
-      reasons.push(
-        'No active provider has explicit approved maintenance capability metadata.',
       );
     }
     if (!jurisdictionMatch) {
@@ -2361,12 +2410,86 @@ export class ReportService {
     }
     const eligible = reasons.length === 0;
     const confidence = !eligible
-      ? explicitCapabilityBacked || inheritedCategoryMatch
+      ? explicitCapabilityBacked || inheritedCategoryMatch || mandateCategoryMatch
         ? 'LOW'
         : 'NONE'
       : explicitCapabilityBacked && jurisdictionMatch
         ? 'HIGH'
         : 'MEDIUM';
+    const providerCapabilitySource = explicitCapabilityBacked
+      ? 'EXPLICIT_PROVIDER_CAPABILITY'
+      : inheritedCategoryMatch
+        ? 'INHERITED_PROVIDER_PROFILE'
+        : 'NONE';
+    const organizationCapabilitySource = mandateCategoryMatch
+      ? 'ORGANIZATION_MANDATE'
+      : 'NONE';
+    const categorySource = explicitCapabilityBacked
+      ? 'EXPLICIT_CAPABILITY_METADATA'
+      : mandateCategoryMatch
+        ? 'ORGANIZATION_MANDATE'
+        : inheritedCategoryMatch
+          ? 'INHERITED_PROVIDER_PROFILE'
+          : capabilityCategoryMatch
+            ? 'GOVERNED_FALLBACK_MAPPING'
+            : 'NONE';
+    const diagnostics = {
+      organizationId: organization.id,
+      organizationName: organization.name,
+      originalCategory: category,
+      normalizedCategory,
+      matchedMaintenanceCapabilities: requiredCapabilityIds,
+      providerCapabilitySource,
+      organizationCapabilitySource,
+      capabilitySource: categorySource,
+      coverageComparison: {
+        reportLocation: report?.location ?? null,
+        organizationCoverage: coverageAreas,
+        matched: jurisdictionMatch,
+      },
+      jurisdictionComparison: {
+        reportText: locationText,
+        organizationJurisdiction: jurisdiction,
+        matched: jurisdictionMatch,
+      },
+      confidence,
+      finalEligibilityDecision: eligible,
+      rejectedReasons: reasons,
+      providerDiagnostics: activeProviders.map((provider) => {
+        const providerCategories = this.jsonStringList(
+          provider.serviceCategories,
+        );
+        const providerCapabilities = this.activeProviderCapabilityIds(provider);
+        const providerCategoryMatch = providerCategories
+          .map((item) => this.normalizeResponsibilityCategory(item))
+          .some((item) => this.categoriesCompatible(item, normalizedCategory));
+        const providerCapabilityMatch = providerCapabilities.some((id) =>
+          requiredCapabilityIds.length
+            ? requiredCapabilityIds.includes(id)
+            : ACTIVE_MAINTENANCE_CAPABILITIES.has(id),
+        );
+        return {
+          providerId: provider.id,
+          categories: providerCategories,
+          capabilities: providerCapabilities,
+          categoryMatch: providerCategoryMatch,
+          capabilityMatch: providerCapabilityMatch,
+          acceptedMembership: acceptedProviders.some(
+            (accepted) => accepted.id === provider.id,
+          ),
+          rejectedReasons: [
+            ...(providerCategoryMatch || providerCapabilityMatch
+              ? []
+              : ['Provider category/capability does not match report category']),
+          ],
+        };
+      }),
+    };
+
+    this.logger.debug(
+      diagnostics,
+      'Organization responsibility eligibility decision',
+    );
 
     return {
       type: 'ORGANIZATION',
@@ -2378,14 +2501,13 @@ export class ReportService {
       exclusionReasons: reasons,
       categoryMatch: {
         requestedCategory: category,
-        matched: inheritedCategoryMatch || mandateCategoryMatch,
-        source: explicitCapabilityBacked
-          ? 'EXPLICIT_CAPABILITY_METADATA'
-          : mandateCategoryMatch
-            ? 'ORGANIZATION_MANDATE'
-            : inheritedCategoryMatch
-              ? 'INHERITED_PROVIDER_PROFILE'
-              : 'NONE',
+        normalizedCategory,
+        matched:
+          inheritedCategoryMatch ||
+          mandateCategoryMatch ||
+          capabilityCategoryMatch,
+        matchedMaintenanceCapabilities: requiredCapabilityIds,
+        source: categorySource,
       },
       jurisdictionMatch,
       serviceModuleReady,
@@ -2412,6 +2534,7 @@ export class ReportService {
         maintenanceServicesEnabled: serviceModuleReady,
         mandateCategories,
       },
+      diagnostics,
       jurisdictionSummary: {
         country: organization.country,
         state: organization.state,
@@ -2710,10 +2833,44 @@ export class ReportService {
     category: string,
   ) {
     const categories = this.jsonStringList(provider.serviceCategories);
+    const normalizedCategory = this.normalizeResponsibilityCategory(category);
     return (
       categories.length === 0 ||
-      categories.some((item) => item.toLowerCase() === category.toLowerCase())
+      categories
+        .map((item) => this.normalizeResponsibilityCategory(item))
+        .some((item) => this.categoriesCompatible(item, normalizedCategory))
     );
+  }
+
+  private normalizeResponsibilityCategory(value: string) {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/&/g, 'and')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  private capabilityIdsForCategory(normalizedCategory: string) {
+    if (!normalizedCategory) return [];
+    const direct = CATEGORY_CAPABILITY_ALIASES[normalizedCategory] ?? [];
+    const fuzzy = Object.entries(CATEGORY_CAPABILITY_ALIASES)
+      .filter(
+        ([category]) =>
+          normalizedCategory.includes(category) ||
+          category.includes(normalizedCategory),
+      )
+      .flatMap(([, capabilities]) => capabilities);
+    return Array.from(new Set([...direct, ...fuzzy]));
+  }
+
+  private categoriesCompatible(left: string, right: string) {
+    if (!left || !right) return true;
+    if (left === right) return true;
+    if (left.includes(right) || right.includes(left)) return true;
+    const leftCapabilities = this.capabilityIdsForCategory(left);
+    const rightCapabilities = this.capabilityIdsForCategory(right);
+    return leftCapabilities.some((item) => rightCapabilities.includes(item));
   }
 
   private jsonStringList(value: unknown): string[] {

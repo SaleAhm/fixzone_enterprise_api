@@ -364,7 +364,7 @@ describe('ReportService organization candidates', () => {
     expect(candidate.coveredCategories).toContain('Road');
   });
 
-  it('exposes inherited profile coverage without treating it as capability-ready', () => {
+  it('treats inherited provider profile categories as routing-ready', () => {
     const candidate = (service as any).serializeOrganizationCandidate(
       {
         id: 'org-1',
@@ -393,13 +393,60 @@ describe('ReportService organization candidates', () => {
       'Waste Management',
     );
 
-    expect(candidate.eligible).toBe(false);
+    expect(candidate.eligible).toBe(true);
     expect(candidate.inheritedProfileProviderCount).toBe(1);
     expect(candidate.capabilityBackedProviderCount).toBe(0);
     expect(candidate.categoryMatch.source).toBe('INHERITED_PROVIDER_PROFILE');
-    expect(candidate.reasons).toContain(
+    expect(candidate.reasons).not.toContain(
       'No active provider has explicit approved maintenance capability metadata.',
     );
+  });
+
+  it('maps Telecom category to ICT capability diagnostics', () => {
+    const candidate = (service as any).serializeOrganizationCandidate(
+      {
+        id: 'org-telecom',
+        name: 'Hunslow Telecom',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@hunslow.test',
+        contactPhone: null,
+        country: 'Nigeria',
+        state: 'Sokoto',
+        lga: 'Sokoto',
+        address: null,
+        users: [],
+        providerLinks: [
+          {
+            active: true,
+            provider: {
+              id: 'provider-telecom',
+              accountStatus: 'ACTIVE',
+              serviceCategories: ['Telecommunications'],
+              coverageAreas: ['Sokoto Road'],
+              profileData: {
+                secureZoneProviderCapabilities: [
+                  { id: 'ict', status: 'ACTIVE' },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      'Telecom',
+      { location: 'Sokoto Road', title: 'Telecom outage' },
+    );
+
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.confidence).toBe('HIGH');
+    expect(candidate.categoryMatch.normalizedCategory).toBe('telecom');
+    expect(candidate.categoryMatch.matchedMaintenanceCapabilities).toContain(
+      'ict',
+    );
+    expect(candidate.diagnostics.providerCapabilitySource).toBe(
+      'EXPLICIT_PROVIDER_CAPABILITY',
+    );
+    expect(candidate.diagnostics.finalEligibilityDecision).toBe(true);
   });
 
   it('marks not-ready organizations unavailable with reasons', () => {

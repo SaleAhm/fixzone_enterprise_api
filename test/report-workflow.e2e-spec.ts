@@ -207,13 +207,15 @@ describe('Report Workflow (e2e)', () => {
     citizenId: string;
     assignedProviderId?: string | null;
     assignedOrganizationId?: string | null;
+    category?: string;
+    location?: string;
   }) {
     const report = await prisma.report.create({
       data: {
         title: data.title,
         description: 'Workflow test report',
-        category: 'Road',
-        location: 'Test Street',
+        category: data.category ?? 'Road',
+        location: data.location ?? 'Test Street',
         status: data.status ?? ReportStatus.PENDING,
         organizationId: data.organizationId,
         citizenId: data.citizenId,
@@ -2028,11 +2030,6 @@ describe('Report Workflow (e2e)', () => {
       providerId: 'PRV-WF-HUNSLOW-ROUTE',
       serviceCategories: ['Road'],
       coverageAreas: ['Kubwa Township'],
-      profileData: {
-        secureZoneProviderCapabilities: [
-          { id: 'civil_works', status: 'ACTIVE' },
-        ],
-      },
     });
     const inactiveProvider = await createUser({
       email: 'wf-inactive-provider-routing@test.com',
@@ -2082,6 +2079,7 @@ describe('Report Workflow (e2e)', () => {
       organizationId: sourceOrg.id,
       citizenId: citizen.id,
       status: ReportStatus.PENDING,
+      location: 'Kubwa Township',
     });
 
     const sourceAdminToken = await signToken(sourceAdmin);
@@ -2102,7 +2100,6 @@ describe('Report Workflow (e2e)', () => {
       .send({
         organizationId: hunslowOrg.id,
         reason: 'Super admin routed report to Hunslow jurisdiction',
-        overrideReadiness: true,
       });
     expect(routeRes.status).toBe(200);
     expect(routeRes.body.organizationId).toBe(sourceOrg.id);
@@ -2243,6 +2240,25 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${otherAdminToken}`)
       .send({ organizationId: otherOrg.id, reason: 'Cross tenant attempt' });
     expect(otherRouteAttempt.status).toBe(403);
+
+    const overrideReport = await createReport({
+      title: 'WF ownership override report',
+      organizationId: sourceOrg.id,
+      citizenId: citizen.id,
+      status: ReportStatus.TRIAGE,
+    });
+    const overrideRes = await request(app.getHttpServer())
+      .patch(`/api/report/${overrideReport.id}/assign-organization`)
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        organizationId: hunslowOrg.id,
+        reason: 'Governed platform ownership override',
+        establishAuthoritativeOwnership: true,
+      });
+    expect(overrideRes.status).toBe(200);
+    expect(overrideRes.body.status).toBe(ReportStatus.PENDING);
+    expect(overrideRes.body.organizationId).toBe(hunslowOrg.id);
+    expect(overrideRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
   });
 
   it('automatically routes only one deterministic eligible organization match', async () => {
