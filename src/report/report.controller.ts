@@ -207,6 +207,13 @@ export class ReportController {
     return this.reportService.getOrganizationReports(user);
   }
 
+  @Get('organization/responsibility-review')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getResponsibilityReviewReports(@CurrentUser() user: CurrentAuthUser) {
+    return this.reportService.getResponsibilityReviewReports(user);
+  }
+
   // ===================== SINGLE REPORT =====================
 
   @Get(':id')

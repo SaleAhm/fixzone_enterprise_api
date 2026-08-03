@@ -431,6 +431,142 @@ describe('ReportService organization candidates', () => {
   });
 });
 
+describe('ReportService responsibility resolver', () => {
+  it('prefers existing asset responsibility when a single eligible owner exists', async () => {
+    const service = new ReportService({
+      potentialAsset: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'asset-1',
+            organizationId: 'org-asset',
+            ownershipStatus: 'VERIFIED',
+          },
+        ]),
+      },
+      assetCandidateOwner: { findMany: jest.fn().mockResolvedValue([]) },
+      assetClaim: { findMany: jest.fn().mockResolvedValue([]) },
+      organization: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'org-asset',
+            name: 'Asset Owner Org',
+            status: OrganizationStatus.ACTIVE,
+            billingStatus: BillingStatus.ACTIVE,
+            contactEmail: 'asset@test.com',
+            state: 'FCT',
+            lga: 'Kubwa',
+            providerLinks: [
+              {
+                active: true,
+                provider: {
+                  id: 'provider-asset',
+                  accountStatus: 'ACTIVE',
+                  serviceCategories: ['Road'],
+                  coverageAreas: ['Kubwa'],
+                  profileData: {
+                    secureZoneProviderCapabilities: [
+                      { id: 'civil_works', status: 'ACTIVE' },
+                    ],
+                  },
+                },
+              },
+            ],
+            users: [],
+          },
+          {
+            id: 'org-general',
+            name: 'General Road Org',
+            status: OrganizationStatus.ACTIVE,
+            billingStatus: BillingStatus.ACTIVE,
+            contactEmail: 'general@test.com',
+            state: 'FCT',
+            lga: 'Kubwa',
+            providerLinks: [
+              {
+                active: true,
+                provider: {
+                  id: 'provider-general',
+                  accountStatus: 'ACTIVE',
+                  serviceCategories: ['Road'],
+                  coverageAreas: ['Kubwa'],
+                  profileData: {
+                    secureZoneProviderCapabilities: [
+                      { id: 'civil_works', status: 'ACTIVE' },
+                    ],
+                  },
+                },
+              },
+            ],
+            users: [],
+          },
+        ]),
+      },
+    } as any);
+
+    const result = await (service as any).resolveReportResponsibility({
+      title: 'Asset road report',
+      description: 'Road issue',
+      category: 'Road',
+      location: 'Kubwa',
+    });
+
+    expect(result.outcome).toBe('HIGH_CONFIDENCE');
+    expect(result.organization.id).toBe('org-asset');
+    expect(result.matchFactors).toContain('asset_or_ownership_responsibility');
+  });
+
+  it('blocks automatic routing when an explicit responsibility exclusion matches', async () => {
+    const service = new ReportService({
+      potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      organization: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'org-restricted',
+            name: 'Restricted Org',
+            status: OrganizationStatus.ACTIVE,
+            billingStatus: BillingStatus.ACTIVE,
+            contactEmail: 'restricted@test.com',
+            state: 'FCT',
+            lga: 'Kubwa',
+            profileData: {
+              responsibilityRouting: {
+                excludedCategories: ['Road'],
+              },
+            },
+            providerLinks: [
+              {
+                active: true,
+                provider: {
+                  id: 'provider-restricted',
+                  accountStatus: 'ACTIVE',
+                  serviceCategories: ['Road'],
+                  coverageAreas: ['Kubwa'],
+                  profileData: {
+                    secureZoneProviderCapabilities: [
+                      { id: 'civil_works', status: 'ACTIVE' },
+                    ],
+                  },
+                },
+              },
+            ],
+            users: [],
+          },
+        ]),
+      },
+    } as any);
+
+    const result = await (service as any).resolveReportResponsibility({
+      title: 'Restricted road report',
+      description: 'Road issue',
+      category: 'Road',
+      location: 'Kubwa',
+    });
+
+    expect(result.outcome).toBe('RESTRICTED_OR_CONFLICTED');
+    expect(result.organization).toBeNull();
+  });
+});
+
 describe('ReportService assignment rejection', () => {
   const findUnique = jest.fn();
   const update = jest.fn();

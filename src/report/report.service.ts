@@ -55,6 +55,20 @@ type JwtUser = {
 
 type EvidenceKind = 'report-evidence' | 'report-completion';
 
+type ResponsibilityOutcome =
+  | 'HIGH_CONFIDENCE'
+  | 'AMBIGUOUS'
+  | 'UNMATCHED'
+  | 'RESTRICTED_OR_CONFLICTED';
+
+type ResponsibilityResolution = {
+  outcome: ResponsibilityOutcome;
+  organization: { id: string } | null;
+  candidates: any[];
+  reasons: string[];
+  matchFactors: string[];
+};
+
 type ReportWithEvidence = {
   id: string;
   description?: string | null;
@@ -89,10 +103,11 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   assignedProvider?: unknown;
 };
 
-const SUPER_ADMIN_TRIAGE_SOURCE = 'Super Admin triage';
 const AUTOMATIC_ORGANIZATION_REVIEW_SOURCE = 'Automatic intake match';
 const ORGANIZATION_ACCEPTED_SOURCE = 'Organization accepted report';
 const ORGANIZATION_REJECTED_SOURCE = 'Organization rejected report';
+const PLATFORM_RESPONSIBILITY_RESOLUTION_SOURCE =
+  'Platform responsibility resolution';
 const PROVIDER_CAPABILITIES_KEY = 'secureZoneProviderCapabilities';
 const ACTIVE_MAINTENANCE_CAPABILITIES = new Set([
   'electrical',
@@ -130,10 +145,14 @@ export class ReportService {
       throw new ForbiddenException('Citizen must belong to an organization');
     }
 
-    const intakeRoute = await this.findEligibleIntakeOrganization(dto);
+    const intakeRoute = await this.resolveReportResponsibility(dto);
     const intakeOrganization = intakeRoute.organization;
-    const organizationId = intakeOrganization?.id ?? user.organizationId;
-    const routedToOrganization = Boolean(intakeOrganization);
+    const organizationId = user.organizationId;
+    const routedOrganizationId =
+      intakeRoute.outcome === 'HIGH_CONFIDENCE'
+        ? (intakeOrganization?.id ?? null)
+        : null;
+    const routedToOrganization = Boolean(routedOrganizationId);
 
     await this.enforceMonthlyReportQuota(organizationId);
 
@@ -149,13 +168,15 @@ export class ReportService {
           : ReportStatus.TRIAGE,
         citizenId: userId,
         organizationId,
-        assignedOrganizationId: routedToOrganization ? organizationId : null,
+        assignedOrganizationId: routedOrganizationId,
         organizationAssignedAt: routedToOrganization ? new Date() : null,
         organizationAssignmentSource: routedToOrganization
           ? AUTOMATIC_ORGANIZATION_REVIEW_SOURCE
-          : intakeRoute.matchCount > 1
-            ? 'Ambiguous organization intake match'
-            : SUPER_ADMIN_TRIAGE_SOURCE,
+          : intakeRoute.outcome === 'AMBIGUOUS'
+            ? 'Ambiguous responsibility match'
+            : intakeRoute.outcome === 'RESTRICTED_OR_CONFLICTED'
+              ? 'Restricted or conflicted responsibility match'
+              : PLATFORM_RESPONSIBILITY_RESOLUTION_SOURCE,
       },
       include: this.includeRelations(),
     });
@@ -182,6 +203,10 @@ export class ReportService {
       targetId: report.id,
       organizationId: report.organizationId,
       category: report.category,
+      responsibilityOutcome: intakeRoute.outcome,
+      responsibilityCandidateOrganizationId: report.assignedOrganizationId,
+      responsibilityReasons: intakeRoute.reasons,
+      responsibilityMatchFactors: intakeRoute.matchFactors,
     });
     await this.recordReportActivity(report.id, 'REPORT_CREATED', user, {
       organizationId: report.organizationId,
@@ -190,14 +215,67 @@ export class ReportService {
         category: report.category,
         assignedOrganizationId: report.assignedOrganizationId,
         routingSource: report.organizationAssignmentSource,
+        responsibilityOutcome: intakeRoute.outcome,
+        responsibilityReasons: intakeRoute.reasons,
+        responsibilityMatchFactors: intakeRoute.matchFactors,
       },
     });
+    await this.recordReportActivity(
+      report.id,
+      'RESPONSIBILITY_RESOLUTION_ATTEMPTED',
+      {
+        role: UserRole.SUPER_ADMIN,
+        fullName: 'SecureZone Responsibility Resolver',
+      },
+      {
+        organizationId: report.organizationId,
+        toStatus: report.status,
+        metadata: {
+          outcome: intakeRoute.outcome,
+          candidateOrganizationId: report.assignedOrganizationId,
+          candidateOrganizationIds: intakeRoute.candidates.map(
+            (candidate) => candidate.id,
+          ),
+          reasons: intakeRoute.reasons,
+          matchFactors: intakeRoute.matchFactors,
+        },
+      },
+    );
     if (routedToOrganization) {
-      await this.notifyOrganizationOperators(report.organizationId, {
+      await this.recordReportActivity(
+        report.id,
+        'RESPONSIBILITY_REVIEW_ENTERED',
+        {
+          role: UserRole.SUPER_ADMIN,
+          fullName: 'SecureZone Responsibility Resolver',
+        },
+        {
+          organizationId: report.organizationId,
+          fromStatus: ReportStatus.TRIAGE,
+          toStatus: report.status,
+          metadata: {
+            assignedOrganizationId: report.assignedOrganizationId,
+            routingSource: report.organizationAssignmentSource,
+            outcome: intakeRoute.outcome,
+          },
+        },
+      );
+      await this.notifyOrganizationOperators(report.assignedOrganizationId!, {
         reportId: report.id,
         type: 'organization_report_offered',
         title: 'Incoming report for review',
         message: `"${report.title}" is awaiting your organization intake decision.`,
+      });
+    } else if (
+      intakeRoute.outcome === 'AMBIGUOUS' ||
+      intakeRoute.outcome === 'UNMATCHED' ||
+      intakeRoute.outcome === 'RESTRICTED_OR_CONFLICTED'
+    ) {
+      await this.notifyPlatformResolvers({
+        reportId: report.id,
+        type: 'responsibility_resolution_required',
+        title: 'Responsibility resolution required',
+        message: `"${report.title}" requires platform responsibility resolution.`,
       });
     }
 
@@ -328,7 +406,9 @@ export class ReportService {
   async getOrganizationReports(user: JwtUser) {
     const where = this.buildOrgScope(user);
     await this.expireOverdueAssignments({
-      organizationId: where.organizationId,
+      organizationId: this.isSuperAdmin(user)
+        ? undefined
+        : this.requireUserOrganizationId(user),
     });
 
     const reports = await this.prisma.report.findMany({
@@ -337,6 +417,26 @@ export class ReportService {
       include: this.includeRelations(),
     });
     return reports.map((report) => this.withProtectedEvidenceUrls(report));
+  }
+
+  async getResponsibilityReviewReports(user: JwtUser) {
+    const organizationId = this.requireUserOrganizationId(user);
+    if (!this.isAdmin(user) && !this.isDispatch(user)) {
+      throw new ForbiddenException('Organization review access required');
+    }
+
+    const reports = await this.prisma.report.findMany({
+      where: {
+        assignedOrganizationId: organizationId,
+        status: ReportStatus.ORG_REVIEW,
+      },
+      orderBy: [{ organizationAssignedAt: 'desc' }, { createdAt: 'desc' }],
+      include: this.includeRelations(),
+    });
+
+    return Promise.all(
+      reports.map((report) => this.withEnterpriseReportDetails(report)),
+    );
   }
 
   // ===================== SINGLE REPORT =====================
@@ -356,6 +456,10 @@ export class ReportService {
 
     const sameOrg =
       user.organizationId && report.organizationId === user.organizationId;
+    const assignedReviewOrg =
+      user.organizationId &&
+      report.assignedOrganizationId === user.organizationId &&
+      report.status === ReportStatus.ORG_REVIEW;
 
     if (report.citizenId === userId) {
       return this.withEnterpriseReportDetails(report);
@@ -367,7 +471,7 @@ export class ReportService {
 
     if (
       (this.isAdmin(user) || this.isDispatch(user)) &&
-      sameOrg &&
+      (sameOrg || assignedReviewOrg) &&
       report.status !== ReportStatus.TRIAGE
     ) {
       return this.withEnterpriseReportDetails(report);
@@ -535,7 +639,8 @@ export class ReportService {
     if (!report) throw new NotFoundException('Report not found');
     if (
       !this.isSuperAdmin(user) &&
-      report.organizationId !== user.organizationId
+      report.organizationId !== user.organizationId &&
+      report.assignedOrganizationId !== user.organizationId
     ) {
       throw new ForbiddenException('Cross-org not allowed');
     }
@@ -575,32 +680,36 @@ export class ReportService {
             where: { active: true },
             include: {
               provider: {
-              select: {
-                id: true,
-                accountStatus: true,
-                serviceCategories: true,
-                coverageAreas: true,
-                profileData: true,
+                select: {
+                  id: true,
+                  accountStatus: true,
+                  serviceCategories: true,
+                  coverageAreas: true,
+                  profileData: true,
+                },
               },
             },
           },
-        },
-        users: {
-          where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
-          select: {
-            id: true,
-            accountStatus: true,
-            serviceCategories: true,
-            coverageAreas: true,
-            profileData: true,
+          users: {
+            where: { role: UserRole.PROVIDER, accountStatus: 'ACTIVE' },
+            select: {
+              id: true,
+              accountStatus: true,
+              serviceCategories: true,
+              coverageAreas: true,
+              profileData: true,
+            },
           },
-        },
         },
       }),
     ]);
 
     const organizationCandidates = organizations.map((organization) =>
-      this.serializeOrganizationCandidate(organization, report.category, report),
+      this.serializeOrganizationCandidate(
+        organization,
+        report.category,
+        report,
+      ),
     );
 
     return {
@@ -703,7 +812,10 @@ export class ReportService {
       report,
     );
     const overrideReadiness = dto.overrideReadiness === true;
-    if (!candidate.eligible && !(this.isSuperAdmin(user) && overrideReadiness)) {
+    if (
+      !candidate.eligible &&
+      !(this.isSuperAdmin(user) && overrideReadiness)
+    ) {
       throw new ForbiddenException({
         code: 'ORGANIZATION_NOT_READY',
         message: 'Organization is not eligible for this assignment.',
@@ -712,6 +824,11 @@ export class ReportService {
     }
 
     const routeReason = dto.reason?.trim() || 'Manual organization assignment';
+    if (this.isSuperAdmin(user) && !dto.reason?.trim()) {
+      throw new BadRequestException('Manual routing reason is required');
+    }
+    const establishOwnership =
+      this.isSuperAdmin(user) && dto.establishAuthoritativeOwnership === true;
     const routeSource = overrideReadiness
       ? `Super Admin override: ${routeReason}`
       : routeReason;
@@ -719,12 +836,16 @@ export class ReportService {
       const routed = await tx.report.update({
         where: { id: reportId },
         data: {
-          organizationId: organization.id,
+          organizationId: establishOwnership
+            ? organization.id
+            : report.organizationId,
           assignedOrganizationId: organization.id,
           organizationAssignedById: actorId,
           organizationAssignedAt: new Date(),
           organizationAssignmentSource: routeSource,
-          status: ReportStatus.ORG_REVIEW,
+          status: establishOwnership
+            ? ReportStatus.PENDING
+            : ReportStatus.ORG_REVIEW,
           lastAssignmentOutcome: null,
           lastAssignmentReason: null,
           lastAssignmentAt: new Date(),
@@ -747,6 +868,7 @@ export class ReportService {
               organizationId: routed.organizationId,
               reason: dto.reason?.trim() || null,
               overrideReadiness,
+              authoritativeOwnershipEstablished: establishOwnership,
               readinessReasons: candidate.reasons,
               readinessSummary: candidate.readiness,
             },
@@ -772,6 +894,7 @@ export class ReportService {
               assignedOrganizationId: organization.id,
               assignedOrganizationName: organization.name,
               overrideReadiness,
+              authoritativeOwnershipEstablished: establishOwnership,
               readinessReasons: candidate.reasons,
               readinessSummary: candidate.readiness,
             },
@@ -783,9 +906,26 @@ export class ReportService {
     });
     await this.notifyOrganizationOperators(organization.id, {
       reportId,
-      type: 'organization_assignment',
-      title: 'Report assigned to organization',
-      message: `"${updated.title}" was assigned to ${organization.name}.`,
+      type: establishOwnership
+        ? 'organization_manual_override'
+        : 'organization_assignment',
+      title: establishOwnership
+        ? 'Report ownership assigned by platform'
+        : 'Report assigned for responsibility review',
+      message: establishOwnership
+        ? `"${updated.title}" was assigned to ${organization.name} by platform override.`
+        : `"${updated.title}" is awaiting your organization's responsibility review.`,
+    });
+    await this.createNotification({
+      userId: updated.citizenId,
+      reportId,
+      type: establishOwnership
+        ? 'organization_manual_override'
+        : 'organization_responsibility_review',
+      title: 'Report routing update',
+      message: establishOwnership
+        ? `"${updated.title}" has been routed to the responsible organization.`
+        : `"${updated.title}" is being reviewed by a responsible organization.`,
     });
     return this.withProtectedEvidenceUrls(updated);
   }
@@ -795,7 +935,6 @@ export class ReportService {
     dto: OrganizationAcceptReportDto,
     user: JwtUser,
   ) {
-    const actorId = this.getUserId(user);
     const organizationId = this.requireUserOrganizationId(user);
     if (!this.isAdmin(user) && !this.isDispatch(user)) {
       throw new ForbiddenException(
@@ -808,13 +947,13 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (
-      report.organizationId !== organizationId ||
-      report.assignedOrganizationId !== organizationId
-    ) {
+    if (report.assignedOrganizationId !== organizationId) {
       throw new ForbiddenException('Report is not routed to your organization');
     }
-    if (report.status === ReportStatus.PENDING) {
+    if (
+      report.status === ReportStatus.PENDING &&
+      report.organizationId === organizationId
+    ) {
       return this.withProtectedEvidenceUrls(report);
     }
     if (report.status !== ReportStatus.ORG_REVIEW) {
@@ -828,6 +967,7 @@ export class ReportService {
       where: { id: reportId },
       data: {
         status: ReportStatus.PENDING,
+        organizationId,
         organizationAssignmentSource: ORGANIZATION_ACCEPTED_SOURCE,
         lastAssignmentOutcome: null,
         lastAssignmentReason: null,
@@ -854,6 +994,8 @@ export class ReportService {
         note: note || undefined,
         metadata: {
           assignedOrganizationId: updated.assignedOrganizationId,
+          previousOrganizationId: report.organizationId,
+          authoritativeOrganizationId: organizationId,
           previousStatus: report.status,
         },
       },
@@ -893,10 +1035,7 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (
-      report.organizationId !== organizationId ||
-      report.assignedOrganizationId !== organizationId
-    ) {
+    if (report.assignedOrganizationId !== organizationId) {
       throw new ForbiddenException('Report is not routed to your organization');
     }
     if (report.status === ReportStatus.TRIAGE) {
@@ -908,10 +1047,23 @@ export class ReportService {
       );
     }
 
+    let suggestedOrganization: { id: string; name: string } | null = null;
+    const suggestedOrganizationId = dto.suggestedOrganizationId?.trim();
+    if (suggestedOrganizationId) {
+      suggestedOrganization = await this.prisma.organization.findUnique({
+        where: { id: suggestedOrganizationId },
+        select: { id: true, name: true },
+      });
+      if (!suggestedOrganization) {
+        throw new BadRequestException('Suggested organization was not found');
+      }
+    }
+
     const updated = await this.prisma.report.update({
       where: { id: reportId },
       data: {
         status: ReportStatus.TRIAGE,
+        organizationId: report.organizationId,
         assignedOrganizationId: null,
         organizationAssignedById: null,
         organizationAssignedAt: null,
@@ -932,6 +1084,7 @@ export class ReportService {
       organizationId,
       previousStatus: report.status,
       reason,
+      suggestedOrganizationId: suggestedOrganization?.id ?? null,
     });
     await this.recordReportActivity(
       reportId,
@@ -945,9 +1098,17 @@ export class ReportService {
         metadata: {
           returnedToSuperAdminTriage: true,
           previousAssignedOrganizationId: organizationId,
+          suggestedOrganizationId: suggestedOrganization?.id ?? null,
+          suggestedOrganizationName: suggestedOrganization?.name ?? null,
         },
       },
     );
+    await this.notifyPlatformResolvers({
+      reportId,
+      type: 'organization_report_rejected',
+      title: 'Organization rejected responsibility',
+      message: `"${updated.title}" was returned to platform responsibility resolution.`,
+    });
     await this.createNotification({
       userId: updated.citizenId,
       reportId,
@@ -1682,7 +1843,9 @@ export class ReportService {
   async getDashboardSummary(user: JwtUser, query?: AdminDashboardQueryDto) {
     const where = this.buildOrgScope(user, query?.period);
     await this.expireOverdueAssignments({
-      organizationId: where.organizationId,
+      organizationId: this.isSuperAdmin(user)
+        ? undefined
+        : this.requireUserOrganizationId(user),
       actor: user,
     });
 
@@ -1957,8 +2120,16 @@ export class ReportService {
 
     if (!this.isSuperAdmin(user)) {
       if (!user.organizationId) throw new ForbiddenException('No org');
-      where.organizationId = user.organizationId;
-      where.status = { not: ReportStatus.TRIAGE };
+      where.OR = [
+        {
+          organizationId: user.organizationId,
+          status: { not: ReportStatus.TRIAGE },
+        },
+        {
+          assignedOrganizationId: user.organizationId,
+          status: ReportStatus.ORG_REVIEW,
+        },
+      ];
     }
 
     if (period) {
@@ -2009,8 +2180,31 @@ export class ReportService {
   private serializeOrganizationCandidate(
     organization: any,
     category: string,
-    report?: { location?: string | null; description?: string | null; title?: string | null },
+    report?: {
+      location?: string | null;
+      description?: string | null;
+      title?: string | null;
+    },
   ) {
+    const profileData =
+      organization?.profileData && typeof organization.profileData === 'object'
+        ? (organization.profileData as Record<string, unknown>)
+        : {};
+    const routingProfile =
+      profileData.responsibilityRouting &&
+      typeof profileData.responsibilityRouting === 'object'
+        ? (profileData.responsibilityRouting as Record<string, unknown>)
+        : {};
+    const mandateCategories = this.collectStringList([
+      ...this.jsonStringList(profileData.mandates),
+      ...this.jsonStringList(profileData.supportedCategories),
+      ...this.jsonStringList(routingProfile.mandateCategories),
+      ...this.jsonStringList(routingProfile.supportedCategories),
+    ]);
+    const excludedCategories = this.collectStringList([
+      ...this.jsonStringList(profileData.excludedCategories),
+      ...this.jsonStringList(routingProfile.excludedCategories),
+    ]);
     const activeProviders = this.organizationActiveProviders(organization);
     const acceptedProviders = this.organizationAcceptedProviders(organization);
     const explicitCapabilityProviders = activeProviders.filter((provider) =>
@@ -2042,13 +2236,19 @@ export class ReportService {
     const normalizedCategory = category.trim().toLowerCase();
     const inheritedCategoryMatch =
       !normalizedCategory ||
-      inheritedCategories.some((item) => item.toLowerCase() === normalizedCategory);
+      inheritedCategories.some(
+        (item) => item.toLowerCase() === normalizedCategory,
+      );
+    const mandateCategoryMatch =
+      mandateCategories.length > 0 &&
+      mandateCategories.some(
+        (item) => item.toLowerCase() === normalizedCategory,
+      );
+    const explicitlyExcludedCategory = excludedCategories.some(
+      (item) => item.toLowerCase() === normalizedCategory,
+    );
     const explicitCapabilityBacked = explicitCapabilityProviders.length > 0;
-    const locationText = [
-      report?.location,
-      report?.description,
-      report?.title,
-    ]
+    const locationText = [report?.location, report?.description, report?.title]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
@@ -2072,7 +2272,9 @@ export class ReportService {
       reasons.push('Organization is not active.');
     }
     if (!serviceModuleReady) {
-      reasons.push('Maintenance Services is not enabled for this organization.');
+      reasons.push(
+        'Maintenance Services is not enabled for this organization.',
+      );
     }
     if (
       organization.billingStatus === BillingStatus.SUSPENDED ||
@@ -2089,16 +2291,27 @@ export class ReportService {
     if (activeProviders.length === 0) {
       reasons.push('No accepted active provider membership is linked.');
     }
-    if (!inheritedCategories.length) {
-      reasons.push('No inherited provider profile categories are configured.');
-    } else if (!inheritedCategoryMatch) {
+    if (!inheritedCategories.length && !mandateCategories.length) {
+      reasons.push(
+        'No mandate or inherited provider profile categories are configured.',
+      );
+    } else if (!inheritedCategoryMatch && !mandateCategoryMatch) {
       reasons.push(`No active provider profile covers ${category}.`);
     }
+    if (explicitlyExcludedCategory) {
+      reasons.push(
+        `Organization has an explicit responsibility exclusion for ${category}.`,
+      );
+    }
     if (!explicitCapabilityBacked) {
-      reasons.push('No active provider has explicit approved maintenance capability metadata.');
+      reasons.push(
+        'No active provider has explicit approved maintenance capability metadata.',
+      );
     }
     if (!jurisdictionMatch) {
-      reasons.push('Organization jurisdiction or provider coverage does not match the report location.');
+      reasons.push(
+        'Organization jurisdiction or provider coverage does not match the report location.',
+      );
     }
     const eligible = reasons.length === 0;
     const confidence = !eligible
@@ -2119,12 +2332,14 @@ export class ReportService {
       exclusionReasons: reasons,
       categoryMatch: {
         requestedCategory: category,
-        matched: inheritedCategoryMatch,
+        matched: inheritedCategoryMatch || mandateCategoryMatch,
         source: explicitCapabilityBacked
           ? 'EXPLICIT_CAPABILITY_METADATA'
-          : inheritedCategoryMatch
-            ? 'INHERITED_PROVIDER_PROFILE'
-            : 'NONE',
+          : mandateCategoryMatch
+            ? 'ORGANIZATION_MANDATE'
+            : inheritedCategoryMatch
+              ? 'INHERITED_PROVIDER_PROFILE'
+              : 'NONE',
       },
       jurisdictionMatch,
       serviceModuleReady,
@@ -2135,16 +2350,21 @@ export class ReportService {
       inheritedProfileProviderCount: inheritedProfileProviders.length,
       verifiedCapabilityProviderCount: explicitCapabilityProviders.length,
       coveredCategories: inheritedCategories,
+      mandateCategories,
+      excludedCategories,
       inheritedProfileCategories: inheritedCategories,
       explicitCapabilities,
       readiness: {
         organizationMembers: (organization.users ?? []).length,
         acceptedProviders: acceptedProviders.length,
         activeProviders: activeProviders.length,
-        providersWithExplicitCapabilityMetadata: explicitCapabilityProviders.length,
-        providersWithInheritedProfileCategories: inheritedProfileProviders.length,
+        providersWithExplicitCapabilityMetadata:
+          explicitCapabilityProviders.length,
+        providersWithInheritedProfileCategories:
+          inheritedProfileProviders.length,
         verifiedCapabilities: explicitCapabilities,
         maintenanceServicesEnabled: serviceModuleReady,
+        mandateCategories,
       },
       jurisdictionSummary: {
         country: organization.country,
@@ -2208,7 +2428,8 @@ export class ReportService {
       const record = value as Record<string, unknown>;
       if (record.maintenance === false) return false;
       const modules = record.modules;
-      if (Array.isArray(modules)) return modules.map(String).includes('maintenance');
+      if (Array.isArray(modules))
+        return modules.map(String).includes('maintenance');
       const enabledModules = record.enabledModules;
       if (Array.isArray(enabledModules)) {
         return enabledModules.map(String).includes('maintenance');
@@ -2239,10 +2460,9 @@ export class ReportService {
     };
   }
 
-  private async findEligibleIntakeOrganization(dto: CreateReportDto): Promise<{
-    organization: any | null;
-    matchCount: number;
-  }> {
+  private async resolveReportResponsibility(
+    dto: CreateReportDto,
+  ): Promise<ResponsibilityResolution> {
     const organizations = await this.prisma.organization.findMany({
       where: { status: OrganizationStatus.ACTIVE },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -2273,11 +2493,13 @@ export class ReportService {
         },
       },
     });
+    const assetOrganizationIds =
+      await this.assetResponsibilityOrganizationIds(dto);
     const location = [dto.location, dto.description, dto.title]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
-    const eligible = organizations
+    const evaluated = organizations
       .map((organization) => ({
         organization,
         candidate: this.serializeOrganizationCandidate(
@@ -2305,10 +2527,136 @@ export class ReportService {
         );
       });
 
-    if (eligible.length !== 1) {
-      return { organization: null, matchCount: eligible.length };
+    const restricted = organizations
+      .map((organization) =>
+        this.serializeOrganizationCandidate(organization, dto.category, dto),
+      )
+      .filter((candidate) =>
+        candidate.reasons.some((reason: string) =>
+          reason.toLowerCase().includes('explicit responsibility exclusion'),
+        ),
+      );
+    if (restricted.length > 0) {
+      return {
+        outcome: 'RESTRICTED_OR_CONFLICTED',
+        organization: null,
+        candidates: restricted,
+        reasons: restricted.flatMap((candidate) => candidate.reasons),
+        matchFactors: ['explicit_exclusion_or_restriction'],
+      };
     }
-    return { organization: eligible[0].organization, matchCount: 1 };
+
+    const assetBacked = assetOrganizationIds.length
+      ? evaluated.filter(({ organization }) =>
+          assetOrganizationIds.includes(organization.id),
+        )
+      : [];
+    const decisive = assetBacked.length > 0 ? assetBacked : evaluated;
+    const matchFactors = [
+      ...(assetBacked.length > 0 ? ['asset_or_ownership_responsibility'] : []),
+      'organization_active_status',
+      'operational_availability',
+      'jurisdiction_or_coverage',
+      'mandate_or_supported_category',
+    ];
+
+    if (decisive.length === 1) {
+      return {
+        outcome: 'HIGH_CONFIDENCE',
+        organization: decisive[0].organization,
+        candidates: decisive.map(({ candidate }) => candidate),
+        reasons: decisive[0].candidate.reasons,
+        matchFactors,
+      };
+    }
+
+    if (decisive.length > 1) {
+      return {
+        outcome: 'AMBIGUOUS',
+        organization: null,
+        candidates: decisive.map(({ candidate }) => candidate),
+        reasons: ['Multiple responsible organizations qualified'],
+        matchFactors,
+      };
+    }
+
+    return {
+      outcome: 'UNMATCHED',
+      organization: null,
+      candidates: [],
+      reasons: ['No active operational organization matched deterministically'],
+      matchFactors,
+    };
+  }
+
+  private async assetResponsibilityOrganizationIds(dto: CreateReportDto) {
+    const assetModels = this.prisma as any;
+    const category = dto.category?.trim();
+    const location = dto.location?.trim();
+    if (!assetModels.potentialAsset?.findMany || !category) return [];
+
+    const potentialAssets = await assetModels.potentialAsset.findMany({
+      where: {
+        category,
+        OR: [
+          { organizationId: { not: null } },
+          ...(location ? [{ locationText: { contains: location } }] : []),
+        ],
+      },
+      select: { id: true, organizationId: true, ownershipStatus: true },
+      take: 25,
+    });
+    const ids = new Set<string>();
+    for (const asset of potentialAssets as Array<{
+      id: string;
+      organizationId?: string | null;
+      ownershipStatus?: string | null;
+    }>) {
+      if (
+        asset.organizationId &&
+        asset.ownershipStatus !== 'DISPUTED' &&
+        asset.ownershipStatus !== 'UNKNOWN'
+      ) {
+        ids.add(asset.organizationId);
+      }
+    }
+
+    const assetIds = (potentialAssets as Array<{ id: string }>).map(
+      (asset) => asset.id,
+    );
+    if (assetIds.length && assetModels.assetCandidateOwner?.findMany) {
+      const owners = await assetModels.assetCandidateOwner.findMany({
+        where: {
+          potentialAssetId: { in: assetIds },
+          organizationId: { not: null },
+          ownershipStatus: { in: ['VERIFIED', 'PENDING'] },
+        },
+        select: { organizationId: true },
+        take: 25,
+      });
+      for (const owner of owners as Array<{ organizationId?: string | null }>) {
+        if (owner.organizationId) ids.add(owner.organizationId);
+      }
+    }
+
+    if (assetIds.length && assetModels.assetClaim?.findMany) {
+      const claims = await assetModels.assetClaim.findMany({
+        where: {
+          potentialAssetId: { in: assetIds },
+          claimantOrganizationId: { not: null },
+          status: 'APPROVED',
+        },
+        select: { claimantOrganizationId: true },
+        take: 25,
+      });
+      for (const claim of claims as Array<{
+        claimantOrganizationId?: string | null;
+      }>) {
+        if (claim.claimantOrganizationId) ids.add(claim.claimantOrganizationId);
+      }
+    }
+
+    return [...ids];
   }
 
   private providerMatchesCategory(
@@ -2546,7 +2894,7 @@ export class ReportService {
       const key = `${kind}:${path ?? url}`.toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
-      const filename = path ? path.split('/').at(-1) ?? null : null;
+      const filename = path ? (path.split('/').at(-1) ?? null) : null;
       const canonicalUrl =
         this.protectedEvidenceUrl(report.id, kind, path ?? url) ??
         url ??
@@ -2835,6 +3183,40 @@ export class ReportService {
     );
   }
 
+  private async notifyPlatformResolvers(data: {
+    reportId: string;
+    type: string;
+    title: string;
+    message: string;
+  }) {
+    if (!this.prisma.user?.findMany) return;
+    const resolvers = await this.prisma.user.findMany({
+      where: {
+        role: {
+          in: [
+            UserRole.SUPER_ADMIN,
+            UserRole.ASSIGNMENT_ADMIN,
+            UserRole.ASSET_ADMIN,
+            UserRole.COMPLIANCE_ADMIN,
+            UserRole.REGULATORY_ADMIN,
+          ],
+        },
+        accountStatus: 'ACTIVE',
+      },
+      select: { id: true },
+      take: 50,
+    });
+
+    await Promise.all(
+      resolvers.map((resolver) =>
+        this.createNotification({
+          userId: resolver.id,
+          ...data,
+        }),
+      ),
+    );
+  }
+
   private async expireOverdueAssignments(filter: {
     providerId?: string;
     organizationId?: string;
@@ -3015,9 +3397,37 @@ export class ReportService {
     user: JwtUser,
     metadata: Record<string, unknown> = {},
   ) {
+    const actorUserId = user.id ?? user.userId ?? user.sub;
+    const complianceAudit = (this.prisma as any).complianceAuditLog;
+    if (complianceAudit?.create) {
+      await complianceAudit.create({
+        data: {
+          action,
+          actorId: actorUserId ?? null,
+          actorRole: user.role ?? null,
+          organizationId:
+            typeof metadata.organizationId === 'string'
+              ? metadata.organizationId
+              : (user.organizationId ?? null),
+          entityType:
+            typeof metadata.targetType === 'string'
+              ? metadata.targetType
+              : typeof metadata.entityType === 'string'
+                ? metadata.entityType
+                : null,
+          entityId:
+            typeof metadata.targetId === 'string'
+              ? metadata.targetId
+              : typeof metadata.entityId === 'string'
+                ? metadata.entityId
+                : null,
+          metadata,
+        },
+      });
+    }
+
     const audit = (this.prisma as any).demoAuditLog;
     if (!audit?.create) return;
-    const actorUserId = user.id ?? user.userId ?? user.sub;
     if (!actorUserId) return;
     await audit.create({
       data: {

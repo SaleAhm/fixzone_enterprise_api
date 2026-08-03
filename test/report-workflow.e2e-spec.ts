@@ -706,7 +706,9 @@ describe('Report Workflow (e2e)', () => {
   });
 
   it('persists citizen report evidence and returns canonical detail metadata', async () => {
-    const org = await createOrganization('Workflow Citizen Evidence Upload Org');
+    const org = await createOrganization(
+      'Workflow Citizen Evidence Upload Org',
+    );
     const citizen = await createUser({
       email: 'wf-citizen-evidence-upload@test.com',
       fullName: 'Workflow Citizen Evidence Upload',
@@ -2055,27 +2057,35 @@ describe('Report Workflow (e2e)', () => {
         overrideReadiness: true,
       });
     expect(routeRes.status).toBe(200);
-    expect(routeRes.body.organizationId).toBe(hunslowOrg.id);
+    expect(routeRes.body.organizationId).toBe(sourceOrg.id);
     expect(routeRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
     expect(routeRes.body.status).toBe(ReportStatus.ORG_REVIEW);
 
     const stored = await prisma.report.findUniqueOrThrow({
       where: { id: report.id },
     });
-    expect(stored.organizationId).toBe(hunslowOrg.id);
+    expect(stored.organizationId).toBe(sourceOrg.id);
     expect(stored.assignedOrganizationId).toBe(hunslowOrg.id);
 
     const sourceReadAfterRoute = await request(app.getHttpServer())
       .get(`/api/report/${report.id}`)
       .set('Authorization', `Bearer ${sourceAdminToken}`);
-    expect(sourceReadAfterRoute.status).toBe(403);
+    expect(sourceReadAfterRoute.status).toBe(200);
 
     const hunslowReadAfterRoute = await request(app.getHttpServer())
       .get(`/api/report/${report.id}`)
       .set('Authorization', `Bearer ${hunslowAdminToken}`);
     expect(hunslowReadAfterRoute.status).toBe(200);
-    expect(hunslowReadAfterRoute.body.organizationId).toBe(hunslowOrg.id);
+    expect(hunslowReadAfterRoute.body.organizationId).toBe(sourceOrg.id);
     expect(hunslowReadAfterRoute.body.status).toBe(ReportStatus.ORG_REVIEW);
+
+    const hunslowReviewQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${hunslowAdminToken}`);
+    expect(hunslowReviewQueue.status).toBe(200);
+    expect(
+      hunslowReviewQueue.body.map((item: { id: string }) => item.id),
+    ).toContain(report.id);
 
     const hunslowSummary = await request(app.getHttpServer())
       .get('/api/report/admin/dashboard/summary')
@@ -2189,7 +2199,7 @@ describe('Report Workflow (e2e)', () => {
     expect(createRes.status).toBe(201);
     createdReportIds.push(createRes.body.id);
     expect(createRes.body.status).toBe(ReportStatus.ORG_REVIEW);
-    expect(createRes.body.organizationId).toBe(routedOrg.id);
+    expect(createRes.body.organizationId).toBe(sourceOrg.id);
     expect(createRes.body.assignedOrganizationId).toBe(routedOrg.id);
 
     const routedAdminToken = await signToken(routedAdmin);
@@ -2295,8 +2305,24 @@ describe('Report Workflow (e2e)', () => {
       });
     expect(manualRouteRes.status).toBe(200);
     expect(manualRouteRes.body.status).toBe(ReportStatus.ORG_REVIEW);
-    expect(manualRouteRes.body.organizationId).toBe(ambiguousOrgA.id);
+    expect(manualRouteRes.body.organizationId).toBe(sourceOrg.id);
     expect(manualRouteRes.body.assignedOrganizationId).toBe(ambiguousOrgA.id);
+
+    const manualOverrideRes = await request(app.getHttpServer())
+      .patch(`/api/report/${noMatchRes.body.id}/assign-organization`)
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        organizationId: ambiguousOrgA.id,
+        reason: 'Emergency platform ownership override',
+        overrideReadiness: true,
+        establishAuthoritativeOwnership: true,
+      });
+    expect(manualOverrideRes.status).toBe(200);
+    expect(manualOverrideRes.body.status).toBe(ReportStatus.PENDING);
+    expect(manualOverrideRes.body.organizationId).toBe(ambiguousOrgA.id);
+    expect(manualOverrideRes.body.assignedOrganizationId).toBe(
+      ambiguousOrgA.id,
+    );
   });
 
   it('returns organization-rejected reports to platform triage', async () => {

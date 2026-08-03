@@ -11,5 +11,9 @@ export class AssignOrganizationDto {
 
   @IsBoolean()
   @IsOptional()
+  establishAuthoritativeOwnership?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
   overrideReadiness?: boolean;
 }
