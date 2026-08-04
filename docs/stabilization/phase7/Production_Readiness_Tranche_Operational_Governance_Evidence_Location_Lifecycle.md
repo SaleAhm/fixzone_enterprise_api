@@ -92,10 +92,11 @@ Implemented or verified:
 
 - Existing responsibility diagnostics remain intact and include eligibility reasons, confidence, provider capability source, organization coverage, and jurisdiction comparisons.
 - Previous routing work still distinguishes organization review from override ownership transfer.
+- Frontend navigation now hides the organization-scoped Responsibility Review workspace from Super Admin users and keeps it visible for Organization Admin/Dispatch Officer users with organization context.
 
 Remaining:
 
-- Super Admin navigation still needs either hiding of organization-only Responsibility Review or replacement with a Platform Routing/Oversight workspace.
+- A dedicated Super Admin Platform Routing/Oversight workspace remains a follow-up.
 - Normal request-review UX needs pre-submit blocking reasons when backend rules consider an organization ineligible.
 - No new dispatch lock or candidate ranking UI was completed in this tranche beyond existing backend behavior.
 
