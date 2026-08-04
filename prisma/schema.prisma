@@ -436,14 +436,14 @@ model EvidenceRecord {
   relatedEntityId   String
   fileUrl           String
   fileType          String?
-  uploadedById      String
+  uploadedById      String?
   uploadedAt        DateTime                  @default(now())
   description       String?
   metadata          Json?
   checksum          String?
 
   ownerUser    User?         @relation("EvidenceOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  uploadedBy   User          @relation("EvidenceUploader", fields: [uploadedById], references: [id])
+  uploadedBy   User?         @relation("EvidenceUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@index([ownerUserId, uploadedAt])
@@ -964,6 +964,9 @@ model Report {
   description                  String
   category                     String
   location                     String
+  locationName                 String?
+  locationAddress              String?
+  locationLandmark             String?
   latitude                     Float?
   longitude                    Float?
   locationAccuracy             Float?

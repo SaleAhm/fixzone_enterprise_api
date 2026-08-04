@@ -1,5 +1,5 @@
-import { BadRequestException } from '@nestjs/common';
-import { UserRole } from '@prisma/client';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { AccountStatus, UserRole } from '@prisma/client';
 import { UsersService } from './users.service';
 
 describe('UsersService identity helpers', () => {
@@ -32,6 +32,31 @@ describe('UsersService identity helpers', () => {
         },
       },
     ]);
+  });
+});
+
+describe('UsersService lifecycle controls', () => {
+  it('blocks deactivation of the final active Super Admin', async () => {
+    const prisma = {
+      user: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'super-1',
+          role: UserRole.SUPER_ADMIN,
+          accountStatus: AccountStatus.ACTIVE,
+        }),
+        count: jest.fn().mockResolvedValue(0),
+        update: jest.fn(),
+      },
+    };
+    const service = new UsersService(prisma as any);
+
+    await expect(
+      service.setUserStatus('super-1', AccountStatus.SUSPENDED, {
+        sub: 'super-2',
+        role: UserRole.SUPER_ADMIN,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 });
 

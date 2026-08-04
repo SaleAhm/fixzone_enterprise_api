@@ -5,11 +5,18 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Max,
   Min,
 } from 'class-validator';
 
-const LOCATION_SOURCES = ['DEVICE_GPS', 'MANUAL_PIN', 'UNKNOWN'] as const;
+const LOCATION_SOURCES = [
+  'DEVICE_GPS',
+  'MANUAL_PIN',
+  'TYPED_LOCATION',
+  'COMBINED',
+  'UNKNOWN',
+] as const;
 
 export class CreateReportDto {
   @IsString()
@@ -27,6 +34,21 @@ export class CreateReportDto {
   @IsString()
   @IsNotEmpty()
   location: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  locationName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  locationAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  locationLandmark?: string;
 
   @IsOptional()
   @IsNumber()

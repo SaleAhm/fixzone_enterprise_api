@@ -1,4 +1,11 @@
-import { IsIn, IsString, MaxLength } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class UploadCompletionEvidenceDto {
   @IsString()
@@ -11,4 +18,13 @@ export class UploadCompletionEvidenceDto {
 
   @IsString()
   imageBase64: string;
+
+  @IsOptional()
+  @IsIn(['before', 'during', 'after', 'completion'])
+  classification?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  order?: number;
 }

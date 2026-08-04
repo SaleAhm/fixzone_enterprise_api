@@ -1,4 +1,11 @@
-import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
 
 export class UploadReportEvidenceDto {
   @IsOptional()
@@ -11,4 +18,9 @@ export class UploadReportEvidenceDto {
   @IsString()
   @IsNotEmpty()
   imageBase64: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  order?: number;
 }

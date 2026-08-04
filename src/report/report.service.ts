@@ -12,7 +12,9 @@ import {
   AssignmentOutcome,
   BillingStatus,
   AccountStatus,
+  EvidenceRelatedEntityType,
   OrganizationStatus,
+  Prisma,
   ReportStatus,
   UserRole,
 } from '@prisma/client';
@@ -767,9 +769,10 @@ export class ReportService {
         confidence: this.providerMatchesCategory(provider, report.category)
           ? 100
           : 60,
-        confidenceLabel: provider.providerOrganizations.length > 0
-          ? 'Active organization membership'
-          : 'Primary organization provider',
+        confidenceLabel:
+          provider.providerOrganizations.length > 0
+            ? 'Active organization membership'
+            : 'Primary organization provider',
         serviceCategories: this.jsonStringList(provider.serviceCategories),
         specialties: this.jsonStringList(provider.serviceCategories),
         coverageAreas: this.jsonStringList(provider.coverageAreas),
@@ -1379,8 +1382,7 @@ export class ReportService {
     const providerBelongsToReportOrg =
       providerPrimaryInReportOrg || providerLinkedToReportOrg;
     const requiresSuperAdminOverride =
-      this.isSuperAdmin(user) &&
-      !providerBelongsToReportOrg;
+      this.isSuperAdmin(user) && !providerBelongsToReportOrg;
     const overrideReason = options.overrideReason?.trim();
     if (requiresSuperAdminOverride) {
       if (!options.overrideOrganizationRouting || !overrideReason) {
@@ -1583,6 +1585,21 @@ export class ReportService {
         imageUrl: dto.completionImageUrl,
         imagePath: dto.completionImagePath,
       });
+      const hasCompletionEvidence =
+        Boolean(completionEvidence.imagePath || completionEvidence.imageUrl) ||
+        (await this.prisma.evidenceRecord.count({
+          where: {
+            relatedEntityType: EvidenceRelatedEntityType.REPORT,
+            relatedEntityId: reportId,
+            fileUrl: { contains: 'report-completion' },
+          },
+        })) > 0;
+      if (!hasCompletionEvidence) {
+        throw new BadRequestException({
+          code: 'COMPLETION_EVIDENCE_REQUIRED',
+          message: 'Upload at least one completion evidence image.',
+        });
+      }
       data.completionNote = dto.completionNote?.trim() || null;
       data.completionImageUrl = completionEvidence.imageUrl;
       data.completionImagePath = completionEvidence.imagePath;
@@ -1679,6 +1696,8 @@ export class ReportService {
       );
     }
 
+    await this.assertEvidenceLimit(reportId, 'report-completion');
+
     const saved = await this.getUploadSecurity().saveBase64Image({
       imageBase64: dto.imageBase64,
       contentType: dto.contentType,
@@ -1686,6 +1705,32 @@ export class ReportService {
       reportId,
       invalidSizeMessage: 'Invalid completion image size',
     });
+
+    await this.createEvidenceRecord({
+      reportId,
+      organizationId: report.organizationId,
+      ownerUserId: report.citizenId,
+      uploadedById: userId,
+      fileUrl: saved.imageUrl,
+      contentType: dto.contentType,
+      description: 'Provider completion evidence',
+      metadata: {
+        kind: 'report-completion',
+        imagePath: saved.imagePath,
+        classification: dto.classification ?? 'completion',
+        order: dto.order ?? null,
+      },
+    });
+
+    if (!report.completionImagePath && !report.completionImageUrl) {
+      await this.prisma.report.update({
+        where: { id: reportId },
+        data: {
+          completionImagePath: saved.imagePath,
+          completionImageUrl: saved.imageUrl,
+        },
+      });
+    }
 
     await this.audit('Provider Completion Evidence Uploaded', user, {
       targetType: 'Report',
@@ -1737,12 +1782,29 @@ export class ReportService {
       throw new ForbiddenException('Not your report');
     }
 
+    await this.assertEvidenceLimit(reportId, 'report-evidence');
+
     const saved = await this.getUploadSecurity().saveBase64Image({
       imageBase64: dto.imageBase64,
       contentType: dto.contentType,
       folder: 'report-evidence',
       reportId,
       invalidSizeMessage: 'Invalid report image size',
+    });
+
+    await this.createEvidenceRecord({
+      reportId,
+      organizationId: report.organizationId,
+      ownerUserId: userId,
+      uploadedById: userId,
+      fileUrl: saved.imageUrl,
+      contentType: dto.contentType,
+      description: 'Citizen report evidence',
+      metadata: {
+        kind: 'report-evidence',
+        imagePath: saved.imagePath,
+        order: dto.order ?? null,
+      },
     });
 
     const updated = await this.prisma.report.update({
@@ -2085,7 +2147,22 @@ export class ReportService {
       : { organizationId: this.requireUserOrganizationId(user) };
     const providers = (await this.prisma.user.findMany({
       where,
-      include: { assignedReports: reportScope ? { where: reportScope } : true },
+      include: {
+        assignedReports: {
+          ...(reportScope ? { where: reportScope } : {}),
+          include: {
+            activities: {
+              where: { action: 'PROVIDER_STARTED_WORK' },
+              orderBy: { createdAt: 'asc' },
+              select: {
+                actorUserId: true,
+                providerId: true,
+                createdAt: true,
+              },
+            },
+          },
+        },
+      },
     })) as any[];
 
     return providers.map((p) => {
@@ -2101,19 +2178,10 @@ export class ReportService {
         (sum, report) => sum + (report.citizenRating ?? 0),
         0,
       );
-      const responseDurations = p.assignedReports
-        .filter((report) => report.assignedAt && report.updatedAt)
-        .map(
-          (report) =>
-            report.updatedAt.getTime() - (report.assignedAt?.getTime() ?? 0),
-        )
-        .filter((value) => value > 0);
-      const avgResponseHours =
-        responseDurations.length === 0
-          ? 0
-          : responseDurations.reduce((sum, value) => sum + value, 0) /
-            responseDurations.length /
-            (1000 * 60 * 60);
+      const responseMetric = this.calculateProviderAverageResponse(
+        p.assignedReports,
+        p.id,
+      );
 
       return {
         providerId: p.id,
@@ -2126,7 +2194,12 @@ export class ReportService {
             ? 0
             : Number((ratingTotal / rated.length).toFixed(2)),
         ratingCount: rated.length,
-        averageResponseHours: Number(avgResponseHours.toFixed(2)),
+        averageResponseHours:
+          responseMetric.averageHours == null
+            ? null
+            : Number(responseMetric.averageHours.toFixed(2)),
+        averageResponseReason: responseMetric.reason,
+        averageResponseSampleCount: responseMetric.sampleCount,
         recentReviews: rated
           .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
           .slice(0, 5)
@@ -2139,6 +2212,87 @@ export class ReportService {
           })),
       };
     });
+  }
+
+  private calculateProviderAverageResponse(
+    reports: Array<{
+      assignedAt?: Date | null;
+      assignedProviderId?: string | null;
+      status?: ReportStatus | string | null;
+      activities?: Array<{
+        actorUserId?: string | null;
+        providerId?: string | null;
+        createdAt?: Date | null;
+      }>;
+    }>,
+    providerId: string,
+  ): {
+    averageHours: number | null;
+    sampleCount: number;
+    reason: string | null;
+  } {
+    const acceptedReports = reports.filter((report) =>
+      [
+        ReportStatus.IN_PROGRESS as string,
+        ReportStatus.COMPLETED_BY_PROVIDER as string,
+        ReportStatus.CLOSED as string,
+      ].includes(String(report.status)),
+    );
+
+    if (acceptedReports.length === 0) {
+      return {
+        averageHours: null,
+        sampleCount: 0,
+        reason: 'NO_ACCEPTED_ASSIGNMENTS',
+      };
+    }
+
+    let missingAssignmentTimestamp = 0;
+    let missingAcceptanceTimestamp = 0;
+    const durations: number[] = [];
+
+    for (const report of acceptedReports) {
+      if (!report.assignedAt) {
+        missingAssignmentTimestamp += 1;
+        continue;
+      }
+
+      const acceptance = (report.activities ?? []).find(
+        (activity) =>
+          activity.createdAt &&
+          (activity.actorUserId === providerId ||
+            activity.providerId === providerId),
+      );
+
+      if (!acceptance?.createdAt) {
+        missingAcceptanceTimestamp += 1;
+        continue;
+      }
+
+      const durationMs =
+        acceptance.createdAt.getTime() - report.assignedAt.getTime();
+      if (durationMs > 0) durations.push(durationMs);
+    }
+
+    if (durations.length === 0) {
+      return {
+        averageHours: null,
+        sampleCount: 0,
+        reason:
+          missingAcceptanceTimestamp >= missingAssignmentTimestamp
+            ? 'MISSING_ACCEPTANCE_TIMESTAMP'
+            : 'MISSING_ASSIGNMENT_TIMESTAMP',
+      };
+    }
+
+    return {
+      averageHours:
+        durations.reduce((sum, value) => sum + value, 0) /
+        durations.length /
+        (1000 * 60 * 60),
+      sampleCount: durations.length,
+      reason: null,
+    };
   }
 
   async getRecentReports(user: JwtUser) {
@@ -2335,7 +2489,8 @@ export class ReportService {
         this.categoriesCompatible(item, normalizedCategory),
       );
     const capabilityCategoryMatch =
-      requiredCapabilityIds.length > 0 && explicitCapabilityProviders.length > 0;
+      requiredCapabilityIds.length > 0 &&
+      explicitCapabilityProviders.length > 0;
     const explicitlyExcludedCategory = normalizedExcludedCategories.some(
       (item) => this.categoriesCompatible(item, normalizedCategory),
     );
@@ -2410,7 +2565,9 @@ export class ReportService {
     }
     const eligible = reasons.length === 0;
     const confidence = !eligible
-      ? explicitCapabilityBacked || inheritedCategoryMatch || mandateCategoryMatch
+      ? explicitCapabilityBacked ||
+        inheritedCategoryMatch ||
+        mandateCategoryMatch
         ? 'LOW'
         : 'NONE'
       : explicitCapabilityBacked && jurisdictionMatch
@@ -2480,7 +2637,9 @@ export class ReportService {
           rejectedReasons: [
             ...(providerCategoryMatch || providerCapabilityMatch
               ? []
-              : ['Provider category/capability does not match report category']),
+              : [
+                  'Provider category/capability does not match report category',
+                ]),
           ],
         };
       }),
@@ -2887,10 +3046,20 @@ export class ReportService {
   private locationSourceFor(dto: {
     latitude?: number | null;
     longitude?: number | null;
+    locationName?: string | null;
+    locationAddress?: string | null;
+    locationLandmark?: string | null;
   }) {
-    return dto.latitude != null && dto.longitude != null
-      ? 'DEVICE_GPS'
-      : 'UNKNOWN';
+    const hasCoordinates = dto.latitude != null && dto.longitude != null;
+    const hasText = Boolean(
+      dto.locationName?.trim() ||
+      dto.locationAddress?.trim() ||
+      dto.locationLandmark?.trim(),
+    );
+    if (hasCoordinates && hasText) return 'COMBINED';
+    if (hasCoordinates) return 'DEVICE_GPS';
+    if (hasText) return 'TYPED_LOCATION';
+    return 'UNKNOWN';
   }
 
   private async enforceMonthlyReportQuota(organizationId: string) {
@@ -3010,7 +3179,7 @@ export class ReportService {
   private async withEnterpriseReportDetails<
     T extends EnterpriseReportWithEvidence,
   >(report: T) {
-    const [timeline, notifications] = await Promise.all([
+    const [timeline, notifications, evidenceRecords] = await Promise.all([
       (this.prisma as any).reportActivity?.findMany
         ? (this.prisma as any).reportActivity.findMany({
             where: { reportId: report.id },
@@ -3024,10 +3193,23 @@ export class ReportService {
             take: 25,
           })
         : [],
+      (this.prisma as any).evidenceRecord?.findMany
+        ? (this.prisma as any).evidenceRecord.findMany({
+            where: {
+              relatedEntityType: EvidenceRelatedEntityType.REPORT,
+              relatedEntityId: report.id,
+            },
+            orderBy: [{ uploadedAt: 'asc' }, { id: 'asc' }],
+          })
+        : [],
     ]);
 
     const protectedReport = this.withProtectedEvidenceUrls(report);
-    const evidenceItems = this.reportEvidenceItems(protectedReport, report);
+    const evidenceItems = this.reportEvidenceItems(
+      protectedReport,
+      report,
+      evidenceRecords,
+    );
     return {
       ...protectedReport,
       evidenceItems,
@@ -3062,9 +3244,61 @@ export class ReportService {
     };
   }
 
+  private async assertEvidenceLimit(reportId: string, kind: EvidenceKind) {
+    const currentCount = await this.prisma.evidenceRecord.count({
+      where: {
+        relatedEntityType: EvidenceRelatedEntityType.REPORT,
+        relatedEntityId: reportId,
+        fileUrl: { contains: kind },
+      },
+    });
+    if (currentCount >= 5) {
+      throw new BadRequestException({
+        code: 'EVIDENCE_LIMIT_EXCEEDED',
+        message:
+          kind === 'report-evidence'
+            ? 'You can upload up to 5 report evidence images.'
+            : 'You can upload up to 5 completion evidence images.',
+        limit: 5,
+      });
+    }
+  }
+
+  private async createEvidenceRecord(input: {
+    reportId: string;
+    organizationId: string;
+    ownerUserId: string;
+    uploadedById: string;
+    fileUrl: string;
+    contentType: string;
+    description: string;
+    metadata: Record<string, unknown>;
+  }) {
+    return this.prisma.evidenceRecord.create({
+      data: {
+        ownerUserId: input.ownerUserId,
+        organizationId: input.organizationId,
+        relatedEntityType: EvidenceRelatedEntityType.REPORT,
+        relatedEntityId: input.reportId,
+        fileUrl: input.fileUrl,
+        fileType: input.contentType,
+        uploadedById: input.uploadedById,
+        description: input.description,
+        metadata: input.metadata as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   private reportEvidenceItems(
     report: EnterpriseReportWithEvidence,
     storedReport: EnterpriseReportWithEvidence = report,
+    evidenceRecords: Array<{
+      id: string;
+      fileUrl: string;
+      fileType?: string | null;
+      uploadedAt?: Date | string | null;
+      metadata?: unknown;
+    }> = [],
   ) {
     const items: Array<{
       id: string;
@@ -3077,6 +3311,8 @@ export class ReportService {
       mimeType: string | null;
       uploadedAt: Date | string | null;
       uploadedByRole: UserRole;
+      classification?: string | null;
+      order?: number | null;
     }> = [];
     const seen = new Set<string>();
     const add = (
@@ -3087,6 +3323,8 @@ export class ReportService {
       uploadedAt: Date | string | null = null,
       uploadedByRole: UserRole = UserRole.CITIZEN,
       storedImageUrl?: string | null,
+      classification: string | null = null,
+      order: number | null = null,
     ) => {
       const url = imageUrl?.trim();
       const path =
@@ -3113,8 +3351,38 @@ export class ReportService {
         mimeType: filename ? this.safeEvidenceContentType(filename) : null,
         uploadedAt,
         uploadedByRole,
+        classification,
+        order,
       });
     };
+
+    for (const record of evidenceRecords) {
+      const metadata =
+        record.metadata &&
+        typeof record.metadata === 'object' &&
+        !Array.isArray(record.metadata)
+          ? (record.metadata as Record<string, unknown>)
+          : {};
+      const kind =
+        metadata.kind === 'report-completion'
+          ? 'report-completion'
+          : 'report-evidence';
+      const path =
+        typeof metadata.imagePath === 'string' ? metadata.imagePath : null;
+      add(
+        kind,
+        record.fileUrl,
+        path,
+        kind === 'report-completion' ? 'PROVIDER_COMPLETION' : 'CITIZEN_REPORT',
+        record.uploadedAt ?? null,
+        kind === 'report-completion' ? UserRole.PROVIDER : UserRole.CITIZEN,
+        record.fileUrl,
+        typeof metadata.classification === 'string'
+          ? metadata.classification
+          : null,
+        typeof metadata.order === 'number' ? metadata.order : null,
+      );
+    }
 
     add(
       'report-evidence',

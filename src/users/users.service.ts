@@ -411,6 +411,23 @@ export class UsersService {
         'Only Super Admin can manage Super Admin users',
       );
     }
+    if (
+      existing.role === UserRole.SUPER_ADMIN &&
+      status !== AccountStatus.ACTIVE
+    ) {
+      const activeSuperAdmins = await this.prisma.user.count({
+        where: {
+          role: UserRole.SUPER_ADMIN,
+          accountStatus: AccountStatus.ACTIVE,
+          id: { not: id },
+        },
+      });
+      if (activeSuperAdmins === 0) {
+        throw new ForbiddenException(
+          'Cannot deactivate the final active Super Admin',
+        );
+      }
+    }
     const updated = await this.prisma.user.update({
       where: { id },
       data: { accountStatus: status },

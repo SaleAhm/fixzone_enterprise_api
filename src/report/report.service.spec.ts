@@ -671,3 +671,104 @@ describe('ReportService assignment rejection', () => {
     ).rejects.toThrow('Only new assignments can be rejected');
   });
 });
+
+describe('ReportService provider response metrics', () => {
+  const service = new ReportService({} as any);
+  const metric = (reports: any[]) =>
+    (service as any).calculateProviderAverageResponse(reports, 'provider-1');
+
+  it('returns a structured reason when no assignments were accepted', () => {
+    expect(
+      metric([
+        {
+          status: ReportStatus.ASSIGNED,
+          assignedAt: new Date('2026-08-01T08:00:00.000Z'),
+          activities: [],
+        },
+      ]),
+    ).toEqual({
+      averageHours: null,
+      sampleCount: 0,
+      reason: 'NO_ACCEPTED_ASSIGNMENTS',
+    });
+  });
+
+  it('calculates one valid assignment-to-acceptance sample', () => {
+    expect(
+      metric([
+        {
+          status: ReportStatus.IN_PROGRESS,
+          assignedAt: new Date('2026-08-01T08:00:00.000Z'),
+          activities: [
+            {
+              actorUserId: 'provider-1',
+              createdAt: new Date('2026-08-01T10:30:00.000Z'),
+            },
+          ],
+        },
+      ]),
+    ).toEqual({
+      averageHours: 2.5,
+      sampleCount: 1,
+      reason: null,
+    });
+  });
+
+  it('averages multiple valid samples and excludes malformed records', () => {
+    expect(
+      metric([
+        {
+          status: ReportStatus.CLOSED,
+          assignedAt: new Date('2026-08-01T08:00:00.000Z'),
+          activities: [
+            {
+              actorUserId: 'provider-1',
+              createdAt: new Date('2026-08-01T09:00:00.000Z'),
+            },
+          ],
+        },
+        {
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+          assignedAt: new Date('2026-08-02T08:00:00.000Z'),
+          activities: [
+            {
+              actorUserId: 'provider-1',
+              createdAt: new Date('2026-08-02T11:00:00.000Z'),
+            },
+          ],
+        },
+        {
+          status: ReportStatus.IN_PROGRESS,
+          assignedAt: null,
+          activities: [
+            {
+              actorUserId: 'provider-1',
+              createdAt: new Date('2026-08-03T11:00:00.000Z'),
+            },
+          ],
+        },
+      ]).averageHours,
+    ).toBe(2);
+  });
+
+  it('does not use another provider acceptance activity', () => {
+    expect(
+      metric([
+        {
+          status: ReportStatus.IN_PROGRESS,
+          assignedAt: new Date('2026-08-01T08:00:00.000Z'),
+          activities: [
+            {
+              actorUserId: 'provider-2',
+              createdAt: new Date('2026-08-01T09:00:00.000Z'),
+            },
+          ],
+        },
+      ]),
+    ).toEqual({
+      averageHours: null,
+      sampleCount: 0,
+      reason: 'MISSING_ACCEPTANCE_TIMESTAMP',
+    });
+  });
+});

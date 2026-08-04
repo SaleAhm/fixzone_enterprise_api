@@ -897,7 +897,7 @@ export class TrustService {
     user: TrustUser,
     record: {
       ownerUserId: string | null;
-      uploadedById: string;
+      uploadedById: string | null;
       organizationId: string | null;
     },
   ) {

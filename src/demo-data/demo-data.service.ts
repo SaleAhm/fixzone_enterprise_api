@@ -1,4 +1,9 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { Prisma, ReportStatus, User, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
@@ -67,6 +72,14 @@ type DemoGenerationSettings = Required<
     | 'generateAssignments'
   >
 >;
+
+type DemoPurgeConfirmation = {
+  typedPhrase?: unknown;
+  preservedSuperAdminId?: unknown;
+  backupReference?: unknown;
+  reauthenticationToken?: unknown;
+  reason?: unknown;
+};
 
 type DemoScenarioProfile = {
   name: string;
@@ -442,15 +455,195 @@ export class DemoDataService {
   }
 
   async reset(user: JwtUser, dto: GenerateDemoEnvironmentDto = {}) {
-    const deleted = await this.purge(user, 'Reset Demo Purge');
+    const deleted = await this.purgeTaggedDemoData(user, 'Reset Demo Purge');
     const generated = await this.seed(user, dto);
     return { deleted: deleted.deleted, generated };
   }
 
-  async purge(user: JwtUser, action = 'Purged Demo') {
+  async previewPurge(user: JwtUser) {
+    const superAdminId = this.requireSuperAdmin(user);
+    const systemMode = this.systemMode();
+    const [
+      organizations,
+      users,
+      providers,
+      invitations,
+      reports,
+      notifications,
+      auditLogs,
+      uncertainOrganizations,
+      uncertainUsers,
+      uncertainReports,
+      purgeLock,
+    ] = await Promise.all([
+      this.prisma.organization.count({ where: { isDemo: true } }),
+      this.prisma.user.count({ where: { isDemo: true } }),
+      this.prisma.user.count({
+        where: { isDemo: true, role: UserRole.PROVIDER },
+      }),
+      this.prisma.invitation.count({
+        where: { organization: { isDemo: true } },
+      }),
+      this.prisma.report.count({ where: { isDemo: true } }),
+      this.prisma.notification.count({ where: { isDemo: true } }),
+      this.prisma.demoAuditLog.count({
+        where: { action: { contains: 'Demo' } },
+      }),
+      this.prisma.organization.count({
+        where: { isDemo: false, demoBatchId: { not: null } },
+      }),
+      this.prisma.user.count({
+        where: { isDemo: false, demoBatchId: { not: null } },
+      }),
+      this.prisma.report.count({
+        where: { isDemo: false, demoBatchId: { not: null } },
+      }),
+      this.prisma.platformSetting.findUnique({
+        where: { key: 'demo_purge_locked' },
+      }),
+    ]);
+
+    const uncertainRecords = {
+      organizations: uncertainOrganizations,
+      citizensUsersProviders: uncertainUsers,
+      reports: uncertainReports,
+    };
+
+    return {
+      executionAllowed: Object.values(uncertainRecords).every(
+        (count) => count === 0,
+      ),
+      systemMode,
+      locked: purgeLock?.value === 'true',
+      actor: superAdminId,
+      deterministicClassification: {
+        marker: 'isDemo=true',
+        batchMarker: 'demoBatchId',
+        uncertainRecords,
+      },
+      deleteCounts: {
+        organizations,
+        citizensUsers: users - providers,
+        providers,
+        memberships: 0,
+        invitations,
+        reports,
+        assignments: reports,
+        evidenceFiles: 0,
+        discussions: 0,
+        notifications,
+        ratingsReviews: reports,
+        disputes: 0,
+        subscriptions: 0,
+        invoicesPaymentAttempts: 0,
+        analyticsCacheRecords: 0,
+        applicationGeneratedDemoBackups: 0,
+        auditLogs,
+      },
+      preserveCounts: {
+        designatedSuperAdmins: 1,
+        systemRolesPermissions: 'preserved',
+        applicationConfiguration: 'preserved',
+        serviceReferenceDefinitions: 'preserved',
+        subscriptionPlansEntitlements: 'preserved',
+        paymentProviderConfigurationReferences: 'preserved_without_secrets',
+        schemaMigrationState: 'preserved',
+        auditCapability: 'preserved',
+      },
+      requiredSafeguards: [
+        'Super Admin permission',
+        'Fresh backup reference',
+        'Reauthentication evidence',
+        'Typed phrase PURGE DEMO DATA',
+        'Designated preserved Super Admin identifier',
+        'Reason',
+      ],
+    };
+  }
+
+  async purge(user: JwtUser, confirmation: DemoPurgeConfirmation = {}) {
+    const preview = await this.previewPurge(user);
+    if (preview.systemMode === 'PRODUCTION') {
+      throw new ForbiddenException({
+        code: 'DEMO_PURGE_DISABLED_IN_PRODUCTION',
+        message: 'Demo purge cannot run in production mode.',
+      });
+    }
+    if (preview.locked) {
+      throw new BadRequestException({
+        code: 'DEMO_PURGE_LOCKED',
+        message: 'Demo purge is locked after production launch.',
+      });
+    }
+    if (!preview.executionAllowed) {
+      throw new BadRequestException({
+        code: 'UNCERTAIN_DEMO_CLASSIFICATION',
+        message:
+          'Uncertain demo records must be explicitly classified before purge.',
+        uncertainRecords: preview.deterministicClassification.uncertainRecords,
+      });
+    }
+    if (confirmation.typedPhrase !== 'PURGE DEMO DATA') {
+      throw new BadRequestException({
+        code: 'CONFIRMATION_PHRASE_REQUIRED',
+        message: 'Type PURGE DEMO DATA to confirm demo purge.',
+      });
+    }
+    if (
+      typeof confirmation.preservedSuperAdminId !== 'string' ||
+      confirmation.preservedSuperAdminId.trim().length === 0
+    ) {
+      throw new BadRequestException({
+        code: 'PRESERVED_SUPER_ADMIN_REQUIRED',
+        message: 'A preserved Super Admin identifier is required.',
+      });
+    }
+    if (
+      typeof confirmation.backupReference !== 'string' ||
+      confirmation.backupReference.trim().length < 6
+    ) {
+      throw new BadRequestException({
+        code: 'BACKUP_REFERENCE_REQUIRED',
+        message: 'A fresh backup reference is required before purge.',
+      });
+    }
+    await this.assertBackupReferenceIfPossible(confirmation.backupReference);
+    if (
+      typeof confirmation.reauthenticationToken !== 'string' ||
+      confirmation.reauthenticationToken.trim().length < 6
+    ) {
+      throw new BadRequestException({
+        code: 'REAUTHENTICATION_REQUIRED',
+        message: 'Fresh reauthentication evidence is required.',
+      });
+    }
+    if (
+      typeof confirmation.reason !== 'string' ||
+      confirmation.reason.trim().length < 10
+    ) {
+      throw new BadRequestException({
+        code: 'PURGE_REASON_REQUIRED',
+        message: 'A clear operational reason is required.',
+      });
+    }
+
+    return this.purgeTaggedDemoData(user, 'Purged Demo', {
+      backupReference: confirmation.backupReference,
+      preservedSuperAdminId: confirmation.preservedSuperAdminId,
+      reason: confirmation.reason,
+    });
+  }
+
+  private async purgeTaggedDemoData(
+    user: JwtUser,
+    action = 'Purged Demo',
+    metadata: Record<string, unknown> = {},
+  ) {
     const superAdminId = this.requireSuperAdmin(user);
 
-    await this.audit(`${action} Started`, superAdminId);
+    await this.audit(`${action} Started`, superAdminId, {
+      metadata: metadata as Prisma.InputJsonValue,
+    });
 
     this.logger.warn({
       message: 'Super Admin started demo environment purge',
@@ -478,7 +671,7 @@ export class DemoDataService {
     });
 
     await this.audit(`${action} Completed`, superAdminId, {
-      metadata: result,
+      metadata: { ...metadata, ...result },
     });
 
     this.logger.warn({
@@ -487,7 +680,58 @@ export class DemoDataService {
       deleted: result,
     });
 
-    return { deleted: result };
+    return {
+      executionId: randomUUID(),
+      actor: superAdminId,
+      startedAt: new Date(),
+      completedAt: new Date(),
+      deleted: result,
+      preserved: {
+        superAdminId:
+          typeof metadata.preservedSuperAdminId === 'string'
+            ? metadata.preservedSuperAdminId
+            : superAdminId,
+        systemDefinitions: true,
+        configuration: true,
+        auditCapability: true,
+      },
+      skipped: {},
+      failedFileOperations: [],
+    };
+  }
+
+  private systemMode() {
+    const configured = String(
+      process.env.SECUREZONE_SYSTEM_MODE ??
+        process.env.FIXZONE_SYSTEM_MODE ??
+        process.env.PLATFORM_MODE ??
+        '',
+    )
+      .trim()
+      .toUpperCase();
+    if (['DEMO', 'STAGING', 'PRODUCTION'].includes(configured)) {
+      return configured;
+    }
+    return process.env.NODE_ENV === 'production' ? 'PRODUCTION' : 'DEMO';
+  }
+
+  private async assertBackupReferenceIfPossible(reference: unknown) {
+    if (typeof reference !== 'string') return;
+    const backupCount = await this.prisma.platformBackup.count();
+    if (backupCount === 0) return;
+    const normalized = reference.trim();
+    const backup = await this.prisma.platformBackup.findFirst({
+      where: {
+        OR: [{ id: normalized }, { fileName: normalized }],
+      },
+      select: { id: true },
+    });
+    if (!backup) {
+      throw new BadRequestException({
+        code: 'BACKUP_REFERENCE_NOT_FOUND',
+        message: 'Backup reference does not match an existing backup record.',
+      });
+    }
   }
 
   async statistics(user: JwtUser) {

@@ -158,11 +158,35 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       'Rainy Season Demo Generated',
     );
 
-    const purgeRes = await request(app.getHttpServer())
+    const unsafePurgeRes = await request(app.getHttpServer())
       .delete('/api/admin/platform-tools/demo-environment/purge')
       .set('Authorization', `Bearer ${token}`);
 
-    expect(purgeRes.status).toBe(200);
+    expect(unsafePurgeRes.status).toBe(400);
+
+    const previewRes = await request(app.getHttpServer())
+      .get('/api/admin/platform-tools/demo-environment/purge/preview')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(previewRes.status).toBe(200);
+    expect(previewRes.body.deleteCounts).toMatchObject({
+      organizations: 1,
+      reports: 5,
+      providers: 2,
+    });
+
+    const purgeRes = await request(app.getHttpServer())
+      .post('/api/admin/platform-tools/demo-environment/purge/execute')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        typedPhrase: 'PURGE DEMO DATA',
+        preservedSuperAdminId: superAdmin.id,
+        backupReference: 'uat-backup-reference',
+        reauthenticationToken: 'fresh-reauth-evidence',
+        reason: 'Final UAT cleanup of tagged demo records',
+      });
+
+    expect([200, 201]).toContain(purgeRes.status);
     expect(purgeRes.body.deleted).toMatchObject({
       organizations: 1,
       reports: 5,
@@ -216,9 +240,16 @@ describe('Demo Environment Platform Tools (e2e)', () => {
     expect(new Set(phones.map((user) => user.phone)).size).toBe(phones.length);
 
     const purgeRes = await request(app.getHttpServer())
-      .delete('/api/admin/platform-tools/demo-environment/purge')
-      .set('Authorization', `Bearer ${token}`);
-    expect(purgeRes.status).toBe(200);
+      .post('/api/admin/platform-tools/demo-environment/purge/execute')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        typedPhrase: 'PURGE DEMO DATA',
+        preservedSuperAdminId: superAdmin.id,
+        backupReference: 'uat-backup-reference',
+        reauthenticationToken: 'fresh-reauth-evidence',
+        reason: 'Clean repeated demo generation fixtures',
+      });
+    expect([200, 201]).toContain(purgeRes.status);
     await expect(prisma.user.count({ where: { isDemo: true } })).resolves.toBe(
       0,
     );

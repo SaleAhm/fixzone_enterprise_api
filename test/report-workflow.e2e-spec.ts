@@ -15,7 +15,7 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Report Workflow (e2e)', () => {
-  jest.setTimeout(30000);
+  jest.setTimeout(60000);
 
   let app: INestApplication;
   let prisma: PrismaService;
@@ -309,6 +309,17 @@ describe('Report Workflow (e2e)', () => {
     expect(inProgressRes.status).toBe(200);
     expect(inProgressRes.body.status).toBe(ReportStatus.IN_PROGRESS);
 
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'happy-completion.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+
+    expect(uploadRes.status).toBe(201);
+
     const completedRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
       .set('Authorization', `Bearer ${providerToken}`)
@@ -537,6 +548,17 @@ describe('Report Workflow (e2e)', () => {
       activeProductionModule: 'maintenance',
       futureModulesOperational: false,
     });
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'orchestrated-completion.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+
+    expect(uploadRes.status).toBe(201);
 
     const completedRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)

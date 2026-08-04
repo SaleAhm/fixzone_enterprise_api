@@ -52,8 +52,28 @@ export class DemoEnvironmentController {
   @Delete('purge')
   @Roles(UserRole.SUPER_ADMIN)
   @EnterpriseRateLimit(RateLimitTier.HeavyJob)
-  purge(@CurrentUser() user: CurrentAuthUser) {
-    return this.demoDataService.purge(user);
+  purge(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: Record<string, unknown>,
+  ) {
+    return this.demoDataService.purge(user, dto);
+  }
+
+  @Get('purge/preview')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  previewPurge(@CurrentUser() user: CurrentAuthUser) {
+    return this.demoDataService.previewPurge(user);
+  }
+
+  @Post('purge/execute')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.HeavyJob)
+  executePurge(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: Record<string, unknown>,
+  ) {
+    return this.demoDataService.purge(user, dto);
   }
 }
 
@@ -75,7 +95,10 @@ export class LegacyDemoDataController {
   @Delete('purge')
   @Roles(UserRole.SUPER_ADMIN)
   @EnterpriseRateLimit(RateLimitTier.HeavyJob)
-  purge(@CurrentUser() user: CurrentAuthUser) {
-    return this.demoDataService.purge(user);
+  purge(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: Record<string, unknown>,
+  ) {
+    return this.demoDataService.purge(user, dto);
   }
 }
