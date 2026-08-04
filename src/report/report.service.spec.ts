@@ -2,6 +2,8 @@ import { ConflictException, ForbiddenException } from '@nestjs/common';
 import {
   AssignmentOutcome,
   BillingStatus,
+  CompletionDecision,
+  CompletionPolicy,
   OrganizationStatus,
   ReportStatus,
   UserRole,
@@ -770,5 +772,134 @@ describe('ReportService provider response metrics', () => {
       sampleCount: 0,
       reason: 'MISSING_ACCEPTANCE_TIMESTAMP',
     });
+  });
+});
+
+describe('ReportService completion governance policy helpers', () => {
+  type CompletionPolicyHarness = {
+    isCompletionSatisfied(input: {
+      policy: CompletionPolicy;
+      citizenDecision?: CompletionDecision | null;
+      organizationDecision?: CompletionDecision | null;
+    }): boolean;
+    reviewStateFor(input: {
+      policy: CompletionPolicy;
+      citizenDecision?: CompletionDecision | null;
+      organizationDecision?: CompletionDecision | null;
+    }): string;
+    assertNoActiveCompletionBlockers(report: {
+      status?: ReportStatus | null;
+      completionReviewState?: string | null;
+      citizenCompletionDecision?: CompletionDecision | null;
+      organizationCompletionDecision?: CompletionDecision | null;
+    }): void;
+  };
+  const service = new ReportService(
+    {} as never,
+  ) as unknown as CompletionPolicyHarness;
+  const satisfied = (input: {
+    policy: CompletionPolicy;
+    citizenDecision?: CompletionDecision | null;
+    organizationDecision?: CompletionDecision | null;
+  }) => service.isCompletionSatisfied(input);
+  const state = (input: {
+    policy: CompletionPolicy;
+    citizenDecision?: CompletionDecision | null;
+    organizationDecision?: CompletionDecision | null;
+  }) => service.reviewStateFor(input);
+
+  it('closes citizen-only policy after citizen confirmation', () => {
+    expect(
+      satisfied({
+        policy: CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+        citizenDecision: CompletionDecision.CONFIRMED,
+      }),
+    ).toBe(true);
+  });
+
+  it('requires organization verification for organization-only policy', () => {
+    expect(
+      satisfied({
+        policy: CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
+        citizenDecision: CompletionDecision.CONFIRMED,
+      }),
+    ).toBe(false);
+    expect(
+      satisfied({
+        policy: CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
+        organizationDecision: CompletionDecision.VERIFIED,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps both-required policy open until both approvals exist', () => {
+    expect(
+      satisfied({
+        policy: CompletionPolicy.BOTH_REQUIRED,
+        citizenDecision: CompletionDecision.CONFIRMED,
+      }),
+    ).toBe(false);
+    expect(
+      state({
+        policy: CompletionPolicy.BOTH_REQUIRED,
+        citizenDecision: CompletionDecision.CONFIRMED,
+      }),
+    ).toBe('AWAITING_ORGANIZATION_VERIFICATION');
+    expect(
+      satisfied({
+        policy: CompletionPolicy.BOTH_REQUIRED,
+        citizenDecision: CompletionDecision.CONFIRMED,
+        organizationDecision: CompletionDecision.VERIFIED,
+      }),
+    ).toBe(true);
+  });
+
+  it('allows either party for citizen-or-organization policy', () => {
+    expect(
+      satisfied({
+        policy: CompletionPolicy.CITIZEN_OR_ORGANIZATION,
+        citizenDecision: CompletionDecision.CONFIRMED,
+      }),
+    ).toBe(true);
+    expect(
+      satisfied({
+        policy: CompletionPolicy.CITIZEN_OR_ORGANIZATION,
+        organizationDecision: CompletionDecision.VERIFIED,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not close admin-resolution policy through ordinary approvals', () => {
+    expect(
+      satisfied({
+        policy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
+        citizenDecision: CompletionDecision.CONFIRMED,
+        organizationDecision: CompletionDecision.VERIFIED,
+      }),
+    ).toBe(false);
+    expect(state({ policy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED })).toBe(
+      'AWAITING_ADMIN_RESOLUTION',
+    );
+  });
+
+  it('identifies rework and dispute blockers before ordinary closure', () => {
+    expect(
+      state({
+        policy: CompletionPolicy.BOTH_REQUIRED,
+        citizenDecision: CompletionDecision.REWORK_REQUESTED,
+      }),
+    ).toBe('REWORK_REQUESTED');
+    expect(
+      state({
+        policy: CompletionPolicy.BOTH_REQUIRED,
+        organizationDecision: CompletionDecision.ESCALATED,
+      }),
+    ).toBe('DISPUTED');
+    expect(() =>
+      service.assertNoActiveCompletionBlockers({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionReviewState: 'REWORK_REQUESTED',
+      }),
+    ).toThrow(ConflictException);
   });
 });

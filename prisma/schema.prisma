@@ -35,6 +35,24 @@ enum ReportStatus {
   CLOSED
 }
 
+enum CompletionPolicy {
+  CITIZEN_CONFIRMATION_REQUIRED
+  ORGANIZATION_CONFIRMATION_REQUIRED
+  BOTH_REQUIRED
+  CITIZEN_OR_ORGANIZATION
+  ADMIN_RESOLUTION_REQUIRED
+  AUTO_CLOSE_AFTER_REVIEW_WINDOW
+}
+
+enum CompletionDecision {
+  PENDING
+  CONFIRMED
+  VERIFIED
+  REWORK_REQUESTED
+  DISPUTED
+  ESCALATED
+}
+
 enum AssignmentOutcome {
   REJECTED
   TIMED_OUT
@@ -959,54 +977,69 @@ model AssetOwnershipHistory {
 }
 
 model Report {
-  id                           String             @id @default(cuid())
-  title                        String
-  description                  String
-  category                     String
-  location                     String
-  locationName                 String?
-  locationAddress              String?
-  locationLandmark             String?
-  latitude                     Float?
-  longitude                    Float?
-  locationAccuracy             Float?
-  locationCapturedAt           DateTime?
-  locationSource               String?
-  status                       ReportStatus       @default(PENDING)
-  organizationId               String
-  citizenId                    String
-  assignedProviderId           String?
-  assignedOrganizationId       String?
-  organizationAssignedById     String?
-  organizationAssignedAt       DateTime?
-  organizationAssignmentSource String?
-  assignedAt                   DateTime?
-  assignmentDeadlineAt         DateTime?
-  lastAssignmentOutcome        AssignmentOutcome?
-  lastAssignmentReason         String?
-  lastAssignmentAt             DateTime?
-  lastAssignmentProviderId     String?
-  completionNote               String?
-  completionImageUrl           String?
-  completionImagePath          String?
-  completionLatitude           Float?
-  completionLongitude          Float?
-  completionAccuracy           Float?
-  completionLocationCapturedAt DateTime?
-  completionLocationSource     String?
-  evidenceImageUrl             String?
-  evidenceImagePath            String?
-  completedByProviderAt        DateTime?
-  citizenRating                Int?
-  citizenFeedback              String?
-  completionRejectionReason    String?
-  isDemo                       Boolean            @default(false)
-  demoBatchId                  String?
-  demoScenario                 String?
-  demoGeneratedAt              DateTime?
-  createdBySuperAdminId        String?
-  createdAt                    DateTime           @default(now())
-  updatedAt                    DateTime           @updatedAt
+  id                                String              @id @default(cuid())
+  title                             String
+  description                       String
+  category                          String
+  location                          String
+  locationName                      String?
+  locationAddress                   String?
+  locationLandmark                  String?
+  latitude                          Float?
+  longitude                         Float?
+  locationAccuracy                  Float?
+  locationCapturedAt                DateTime?
+  locationSource                    String?
+  status                            ReportStatus        @default(PENDING)
+  organizationId                    String
+  citizenId                         String
+  assignedProviderId                String?
+  assignedOrganizationId            String?
+  organizationAssignedById          String?
+  organizationAssignedAt            DateTime?
+  organizationAssignmentSource      String?
+  assignedAt                        DateTime?
+  assignmentDeadlineAt              DateTime?
+  lastAssignmentOutcome             AssignmentOutcome?
+  lastAssignmentReason              String?
+  lastAssignmentAt                  DateTime?
+  lastAssignmentProviderId          String?
+  completionNote                    String?
+  completionImageUrl                String?
+  completionImagePath               String?
+  completionLatitude                Float?
+  completionLongitude               Float?
+  completionAccuracy                Float?
+  completionLocationCapturedAt      DateTime?
+  completionLocationSource          String?
+  evidenceImageUrl                  String?
+  evidenceImagePath                 String?
+  completedByProviderAt             DateTime?
+  citizenRating                     Int?
+  citizenFeedback                   String?
+  completionRejectionReason         String?
+  completionPolicy                  CompletionPolicy?
+  completionPolicySource            String?
+  completionReviewState             String?
+  completionReviewDeadlineAt        DateTime?
+  citizenCompletionDecision         CompletionDecision?
+  citizenCompletionDecidedAt        DateTime?
+  organizationCompletionDecision    CompletionDecision?
+  organizationCompletionDecidedAt   DateTime?
+  organizationCompletionDecidedById String?
+  organizationCompletionReason      String?
+  completionFinalizedAt             DateTime?
+  completionFinalizedById           String?
+  completionFinalizedByRole         UserRole?
+  completionClosureReason           String?
+  completionDisputeReason           String?
+  isDemo                            Boolean             @default(false)
+  demoBatchId                       String?
+  demoScenario                      String?
+  demoGeneratedAt                   DateTime?
+  createdBySuperAdminId             String?
+  createdAt                         DateTime            @default(now())
+  updatedAt                         DateTime            @updatedAt
 
   organization         Organization     @relation(fields: [organizationId], references: [id])
   assignedOrganization Organization?    @relation("AssignedOrganizationReports", fields: [assignedOrganizationId], references: [id])

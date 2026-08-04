@@ -12,6 +12,8 @@ import {
   AssignmentOutcome,
   BillingStatus,
   AccountStatus,
+  CompletionDecision,
+  CompletionPolicy,
   EvidenceRelatedEntityType,
   OrganizationStatus,
   Prisma,
@@ -36,6 +38,10 @@ import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
 import {
+  OrganizationCompletionReworkDto,
+  OrganizationCompletionVerificationDto,
+} from './dto/organization-completion-decision.dto';
+import {
   OrganizationAcceptReportDto,
   OrganizationRejectReportDto,
 } from './dto/organization-intake-decision.dto';
@@ -56,6 +62,11 @@ type JwtUser = {
 };
 
 type EvidenceKind = 'report-evidence' | 'report-completion';
+
+type CompletionPolicyResolution = {
+  policy: CompletionPolicy;
+  source: string;
+};
 
 type ResponsibilityOutcome =
   | 'HIGH_CONFIDENCE'
@@ -98,6 +109,21 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   citizenRating?: number | null;
   citizenFeedback?: string | null;
   completionRejectionReason?: string | null;
+  completionPolicy?: CompletionPolicy | null;
+  completionPolicySource?: string | null;
+  completionReviewState?: string | null;
+  completionReviewDeadlineAt?: Date | string | null;
+  citizenCompletionDecision?: CompletionDecision | null;
+  citizenCompletionDecidedAt?: Date | string | null;
+  organizationCompletionDecision?: CompletionDecision | null;
+  organizationCompletionDecidedAt?: Date | string | null;
+  organizationCompletionDecidedById?: string | null;
+  organizationCompletionReason?: string | null;
+  completionFinalizedAt?: Date | string | null;
+  completionFinalizedById?: string | null;
+  completionFinalizedByRole?: UserRole | null;
+  completionClosureReason?: string | null;
+  completionDisputeReason?: string | null;
   assignedAt?: Date | string | null;
   assignmentDeadlineAt?: Date | string | null;
   lastAssignmentOutcome?: AssignmentOutcome | null;
@@ -1544,6 +1570,7 @@ export class ReportService {
 
     const report = await this.prisma.report.findUnique({
       where: { id: reportId },
+      include: { organization: true },
     });
 
     if (!report) throw new NotFoundException('Report not found');
@@ -1578,7 +1605,7 @@ export class ReportService {
 
     this.assertStatusTransitionAllowed(report, dto.status, user, userId);
 
-    const data: any = { status: dto.status };
+    const data: Prisma.ReportUpdateInput = { status: dto.status };
 
     if (dto.status === ReportStatus.COMPLETED_BY_PROVIDER) {
       const completionEvidence = this.normalizeCompletionEvidenceFields({
@@ -1600,6 +1627,8 @@ export class ReportService {
           message: 'Upload at least one completion evidence image.',
         });
       }
+      const policy = this.resolveCompletionPolicy(report);
+      const reviewDeadline = this.reviewDeadlineFor(policy.policy);
       data.completionNote = dto.completionNote?.trim() || null;
       data.completionImageUrl = completionEvidence.imageUrl;
       data.completionImagePath = completionEvidence.imagePath;
@@ -1612,6 +1641,26 @@ export class ReportService {
       data.completionLocationSource =
         dto.completionLocationSource ?? this.completionLocationSourceFor(dto);
       data.completedByProviderAt = new Date();
+      data.completionPolicy = policy.policy;
+      data.completionPolicySource = policy.source;
+      data.completionReviewState = this.reviewStateFor({
+        policy: policy.policy,
+        citizenDecision: null,
+        organizationDecision: null,
+      });
+      data.completionReviewDeadlineAt = reviewDeadline;
+      data.citizenCompletionDecision = CompletionDecision.PENDING;
+      data.citizenCompletionDecidedAt = null;
+      data.organizationCompletionDecision = CompletionDecision.PENDING;
+      data.organizationCompletionDecidedAt = null;
+      data.organizationCompletionDecidedById = null;
+      data.organizationCompletionReason = null;
+      data.completionFinalizedAt = null;
+      data.completionFinalizedById = null;
+      data.completionFinalizedByRole = null;
+      data.completionClosureReason = null;
+      data.completionDisputeReason = null;
+      data.completionRejectionReason = null;
     }
 
     const updated = await this.prisma.report.update({
@@ -1621,6 +1670,7 @@ export class ReportService {
     });
 
     if (dto.status === ReportStatus.COMPLETED_BY_PROVIDER) {
+      await this.notifyCompletionReviewers(updated);
       await this.workflowOrchestrator?.providerCompletedReport({
         reportId,
         organizationId: updated.organizationId,
@@ -1840,22 +1890,63 @@ export class ReportService {
     user: JwtUser,
   ) {
     const report = await this.getCitizenReviewReport(reportId, user);
+    if (report.citizenCompletionDecision === CompletionDecision.CONFIRMED) {
+      throw new ForbiddenException('Completion has already been confirmed.');
+    }
+    this.assertNoActiveCompletionBlockers(report);
+    const policy = this.policyForReport(report);
+    const organizationDecision =
+      report.organizationCompletionDecision ?? CompletionDecision.PENDING;
+    const closes = this.isCompletionSatisfied({
+      policy,
+      citizenDecision: CompletionDecision.CONFIRMED,
+      organizationDecision,
+    });
+    const now = new Date();
     const updated = await this.prisma.report.update({
       where: { id: report.id },
       data: {
-        status: ReportStatus.CLOSED,
+        status: closes
+          ? ReportStatus.CLOSED
+          : ReportStatus.COMPLETED_BY_PROVIDER,
         citizenRating: dto.rating,
         citizenFeedback: dto.feedback?.trim() || null,
+        citizenCompletionDecision: CompletionDecision.CONFIRMED,
+        citizenCompletionDecidedAt: now,
         completionRejectionReason: null,
+        completionReviewState: closes
+          ? 'CLOSED'
+          : this.reviewStateFor({
+              policy,
+              citizenDecision: CompletionDecision.CONFIRMED,
+              organizationDecision,
+            }),
+        completionFinalizedAt: closes ? now : null,
+        completionFinalizedById: closes ? this.getUserId(user) : null,
+        completionFinalizedByRole: closes ? user.role : null,
+        completionClosureReason: closes
+          ? 'Citizen confirmation satisfied completion policy.'
+          : null,
       },
       include: this.includeRelations(),
     });
 
-    await this.notifyStatusChange(updated);
+    if (closes) {
+      await this.notifyStatusChange(updated);
+    } else {
+      await this.notifyOrganizationOperators(updated.organizationId, {
+        reportId,
+        type: 'citizen_completion_confirmed',
+        title: 'Citizen confirmed completion',
+        message: `Citizen confirmed "${updated.title}". Organization verification is still required.`,
+      });
+    }
     await this.audit('Citizen Confirmed Completion', user, {
       targetType: 'Report',
       targetId: reportId,
       rating: dto.rating,
+      completionPolicy: policy,
+      closed: closes,
     });
     await this.recordReportActivity(
       reportId,
@@ -1867,23 +1958,31 @@ export class ReportService {
         toStatus: updated.status,
         providerId: updated.assignedProviderId ?? undefined,
         note: dto.feedback?.trim() || undefined,
-        metadata: { rating: dto.rating },
+        metadata: {
+          rating: dto.rating,
+          completionPolicy: policy,
+          completionReviewState: updated.completionReviewState,
+          closed: closes,
+        },
       },
     );
-    await this.workflowOrchestrator?.citizenConfirmedCompletion({
-      reportId,
-      organizationId: updated.organizationId,
-      actorId: this.getUserId(user),
-      actorRole: user.role,
-      fromStatus: report.status,
-      toStatus: updated.status,
-      providerId: updated.assignedProviderId ?? null,
-      citizenId: updated.citizenId,
-      metadata: {
-        rating: dto.rating,
-        feedback: dto.feedback?.trim() || null,
-      },
-    });
+    if (closes) {
+      await this.workflowOrchestrator?.citizenConfirmedCompletion({
+        reportId,
+        organizationId: updated.organizationId,
+        actorId: this.getUserId(user),
+        actorRole: user.role,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? null,
+        citizenId: updated.citizenId,
+        metadata: {
+          rating: dto.rating,
+          feedback: dto.feedback?.trim() || null,
+          completionPolicy: policy,
+        },
+      });
+    }
     return updated;
   }
 
@@ -1898,6 +1997,10 @@ export class ReportService {
       data: {
         status: ReportStatus.ASSIGNED,
         completionRejectionReason: dto.reason.trim(),
+        citizenCompletionDecision: CompletionDecision.REWORK_REQUESTED,
+        citizenCompletionDecidedAt: new Date(),
+        completionReviewState: 'REWORK_REQUESTED',
+        completionDisputeReason: dto.reason.trim(),
       },
       include: this.includeRelations(),
     });
@@ -1940,6 +2043,161 @@ export class ReportService {
     return updated;
   }
 
+  async verifyOrganizationCompletion(
+    reportId: string,
+    dto: OrganizationCompletionVerificationDto,
+    user: JwtUser,
+  ) {
+    const report = await this.getOrganizationCompletionReviewReport(
+      reportId,
+      user,
+    );
+    if (report.organizationCompletionDecision === CompletionDecision.VERIFIED) {
+      return this.getReportById(reportId, user);
+    }
+    this.assertNoActiveCompletionBlockers(report);
+    const policy = this.policyForReport(report);
+    if (policy === CompletionPolicy.ADMIN_RESOLUTION_REQUIRED) {
+      throw new ForbiddenException(
+        'This completion requires platform resolution.',
+      );
+    }
+    const citizenDecision =
+      report.citizenCompletionDecision ?? CompletionDecision.PENDING;
+    const closes = this.isCompletionSatisfied({
+      policy,
+      citizenDecision,
+      organizationDecision: CompletionDecision.VERIFIED,
+    });
+    const now = new Date();
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: closes
+          ? ReportStatus.CLOSED
+          : ReportStatus.COMPLETED_BY_PROVIDER,
+        organizationCompletionDecision: CompletionDecision.VERIFIED,
+        organizationCompletionDecidedAt: now,
+        organizationCompletionDecidedById: this.getUserId(user),
+        organizationCompletionReason: dto.reason?.trim() || null,
+        completionReviewState: closes
+          ? 'CLOSED'
+          : this.reviewStateFor({
+              policy,
+              citizenDecision,
+              organizationDecision: CompletionDecision.VERIFIED,
+            }),
+        completionFinalizedAt: closes ? now : null,
+        completionFinalizedById: closes ? this.getUserId(user) : null,
+        completionFinalizedByRole: closes ? user.role : null,
+        completionClosureReason: closes
+          ? dto.reason?.trim() ||
+            'Organization verification satisfied completion policy.'
+          : null,
+      },
+      include: this.includeRelations(),
+    });
+
+    if (closes) {
+      await this.notifyStatusChange(updated);
+    } else {
+      await this.createNotification({
+        userId: updated.citizenId,
+        reportId,
+        type: 'organization_completion_verified',
+        title: 'Organization verified completion',
+        message: `Organization verified "${updated.title}". Your confirmation is still required.`,
+      });
+    }
+    await this.audit('Organization Verified Completion', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      organizationId: updated.organizationId,
+      completionPolicy: policy,
+      closed: closes,
+    });
+    await this.recordReportActivity(
+      reportId,
+      'ORGANIZATION_VERIFIED_COMPLETION',
+      user,
+      {
+        organizationId: updated.organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? undefined,
+        reason: dto.reason?.trim() || undefined,
+        metadata: {
+          completionPolicy: policy,
+          completionReviewState: updated.completionReviewState,
+          closed: closes,
+        },
+      },
+    );
+    return updated;
+  }
+
+  async requestOrganizationCompletionRework(
+    reportId: string,
+    dto: OrganizationCompletionReworkDto,
+    user: JwtUser,
+  ) {
+    const report = await this.getOrganizationCompletionReviewReport(
+      reportId,
+      user,
+    );
+    const reason = dto.reason.trim();
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: ReportStatus.ASSIGNED,
+        organizationCompletionDecision: CompletionDecision.REWORK_REQUESTED,
+        organizationCompletionDecidedAt: new Date(),
+        organizationCompletionDecidedById: this.getUserId(user),
+        organizationCompletionReason: reason,
+        completionRejectionReason: reason,
+        completionReviewState: 'REWORK_REQUESTED',
+        completionDisputeReason: reason,
+      },
+      include: this.includeRelations(),
+    });
+
+    if (updated.assignedProviderId) {
+      await this.createNotification({
+        userId: updated.assignedProviderId,
+        reportId,
+        type: 'completion_rework_requested',
+        title: 'Completion rework requested',
+        message: `Organization requested rework on "${updated.title}".`,
+      });
+    }
+    await this.createNotification({
+      userId: updated.citizenId,
+      reportId,
+      type: 'completion_rework_requested',
+      title: 'Completion rework requested',
+      message: `Organization requested rework on "${updated.title}".`,
+    });
+    await this.audit('Organization Requested Completion Rework', user, {
+      targetType: 'Report',
+      targetId: reportId,
+      organizationId: updated.organizationId,
+      reason,
+    });
+    await this.recordReportActivity(
+      reportId,
+      'ORGANIZATION_REQUESTED_COMPLETION_REWORK',
+      user,
+      {
+        organizationId: updated.organizationId,
+        fromStatus: report.status,
+        toStatus: updated.status,
+        providerId: updated.assignedProviderId ?? undefined,
+        reason,
+      },
+    );
+    return updated;
+  }
+
   async getCitizenCompletionReview(reportId: string, user: JwtUser) {
     const userId = this.getUserId(user);
     if (user.role !== UserRole.CITIZEN) {
@@ -1959,6 +2217,12 @@ export class ReportService {
     const awaitingReview = report.status === ReportStatus.COMPLETED_BY_PROVIDER;
     const protectedReport = this.withProtectedEvidenceUrls(report);
     const evidenceItems = this.reportEvidenceItems(protectedReport, report);
+    const policy = this.policyForReport(report);
+    const reviewState = this.reviewStateFor({
+      policy,
+      citizenDecision: report.citizenCompletionDecision,
+      organizationDecision: report.organizationCompletionDecision,
+    });
     return {
       ...protectedReport,
       evidenceItems,
@@ -1970,8 +2234,15 @@ export class ReportService {
         location: this.completionLocationMetadata(protectedReport),
       },
       provider: protectedReport.assignedProvider,
+      completionGovernance: this.completionGovernanceSummary({
+        ...protectedReport,
+        completionPolicy: policy,
+        completionReviewState: report.completionReviewState ?? reviewState,
+      }),
       availableActions: {
-        confirm: awaitingReview,
+        confirm:
+          awaitingReview &&
+          report.citizenCompletionDecision !== CompletionDecision.CONFIRMED,
         markIncomplete: awaitingReview,
       },
     };
@@ -2329,10 +2600,247 @@ export class ReportService {
     if (!report) throw new NotFoundException('Report not found');
     if (report.citizenId !== userId)
       throw new ForbiddenException('Not your report');
-    if (report.status !== ReportStatus.COMPLETED_BY_PROVIDER) {
+    const duplicateClosedConfirmation =
+      report.status === ReportStatus.CLOSED &&
+      report.citizenCompletionDecision === CompletionDecision.CONFIRMED;
+    if (
+      report.status !== ReportStatus.COMPLETED_BY_PROVIDER &&
+      !duplicateClosedConfirmation
+    ) {
       throw new ForbiddenException('Report is not awaiting citizen review');
     }
     return report;
+  }
+
+  private async getOrganizationCompletionReviewReport(
+    reportId: string,
+    user: JwtUser,
+  ) {
+    if (!this.isAdmin(user) && !this.isDispatch(user)) {
+      throw new ForbiddenException('Only organization operators can verify');
+    }
+    const organizationId = this.requireUserOrganizationId(user);
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (report.organizationId !== organizationId) {
+      throw new ForbiddenException('Organization cannot verify this report');
+    }
+    const duplicateClosedVerification =
+      report.status === ReportStatus.CLOSED &&
+      report.organizationCompletionDecision === CompletionDecision.VERIFIED;
+    if (
+      report.status !== ReportStatus.COMPLETED_BY_PROVIDER &&
+      !duplicateClosedVerification
+    ) {
+      throw new ForbiddenException(
+        'Report is not awaiting completion verification',
+      );
+    }
+    return report;
+  }
+
+  private resolveCompletionPolicy(report: {
+    completionPolicy?: CompletionPolicy | null;
+    organization?: { profileData?: Prisma.JsonValue | null } | null;
+  }): CompletionPolicyResolution {
+    if (report.completionPolicy) {
+      return { policy: report.completionPolicy, source: 'REPORT_OVERRIDE' };
+    }
+
+    const organizationPolicy = this.completionPolicyFromProfile(
+      report.organization?.profileData,
+    );
+    if (organizationPolicy) {
+      return { policy: organizationPolicy, source: 'ORGANIZATION_PROFILE' };
+    }
+
+    const configured = this.normalizeCompletionPolicy(
+      process.env.FIXZONE_COMPLETION_POLICY,
+    );
+    if (configured) return { policy: configured, source: 'PLATFORM_ENV' };
+
+    return {
+      policy: CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+      source: 'PLATFORM_DEFAULT',
+    };
+  }
+
+  private policyForReport(report: {
+    completionPolicy?: CompletionPolicy | null;
+  }) {
+    return (
+      report.completionPolicy ??
+      this.normalizeCompletionPolicy(process.env.FIXZONE_COMPLETION_POLICY) ??
+      CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED
+    );
+  }
+
+  private completionPolicyFromProfile(profileData?: Prisma.JsonValue | null) {
+    if (!profileData || typeof profileData !== 'object') return null;
+    if (Array.isArray(profileData)) return null;
+    const profile = profileData as Record<string, unknown>;
+    return this.normalizeCompletionPolicy(profile.completionPolicy);
+  }
+
+  private normalizeCompletionPolicy(value: unknown) {
+    if (typeof value !== 'string') return null;
+    const normalized = value.trim().toUpperCase();
+    return Object.values(CompletionPolicy).includes(
+      normalized as CompletionPolicy,
+    )
+      ? (normalized as CompletionPolicy)
+      : null;
+  }
+
+  private reviewDeadlineFor(policy: CompletionPolicy) {
+    if (policy !== CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW) return null;
+    const hours = Number(
+      process.env.FIXZONE_COMPLETION_REVIEW_WINDOW_HOURS || 72,
+    );
+    const deadline = new Date();
+    deadline.setHours(
+      deadline.getHours() + (Number.isFinite(hours) ? hours : 72),
+    );
+    return deadline;
+  }
+
+  private reviewStateFor(input: {
+    policy: CompletionPolicy;
+    citizenDecision?: CompletionDecision | null;
+    organizationDecision?: CompletionDecision | null;
+  }) {
+    if (
+      input.citizenDecision === CompletionDecision.DISPUTED ||
+      input.organizationDecision === CompletionDecision.ESCALATED
+    ) {
+      return 'DISPUTED';
+    }
+    if (
+      input.citizenDecision === CompletionDecision.REWORK_REQUESTED ||
+      input.organizationDecision === CompletionDecision.REWORK_REQUESTED
+    ) {
+      return 'REWORK_REQUESTED';
+    }
+    if (
+      input.policy === CompletionPolicy.BOTH_REQUIRED &&
+      input.citizenDecision === CompletionDecision.CONFIRMED
+    ) {
+      return 'AWAITING_ORGANIZATION_VERIFICATION';
+    }
+    if (
+      input.policy === CompletionPolicy.BOTH_REQUIRED &&
+      input.organizationDecision === CompletionDecision.VERIFIED
+    ) {
+      return 'AWAITING_CITIZEN_REVIEW';
+    }
+    if (input.policy === CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED) {
+      return 'AWAITING_ORGANIZATION_VERIFICATION';
+    }
+    if (input.policy === CompletionPolicy.ADMIN_RESOLUTION_REQUIRED) {
+      return 'AWAITING_ADMIN_RESOLUTION';
+    }
+    if (input.policy === CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW) {
+      return 'AWAITING_REVIEW_WINDOW';
+    }
+    if (input.policy === CompletionPolicy.BOTH_REQUIRED) {
+      return 'AWAITING_BOTH';
+    }
+    return 'AWAITING_CITIZEN_REVIEW';
+  }
+
+  private isCompletionSatisfied(input: {
+    policy: CompletionPolicy;
+    citizenDecision?: CompletionDecision | null;
+    organizationDecision?: CompletionDecision | null;
+  }) {
+    const citizenConfirmed =
+      input.citizenDecision === CompletionDecision.CONFIRMED;
+    const organizationVerified =
+      input.organizationDecision === CompletionDecision.VERIFIED;
+    switch (input.policy) {
+      case CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED:
+        return citizenConfirmed;
+      case CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED:
+        return organizationVerified;
+      case CompletionPolicy.BOTH_REQUIRED:
+        return citizenConfirmed && organizationVerified;
+      case CompletionPolicy.CITIZEN_OR_ORGANIZATION:
+        return citizenConfirmed || organizationVerified;
+      case CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW:
+        return citizenConfirmed || organizationVerified;
+      case CompletionPolicy.ADMIN_RESOLUTION_REQUIRED:
+      default:
+        return false;
+    }
+  }
+
+  private assertNoActiveCompletionBlockers(report: {
+    completionReviewState?: string | null;
+    citizenCompletionDecision?: CompletionDecision | null;
+    organizationCompletionDecision?: CompletionDecision | null;
+    status?: ReportStatus | null;
+  }) {
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ConflictException('Report is already closed');
+    }
+    if (
+      report.completionReviewState === 'DISPUTED' ||
+      report.citizenCompletionDecision === CompletionDecision.DISPUTED ||
+      report.organizationCompletionDecision === CompletionDecision.ESCALATED
+    ) {
+      throw new ConflictException('Completion is under dispute');
+    }
+    if (
+      report.completionReviewState === 'REWORK_REQUESTED' ||
+      report.citizenCompletionDecision ===
+        CompletionDecision.REWORK_REQUESTED ||
+      report.organizationCompletionDecision ===
+        CompletionDecision.REWORK_REQUESTED
+    ) {
+      throw new ConflictException('Completion rework is required');
+    }
+  }
+
+  private completionGovernanceSummary(report: {
+    completionPolicy?: CompletionPolicy | null;
+    completionPolicySource?: string | null;
+    completionReviewState?: string | null;
+    completionReviewDeadlineAt?: Date | string | null;
+    citizenCompletionDecision?: CompletionDecision | null;
+    citizenCompletionDecidedAt?: Date | string | null;
+    organizationCompletionDecision?: CompletionDecision | null;
+    organizationCompletionDecidedAt?: Date | string | null;
+    organizationCompletionDecidedById?: string | null;
+    organizationCompletionReason?: string | null;
+    completionFinalizedAt?: Date | string | null;
+    completionFinalizedById?: string | null;
+    completionFinalizedByRole?: UserRole | null;
+    completionClosureReason?: string | null;
+    completionDisputeReason?: string | null;
+  }) {
+    return {
+      policy:
+        report.completionPolicy ??
+        CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+      policySource: report.completionPolicySource ?? 'LEGACY_DEFAULT',
+      reviewState:
+        report.completionReviewState ??
+        (report.completionFinalizedAt ? 'CLOSED' : 'AWAITING_CITIZEN_REVIEW'),
+      reviewDeadlineAt: report.completionReviewDeadlineAt ?? null,
+      citizenDecision: report.citizenCompletionDecision ?? null,
+      citizenDecidedAt: report.citizenCompletionDecidedAt ?? null,
+      organizationDecision: report.organizationCompletionDecision ?? null,
+      organizationDecidedAt: report.organizationCompletionDecidedAt ?? null,
+      organizationDecidedById: report.organizationCompletionDecidedById ?? null,
+      organizationReason: report.organizationCompletionReason ?? null,
+      finalizedAt: report.completionFinalizedAt ?? null,
+      finalizedById: report.completionFinalizedById ?? null,
+      finalizedByRole: report.completionFinalizedByRole ?? null,
+      closureReason: report.completionClosureReason ?? null,
+      disputeReason: report.completionDisputeReason ?? null,
+    };
   }
 
   private getUserId(user: JwtUser) {
@@ -3231,6 +3739,7 @@ export class ReportService {
           feedback: protectedReport.citizenFeedback ?? null,
           incompleteReason: protectedReport.completionRejectionReason ?? null,
         },
+        completionGovernance: this.completionGovernanceSummary(protectedReport),
         assignment: {
           assignedAt: protectedReport.assignedAt ?? null,
           deadlineAt: protectedReport.assignmentDeadlineAt ?? null,
@@ -3652,6 +4161,67 @@ export class ReportService {
         }),
       ),
     );
+  }
+
+  private async notifyCompletionReviewers(report: {
+    id: string;
+    title: string;
+    citizenId: string;
+    organizationId: string;
+    completionPolicy?: CompletionPolicy | null;
+  }) {
+    const policy =
+      report.completionPolicy ?? CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED;
+    const citizenRequired = (
+      [
+        CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+        CompletionPolicy.BOTH_REQUIRED,
+        CompletionPolicy.CITIZEN_OR_ORGANIZATION,
+        CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+      ] as CompletionPolicy[]
+    ).includes(policy);
+    const organizationRequired = (
+      [
+        CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
+        CompletionPolicy.BOTH_REQUIRED,
+        CompletionPolicy.CITIZEN_OR_ORGANIZATION,
+        CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+      ] as CompletionPolicy[]
+    ).includes(policy);
+
+    const tasks: Promise<void>[] = [];
+    if (citizenRequired) {
+      tasks.push(
+        this.createNotification({
+          userId: report.citizenId,
+          reportId: report.id,
+          type: 'completion_review',
+          title: 'Ready for review',
+          message: `The provider marked "${report.title}" complete. Please review it.`,
+        }),
+      );
+    }
+    if (organizationRequired) {
+      tasks.push(
+        this.notifyOrganizationOperators(report.organizationId, {
+          reportId: report.id,
+          type: 'organization_completion_review',
+          title: 'Completion verification required',
+          message: `Provider submitted completion evidence for "${report.title}".`,
+        }),
+      );
+    }
+    if (policy === CompletionPolicy.ADMIN_RESOLUTION_REQUIRED) {
+      tasks.push(
+        this.notifyPlatformResolvers({
+          reportId: report.id,
+          type: 'admin_completion_resolution_required',
+          title: 'Completion resolution required',
+          message: `Completion for "${report.title}" requires platform resolution.`,
+        }),
+      );
+    }
+    await Promise.all(tasks);
   }
 
   private async notifyPlatformResolvers(data: {

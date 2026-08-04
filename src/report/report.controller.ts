@@ -30,6 +30,10 @@ import {
   OrganizationAcceptReportDto,
   OrganizationRejectReportDto,
 } from './dto/organization-intake-decision.dto';
+import {
+  OrganizationCompletionReworkDto,
+  OrganizationCompletionVerificationDto,
+} from './dto/organization-completion-decision.dto';
 import { DispatchAiService } from './services/dispatch-ai.service';
 import { ReportService } from './report.service';
 import {
@@ -487,6 +491,32 @@ export class ReportController {
     @CurrentUser() user: CurrentAuthUser,
   ) {
     return this.reportService.rejectCitizenCompletion(id, dto, user);
+  }
+
+  @Post(':id/organization-completion/verify')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  verifyOrganizationCompletion(
+    @Param('id') id: string,
+    @Body() dto: OrganizationCompletionVerificationDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.verifyOrganizationCompletion(id, dto, user);
+  }
+
+  @Post(':id/organization-completion/rework')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  requestOrganizationCompletionRework(
+    @Param('id') id: string,
+    @Body() dto: OrganizationCompletionReworkDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.requestOrganizationCompletionRework(
+      id,
+      dto,
+      user,
+    );
   }
 
   @Patch(':id/recommend-provider')

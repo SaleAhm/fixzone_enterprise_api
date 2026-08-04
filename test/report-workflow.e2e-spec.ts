@@ -4,6 +4,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   AccountStatus,
   AssignmentOutcome,
+  CompletionPolicy,
   ReportStatus,
   UserRole,
 } from '@prisma/client';
@@ -638,6 +639,163 @@ describe('Report Workflow (e2e)', () => {
         'Workflow Provider Completed Report',
         'Workflow Citizen Confirmed Completion',
       ]),
+    );
+  });
+
+  it('keeps organization-confirmation policy open after citizen approval until organization verification', async () => {
+    const org = await createOrganization('Workflow Completion Org Policy');
+    await prisma.organization.update({
+      where: { id: org.id },
+      data: {
+        profileData: {
+          completionPolicy: CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
+        },
+      },
+    });
+    const admin = await createUser({
+      email: 'wf-admin-org-completion@test.com',
+      fullName: 'Workflow Completion Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-org-completion@test.com',
+      fullName: 'Workflow Completion Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-org-completion@test.com',
+      fullName: 'Workflow Completion Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF organization completion policy',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const adminToken = await signToken(admin);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'org-policy-completion.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+    expect(uploadRes.status).toBe(201);
+
+    const completedRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(completedRes.status).toBe(200);
+    expect(completedRes.body.completionPolicy).toBe(
+      CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
+    );
+    expect(completedRes.body.completionReviewState).toBe(
+      'AWAITING_ORGANIZATION_VERIFICATION',
+    );
+
+    const citizenConfirmRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 4, feedback: 'Looks acceptable.' });
+    expect(citizenConfirmRes.status).toBe(201);
+    expect(citizenConfirmRes.body.status).toBe(
+      ReportStatus.COMPLETED_BY_PROVIDER,
+    );
+    expect(citizenConfirmRes.body.citizenCompletionDecision).toBe('CONFIRMED');
+    expect(citizenConfirmRes.body.completionFinalizedAt).toBeNull();
+
+    const verifyRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Evidence and site checks passed.' });
+    expect(verifyRes.status).toBe(201);
+    expect(verifyRes.body.status).toBe(ReportStatus.CLOSED);
+    expect(verifyRes.body.organizationCompletionDecision).toBe('VERIFIED');
+    expect(verifyRes.body.completionFinalizedByRole).toBe(UserRole.ORG_ADMIN);
+  });
+
+  it('requires both citizen and organization approvals when policy is BOTH_REQUIRED', async () => {
+    const org = await createOrganization('Workflow Completion Both Org');
+    await prisma.organization.update({
+      where: { id: org.id },
+      data: {
+        profileData: { completionPolicy: CompletionPolicy.BOTH_REQUIRED },
+      },
+    });
+    const admin = await createUser({
+      email: 'wf-admin-both-completion@test.com',
+      fullName: 'Workflow Both Completion Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-both-completion@test.com',
+      fullName: 'Workflow Both Completion Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-both-completion@test.com',
+      fullName: 'Workflow Both Completion Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF both completion policy',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const adminToken = await signToken(admin);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'both-policy-completion.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+    expect(uploadRes.status).toBe(201);
+
+    const completedRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(completedRes.status).toBe(200);
+    expect(completedRes.body.completionReviewState).toBe('AWAITING_BOTH');
+
+    const verifyRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Organization verified first.' });
+    expect(verifyRes.status).toBe(201);
+    expect(verifyRes.body.status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+    expect(verifyRes.body.completionReviewState).toBe(
+      'AWAITING_CITIZEN_REVIEW',
+    );
+
+    const citizenConfirmRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Verified and satisfactory.' });
+    expect(citizenConfirmRes.status).toBe(201);
+    expect(citizenConfirmRes.body.status).toBe(ReportStatus.CLOSED);
+    expect(citizenConfirmRes.body.completionFinalizedByRole).toBe(
+      UserRole.CITIZEN,
     );
   });
 
