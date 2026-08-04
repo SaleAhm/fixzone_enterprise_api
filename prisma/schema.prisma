@@ -1022,6 +1022,10 @@ model Report {
   completionPolicySource            String?
   completionReviewState             String?
   completionReviewDeadlineAt        DateTime?
+  completionReviewProcessedAt       DateTime?
+  completionFallbackRule            String?
+  completionFinalActorType          String?
+  completionGovernanceHoldReason    String?
   citizenCompletionDecision         CompletionDecision?
   citizenCompletionDecidedAt        DateTime?
   organizationCompletionDecision    CompletionDecision?
@@ -1054,6 +1058,9 @@ model Report {
   @@index([assignedProviderId])
   @@index([assignedOrganizationId])
   @@index([status])
+  @@index([completionPolicy])
+  @@index([completionReviewState])
+  @@index([completionReviewDeadlineAt])
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])

@@ -27,6 +27,10 @@ import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dt
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
 import {
+  CompletionReviewQueueQueryDto,
+  ProcessCompletionReviewDeadlinesDto,
+} from './dto/completion-review-query.dto';
+import {
   OrganizationAcceptReportDto,
   OrganizationRejectReportDto,
 } from './dto/organization-intake-decision.dto';
@@ -216,6 +220,40 @@ export class ReportController {
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
   getResponsibilityReviewReports(@CurrentUser() user: CurrentAuthUser) {
     return this.reportService.getResponsibilityReviewReports(user);
+  }
+
+  @Get('organization/completion-review')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getOrganizationCompletionReviewQueue(
+    @CurrentUser() user: CurrentAuthUser,
+    @Query() query: CompletionReviewQueueQueryDto,
+  ) {
+    return this.reportService.getOrganizationCompletionReviewQueue(user, query);
+  }
+
+  @Get('organization/completion-review/:id')
+  @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getOrganizationCompletionReviewDetail(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.getOrganizationCompletionReviewDetail(id, user);
+  }
+
+  @Post('admin/completion-review/process-deadlines')
+  @Roles(
+    UserRole.SUPER_ADMIN,
+    UserRole.COMPLIANCE_ADMIN,
+    UserRole.REGULATORY_ADMIN,
+  )
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  processCompletionReviewDeadlines(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: ProcessCompletionReviewDeadlinesDto,
+  ) {
+    return this.reportService.processCompletionReviewDeadlines(user, dto);
   }
 
   // ===================== SINGLE REPORT =====================

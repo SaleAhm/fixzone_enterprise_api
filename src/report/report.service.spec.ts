@@ -793,6 +793,19 @@ describe('ReportService completion governance policy helpers', () => {
       citizenCompletionDecision?: CompletionDecision | null;
       organizationCompletionDecision?: CompletionDecision | null;
     }): void;
+    resolveCompletionPolicy(report: {
+      completionPolicy?: CompletionPolicy | null;
+      category?: string | null;
+      organization?: { profileData?: unknown } | null;
+    }): { policy: CompletionPolicy; source: string };
+    completionDeadlineSkipReason(report: {
+      status?: ReportStatus | null;
+      completionReviewState?: string | null;
+      citizenCompletionDecision?: CompletionDecision | null;
+      organizationCompletionDecision?: CompletionDecision | null;
+      completionGovernanceHoldReason?: string | null;
+      completionReviewProcessedAt?: Date | string | null;
+    }): string | null;
   };
   const service = new ReportService(
     {} as never,
@@ -901,5 +914,63 @@ describe('ReportService completion governance policy helpers', () => {
         completionReviewState: 'REWORK_REQUESTED',
       }),
     ).toThrow(ConflictException);
+  });
+
+  it('resolves category policy before organization default policy', () => {
+    expect(
+      service.resolveCompletionPolicy({
+        category: 'telecom infrastructure',
+        organization: {
+          profileData: {
+            completionPolicy: CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+            completionPoliciesByCategory: {
+              telecom: CompletionPolicy.BOTH_REQUIRED,
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      policy: CompletionPolicy.BOTH_REQUIRED,
+      source: 'ORGANIZATION_SERVICE_CATEGORY',
+    });
+  });
+
+  it('keeps report override above category policy', () => {
+    expect(
+      service.resolveCompletionPolicy({
+        completionPolicy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
+        category: 'sanitation',
+        organization: {
+          profileData: {
+            completionPoliciesByCategory: {
+              sanitation: CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      policy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
+      source: 'REPORT_OVERRIDE',
+    });
+  });
+
+  it('skips deadline fallback when blockers are active', () => {
+    expect(
+      service.completionDeadlineSkipReason({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionReviewState: 'REWORK_REQUESTED',
+      }),
+    ).toBe('active_rework');
+    expect(
+      service.completionDeadlineSkipReason({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionGovernanceHoldReason: 'Legal hold',
+      }),
+    ).toBe('governance_hold');
+    expect(
+      service.completionDeadlineSkipReason({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+      }),
+    ).toBeNull();
   });
 });

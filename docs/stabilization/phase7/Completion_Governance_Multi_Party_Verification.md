@@ -24,6 +24,10 @@ The backend adds durable report-level completion governance fields:
 - `completionPolicySource`
 - `completionReviewState`
 - `completionReviewDeadlineAt`
+- `completionReviewProcessedAt`
+- `completionFallbackRule`
+- `completionFinalActorType`
+- `completionGovernanceHoldReason`
 - `citizenCompletionDecision`
 - `citizenCompletionDecidedAt`
 - `organizationCompletionDecision`
@@ -59,11 +63,13 @@ Supported decisions:
 This tranche uses the safest available existing configuration sources without adding a new policy table:
 
 1. Existing report `completionPolicy`, when already persisted.
-2. Organization `profileData.completionPolicy`, resolved when provider completion is submitted.
-3. Platform default from `FIXZONE_COMPLETION_POLICY`.
-4. Fallback default: `CITIZEN_CONFIRMATION_REQUIRED`.
+2. Organization category policy from `profileData.completionPoliciesByCategory`, `profileData.categoryCompletionPolicies`, or `profileData.serviceConfiguration.completionPoliciesByCategory`.
+3. Platform category policy from `FIXZONE_COMPLETION_CATEGORY_POLICIES` or `FIXZONE_SERVICE_CATEGORY_COMPLETION_POLICIES` JSON.
+4. Organization `profileData.completionPolicy`, resolved when provider completion is submitted.
+5. Platform default from `FIXZONE_COMPLETION_POLICY`.
+6. Fallback default: `CITIZEN_CONFIRMATION_REQUIRED`.
 
-Service category policy was not introduced in this tranche because there is no existing durable category-policy structure suitable for that without adding a parallel policy system.
+Category matching reuses the existing category normalization and compatibility helpers used for responsibility routing. No duplicate category table was introduced.
 
 ## Lifecycle States
 
@@ -111,6 +117,8 @@ The citizen completion screen now shows policy guidance from the authoritative A
 
 The backend adds organization completion-review endpoints for organization-scoped operational users:
 
+- `GET /api/report/organization/completion-review`
+- `GET /api/report/organization/completion-review/:id`
 - `POST /api/report/:id/organization-completion/verify`
 - `POST /api/report/:id/organization-completion/rework`
 
@@ -126,6 +134,8 @@ Organization verification:
 - closes only when the policy is satisfied;
 - does not override active rework or dispute states;
 - creates audit and report-activity records.
+
+The organization queue is named `Completion Review` in the Flutter admin workspace. It is visible only to `ORG_ADMIN` and `DISPATCH_OFFICER` users with an organization context. It lists organization-owned reports waiting in completion governance, including tracking ID, title, category, location, provider, provider completion timestamp, applied policy, citizen and organization decision labels, review state, deadline status, dispute/rework flags, and evidence count. It provides loading, empty, error, manual refresh, duplicate-submission prevention, verify confirmation, and required rework-reason flows.
 
 Organization rework:
 
@@ -148,7 +158,7 @@ Super Admin remains the exceptional governance actor rather than an ordinary ver
 - final actor and role;
 - closure or dispute reason.
 
-Dedicated Super Admin resolution endpoints, policy override controls, compliance holds, and governed reopening were not completed in this tranche.
+Dedicated Super Admin resolution endpoints, policy override controls, compliance hold actions, and governed reopening were not completed in this tranche. The backend now has a durable `completionGovernanceHoldReason` field that the deadline processor respects, but no Super Admin UI or action endpoint writes it yet.
 
 ## Dispute And Rework
 
@@ -162,24 +172,36 @@ The broader dispute model was not expanded in this tranche. Existing dispute end
 
 `AUTO_CLOSE_AFTER_REVIEW_WINDOW` now persists `completionReviewDeadlineAt` based on `FIXZONE_COMPLETION_REVIEW_WINDOW_HOURS`, defaulting to 72 hours.
 
-No scheduler was added. No automatic closure processor endpoint was completed in this tranche. Future work must add an idempotent processing path before this policy can be operationally relied on for timed closure.
+This tranche adds an idempotent protected processor endpoint:
 
-No citizen approval is fabricated after timeout.
+- `POST /api/report/admin/completion-review/process-deadlines`
+
+Authorized roles:
+
+- `SUPER_ADMIN`
+- `COMPLIANCE_ADMIN`
+- `REGULATORY_ADMIN`
+
+The processor closes only reports that are still `COMPLETED_BY_PROVIDER`, use `AUTO_CLOSE_AFTER_REVIEW_WINDOW`, and have a deadline at or before processing time. It skips active dispute, active rework, governance hold, already processed, and already closed reports. It records `completionReviewProcessedAt`, `completionFallbackRule`, `completionFinalActorType`, final actor role, closure reason, report activity, audit event, and ordinary closure notifications.
+
+No scheduler module was found or enabled. The processor response explicitly reports `automatedSchedulerActive: false`; an approved cron or worker must call this endpoint before review-window closure is truly automated. No citizen or organization approval is fabricated after timeout.
 
 ## Schema And Migration
 
 Migration:
 
 - `prisma/migrations/20260804143000_completion_governance_fields/migration.sql`
+- `prisma/migrations/20260804162000_completion_governance_operational_fields/migration.sql`
 
 The migration is additive and backward-compatible:
 
 - creates `CompletionPolicy`;
 - creates `CompletionDecision`;
 - adds nullable governance columns to `Report`;
-- adds indexes for policy, review state, and review deadline.
+- adds indexes for policy, review state, and review deadline;
+- adds processor metadata fields for fallback authority and operational holds.
 
-Local migration deployment was run against the local development database only. No database reset was performed.
+Migration deployment was run against the isolated local development database only. The first local attempt exposed duplicate index statements because `20260804143000_completion_governance_fields` had already created the policy, review-state, and deadline indexes. The operational migration was corrected to add only the four nullable processor/hold columns; the local failed attempt was resolved without resetting the database. `prisma migrate status` now reports the local schema as up to date. No database reset was performed.
 
 ## API Contracts
 
@@ -203,6 +225,36 @@ Citizen completion review responses now include `completionGovernance` so client
 
 Enterprise report details now include `enterpriseDetails.completionGovernance`.
 
+Organization completion review queue response:
+
+```json
+{
+  "workspace": "Completion Review",
+  "organizationId": "org-id",
+  "total": 1,
+  "limit": 25,
+  "offset": 0,
+  "items": [
+    {
+      "id": "report-id",
+      "trackingId": "report-id",
+      "title": "Street light repaired",
+      "category": "Lighting",
+      "location": "Human-readable location",
+      "providerCompletedAt": "2026-08-04T14:30:00.000Z",
+      "policy": "Citizen and organization approval required",
+      "policyCode": "BOTH_REQUIRED",
+      "policySource": "ORGANIZATION_SERVICE_CATEGORY",
+      "citizenDecisionStatus": "Confirmed",
+      "organizationDecisionStatus": "Pending",
+      "reviewState": "Citizen confirmed - organization pending",
+      "reviewDeadlineStatus": "No deadline",
+      "evidenceCount": 2
+    }
+  ]
+}
+```
+
 ## Authorization
 
 Implemented and tested:
@@ -211,6 +263,7 @@ Implemented and tested:
 - cross-tenant citizen review is rejected;
 - provider cannot confirm as citizen;
 - organization users must belong to the report organization to verify;
+- organization queue and detail access are scoped to the authenticated user's organization;
 - duplicate citizen confirmation is rejected;
 - active rework or dispute blocks ordinary closure paths.
 
@@ -227,9 +280,9 @@ New organization actions record:
 - `ORGANIZATION_VERIFIED_COMPLETION`
 - `ORGANIZATION_REQUESTED_COMPLETION_REWORK`
 
-Provider completion now sends truthful in-app notifications to the required reviewer group for the selected policy. Citizen confirmation under a still-pending organization policy notifies organization operators. Organization rework notifies the assigned provider and citizen. No email, SMS, or push delivery is claimed.
+Provider completion now sends truthful in-app notifications to the required reviewer group for the selected policy. Citizen confirmation under a still-pending organization policy notifies organization operators. Organization rework notifies the assigned provider and citizen. Deadline fallback sends the existing closure notifications and records an explicit activity event. No email, SMS, or push delivery is claimed.
 
-Duplicate citizen confirmation is rejected before producing another notification.
+Duplicate citizen confirmation is rejected before producing another notification. Persistent in-app notification creation now checks for an existing same user/report/type/title/message record before creating another copy, which makes deadline retries and repeated no-op actions safer.
 
 ## Analytics Implications
 
@@ -250,21 +303,22 @@ Existing analytics queries were not broadly rewritten in this tranche.
 Backend coverage added:
 
 - policy helper tests for citizen-only, organization-only, both-required, either-party, admin-resolution, rework/dispute states, and blockers;
+- category policy precedence tests for report override and organization service-category policy;
+- deadline skip tests for rework and hold blockers;
 - e2e organization-confirmation policy where citizen feedback remains saved until organization verification closes;
 - e2e both-required policy where either approval order waits for the missing approval;
 - existing duplicate citizen confirmation test preserved and passing.
 
-Frontend validation reused existing tests for provider state and notification navigation plus the full Flutter suite. No new widget test was added for the citizen policy guidance text in this tranche.
+Frontend validation added admin navigation coverage for the organization `Completion Review` destination. No widget test was added for the new queue card action dialogs in this tranche.
 
 ## Remaining Known Limitations
 
-- No full organization completion-review queue UI yet.
+- Organization completion-review queue UI exists, but browser UAT with authenticated organization users is still pending.
 - No Super Admin governed resolution endpoint or UI yet.
-- No idempotent deadline processing endpoint or scheduler yet.
-- No service-category policy precedence yet.
+- No scheduler/worker is installed for the deadline processor yet.
 - No expanded dispute model beyond blocking ordinary closure and preserving rework/dispute state.
 - No repository-wide ESLint cleanup was attempted because strict unsafe-typing debt is pre-existing and out of scope.
-- Frontend organization verification client methods exist, but the full organization review screen is still future work.
+- Super Admin compliance hold and report policy override actions are still future work.
 
 ## Browser UAT Checklist
 
@@ -277,3 +331,5 @@ Frontend validation reused existing tests for provider state and notification na
 7. Verify duplicate citizen confirmation after closure is rejected.
 8. Inspect Super Admin report detail and confirm completion governance fields are visible in API responses.
 9. Confirm provider completion evidence galleries remain available and previous evidence is not deleted by revised completion.
+10. Open organization `Completion Review`; verify loading, empty, error, verify, and rework reason flows.
+11. Call the protected deadline processor with a past review-window report and confirm fallback closure records authority without adding citizen or organization approval.

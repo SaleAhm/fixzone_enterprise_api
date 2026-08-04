@@ -34,6 +34,10 @@ import { UpdateReportStatusDto } from './dto/update-report-status.dto';
 import { UploadCompletionEvidenceDto } from './dto/upload-completion-evidence.dto';
 import { UploadReportEvidenceDto } from './dto/upload-report-evidence.dto';
 import { AdminDashboardQueryDto } from './dto/admin-dashboard-query.dto';
+import {
+  CompletionReviewQueueQueryDto,
+  ProcessCompletionReviewDeadlinesDto,
+} from './dto/completion-review-query.dto';
 import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
@@ -113,6 +117,10 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   completionPolicySource?: string | null;
   completionReviewState?: string | null;
   completionReviewDeadlineAt?: Date | string | null;
+  completionReviewProcessedAt?: Date | string | null;
+  completionFallbackRule?: string | null;
+  completionFinalActorType?: string | null;
+  completionGovernanceHoldReason?: string | null;
   citizenCompletionDecision?: CompletionDecision | null;
   citizenCompletionDecidedAt?: Date | string | null;
   organizationCompletionDecision?: CompletionDecision | null;
@@ -130,6 +138,9 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   lastAssignmentReason?: string | null;
   assignedProvider?: unknown;
 };
+
+const COMPLETION_REVIEW_WINDOW_FALLBACK_RULE =
+  'AUTO_CLOSE_AFTER_REVIEW_WINDOW_DEADLINE_EXPIRED';
 
 const AUTOMATIC_ORGANIZATION_REVIEW_SOURCE = 'Automatic intake match';
 const ORGANIZATION_ACCEPTED_SOURCE = 'Organization accepted report';
@@ -1649,6 +1660,9 @@ export class ReportService {
         organizationDecision: null,
       });
       data.completionReviewDeadlineAt = reviewDeadline;
+      data.completionReviewProcessedAt = null;
+      data.completionFallbackRule = null;
+      data.completionFinalActorType = null;
       data.citizenCompletionDecision = CompletionDecision.PENDING;
       data.citizenCompletionDecidedAt = null;
       data.organizationCompletionDecision = CompletionDecision.PENDING;
@@ -2248,6 +2262,175 @@ export class ReportService {
     };
   }
 
+  async getOrganizationCompletionReviewQueue(
+    user: JwtUser,
+    query: CompletionReviewQueueQueryDto = {},
+  ) {
+    const organizationId = this.requireUserOrganizationId(user);
+    if (!this.isAdmin(user) && !this.isDispatch(user)) {
+      throw new ForbiddenException('Organization review access required');
+    }
+    const limit = query.limit ?? 25;
+    const offset = query.offset ?? 0;
+    const where: Prisma.ReportWhereInput = {
+      organizationId,
+      status: ReportStatus.COMPLETED_BY_PROVIDER,
+      completionReviewState: { not: 'CLOSED' },
+      ...(query.category ? { category: query.category } : {}),
+      ...(query.state ? { completionReviewState: query.state } : {}),
+      OR: [
+        {
+          completionPolicy: {
+            in: [
+              CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
+              CompletionPolicy.BOTH_REQUIRED,
+              CompletionPolicy.CITIZEN_OR_ORGANIZATION,
+              CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+              CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
+            ],
+          },
+        },
+        { completionReviewState: { in: ['DISPUTED', 'REWORK_REQUESTED'] } },
+      ],
+    };
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: this.includeRelations(),
+        orderBy: [
+          { completionReviewDeadlineAt: 'asc' },
+          { completedByProviderAt: 'asc' },
+          { createdAt: 'asc' },
+        ],
+        take: limit,
+        skip: offset,
+      }),
+    ]);
+    const evidenceCounts = await this.evidenceCountsForReports(
+      reports.map((report) => report.id),
+    );
+    return {
+      workspace: 'Completion Review',
+      organizationId,
+      total,
+      limit,
+      offset,
+      items: reports.map((report) =>
+        this.completionReviewQueueItem(report, evidenceCounts.get(report.id) ?? 0),
+      ),
+    };
+  }
+
+  async getOrganizationCompletionReviewDetail(reportId: string, user: JwtUser) {
+    const report = await this.getOrganizationCompletionReviewReport(
+      reportId,
+      user,
+      { allowGovernanceStates: true },
+    );
+    return this.withEnterpriseReportDetails({
+      ...report,
+      completionGovernance: this.completionGovernanceSummary(report),
+    } as any);
+  }
+
+  async processCompletionReviewDeadlines(
+    user: JwtUser,
+    dto: ProcessCompletionReviewDeadlinesDto = {},
+  ) {
+    const processorRoles: UserRole[] = [
+        UserRole.SUPER_ADMIN,
+        UserRole.COMPLIANCE_ADMIN,
+        UserRole.REGULATORY_ADMIN,
+      ];
+    if (!processorRoles.includes(user.role)) {
+      throw new ForbiddenException('Platform completion processing required');
+    }
+    const now = new Date();
+    const limit = dto.limit ?? 100;
+    const candidates = await this.prisma.report.findMany({
+      where: {
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionPolicy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+        completionReviewDeadlineAt: { lte: now },
+      },
+      include: this.includeRelations(),
+      orderBy: [{ completionReviewDeadlineAt: 'asc' }, { id: 'asc' }],
+      take: limit,
+    });
+    const processed: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    for (const report of candidates) {
+      const skipReason = this.completionDeadlineSkipReason(report);
+      if (skipReason) {
+        skipped.push({ id: report.id, reason: skipReason });
+        continue;
+      }
+      if (dto.dryRun === true || dto.dryRun === 'true') {
+        processed.push(report.id);
+        continue;
+      }
+      const updated = await this.prisma.report.update({
+        where: {
+          id: report.id,
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+        },
+        data: {
+          status: ReportStatus.CLOSED,
+          completionReviewState: 'CLOSED',
+          completionReviewProcessedAt: now,
+          completionFallbackRule: COMPLETION_REVIEW_WINDOW_FALLBACK_RULE,
+          completionFinalActorType: 'SYSTEM_REVIEW_WINDOW',
+          completionFinalizedAt: now,
+          completionFinalizedById: this.getUserId(user),
+          completionFinalizedByRole: user.role,
+          completionClosureReason:
+            'Review window expired; fallback closure authority applied without recording citizen or organization approval.',
+        },
+        include: this.includeRelations(),
+      });
+      await this.notifyStatusChange(updated);
+      await this.recordReportActivity(
+        updated.id,
+        'COMPLETION_REVIEW_WINDOW_FALLBACK_CLOSED',
+        user,
+        {
+          organizationId: updated.organizationId,
+          fromStatus: ReportStatus.COMPLETED_BY_PROVIDER,
+          toStatus: ReportStatus.CLOSED,
+          providerId: updated.assignedProviderId ?? undefined,
+          reason: updated.completionClosureReason ?? undefined,
+          metadata: {
+            policy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+            deadlineAt: updated.completionReviewDeadlineAt,
+            processedAt: now,
+            fallbackRule: COMPLETION_REVIEW_WINDOW_FALLBACK_RULE,
+            finalActorType: 'SYSTEM_REVIEW_WINDOW',
+          },
+        },
+      );
+      await this.audit('Completion Review Window Fallback Closed', user, {
+        targetType: 'Report',
+        targetId: updated.id,
+        organizationId: updated.organizationId,
+        completionPolicy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+        fallbackRule: COMPLETION_REVIEW_WINDOW_FALLBACK_RULE,
+      });
+      processed.push(updated.id);
+    }
+    return {
+      processedCount: processed.length,
+      skippedCount: skipped.length,
+      processed,
+      skipped,
+      dryRun: dto.dryRun === true || dto.dryRun === 'true',
+      automatedSchedulerActive: false,
+      schedulerRequirement:
+        'Invoke this protected endpoint from an approved cron or worker until a scheduler module is enabled.',
+    };
+  }
+
   // ===================== DASHBOARD =====================
 
   async getDashboardSummary(user: JwtUser, query?: AdminDashboardQueryDto) {
@@ -2615,6 +2798,7 @@ export class ReportService {
   private async getOrganizationCompletionReviewReport(
     reportId: string,
     user: JwtUser,
+    options: { allowGovernanceStates?: boolean } = {},
   ) {
     if (!this.isAdmin(user) && !this.isDispatch(user)) {
       throw new ForbiddenException('Only organization operators can verify');
@@ -2630,9 +2814,16 @@ export class ReportService {
     const duplicateClosedVerification =
       report.status === ReportStatus.CLOSED &&
       report.organizationCompletionDecision === CompletionDecision.VERIFIED;
+    const governanceReviewState =
+      options.allowGovernanceStates &&
+      report.status === ReportStatus.COMPLETED_BY_PROVIDER &&
+      ['DISPUTED', 'REWORK_REQUESTED', 'AWAITING_ADMIN_RESOLUTION'].includes(
+        report.completionReviewState ?? '',
+      );
     if (
       report.status !== ReportStatus.COMPLETED_BY_PROVIDER &&
-      !duplicateClosedVerification
+      !duplicateClosedVerification &&
+      !governanceReviewState
     ) {
       throw new ForbiddenException(
         'Report is not awaiting completion verification',
@@ -2643,10 +2834,32 @@ export class ReportService {
 
   private resolveCompletionPolicy(report: {
     completionPolicy?: CompletionPolicy | null;
+    category?: string | null;
     organization?: { profileData?: Prisma.JsonValue | null } | null;
   }): CompletionPolicyResolution {
     if (report.completionPolicy) {
       return { policy: report.completionPolicy, source: 'REPORT_OVERRIDE' };
+    }
+
+    const organizationCategoryPolicy = this.completionPolicyFromCategoryMap(
+      report.organization?.profileData,
+      report.category,
+    );
+    if (organizationCategoryPolicy) {
+      return {
+        policy: organizationCategoryPolicy,
+        source: 'ORGANIZATION_SERVICE_CATEGORY',
+      };
+    }
+
+    const platformCategoryPolicy = this.completionPolicyFromPlatformCategory(
+      report.category,
+    );
+    if (platformCategoryPolicy) {
+      return {
+        policy: platformCategoryPolicy,
+        source: 'PLATFORM_SERVICE_CATEGORY',
+      };
     }
 
     const organizationPolicy = this.completionPolicyFromProfile(
@@ -2682,6 +2895,80 @@ export class ReportService {
     if (Array.isArray(profileData)) return null;
     const profile = profileData as Record<string, unknown>;
     return this.normalizeCompletionPolicy(profile.completionPolicy);
+  }
+
+  private completionPolicyFromCategoryMap(
+    profileData: Prisma.JsonValue | null | undefined,
+    category: string | null | undefined,
+  ) {
+    const normalizedCategory = this.normalizeResponsibilityCategory(
+      category ?? '',
+    );
+    if (!normalizedCategory || !profileData || typeof profileData !== 'object') {
+      return null;
+    }
+    if (Array.isArray(profileData)) return null;
+    const profile = profileData as Record<string, unknown>;
+    const maps = [
+      profile.completionPoliciesByCategory,
+      profile.categoryCompletionPolicies,
+      this.profilePath(profile, ['serviceConfiguration', 'completionPoliciesByCategory']),
+    ];
+    for (const map of maps) {
+      const policy = this.policyFromCategoryRecord(map, normalizedCategory);
+      if (policy) return policy;
+    }
+    return null;
+  }
+
+  private completionPolicyFromPlatformCategory(
+    category: string | null | undefined,
+  ) {
+    const normalizedCategory = this.normalizeResponsibilityCategory(
+      category ?? '',
+    );
+    if (!normalizedCategory) return null;
+    const raw =
+      process.env.FIXZONE_COMPLETION_CATEGORY_POLICIES ??
+      process.env.FIXZONE_SERVICE_CATEGORY_COMPLETION_POLICIES;
+    if (!raw) return null;
+    try {
+      return this.policyFromCategoryRecord(JSON.parse(raw), normalizedCategory);
+    } catch {
+      return null;
+    }
+  }
+
+  private policyFromCategoryRecord(
+    value: unknown,
+    normalizedCategory: string,
+  ) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    for (const [key, policy] of Object.entries(record)) {
+      if (
+        this.categoriesCompatible(
+          this.normalizeResponsibilityCategory(key),
+          normalizedCategory,
+        )
+      ) {
+        const normalizedPolicy = this.normalizeCompletionPolicy(policy);
+        if (normalizedPolicy) return normalizedPolicy;
+      }
+    }
+    return null;
+  }
+
+  private profilePath(
+    value: Record<string, unknown>,
+    path: string[],
+  ): unknown {
+    return path.reduce<unknown>((current, key) => {
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
+        return null;
+      }
+      return (current as Record<string, unknown>)[key];
+    }, value);
   }
 
   private normalizeCompletionPolicy(value: unknown) {
@@ -2808,6 +3095,10 @@ export class ReportService {
     completionPolicySource?: string | null;
     completionReviewState?: string | null;
     completionReviewDeadlineAt?: Date | string | null;
+    completionReviewProcessedAt?: Date | string | null;
+    completionFallbackRule?: string | null;
+    completionFinalActorType?: string | null;
+    completionGovernanceHoldReason?: string | null;
     citizenCompletionDecision?: CompletionDecision | null;
     citizenCompletionDecidedAt?: Date | string | null;
     organizationCompletionDecision?: CompletionDecision | null;
@@ -2829,6 +3120,10 @@ export class ReportService {
         report.completionReviewState ??
         (report.completionFinalizedAt ? 'CLOSED' : 'AWAITING_CITIZEN_REVIEW'),
       reviewDeadlineAt: report.completionReviewDeadlineAt ?? null,
+      reviewProcessedAt: report.completionReviewProcessedAt ?? null,
+      fallbackRule: report.completionFallbackRule ?? null,
+      finalActorType: report.completionFinalActorType ?? null,
+      governanceHoldReason: report.completionGovernanceHoldReason ?? null,
       citizenDecision: report.citizenCompletionDecision ?? null,
       citizenDecidedAt: report.citizenCompletionDecidedAt ?? null,
       organizationDecision: report.organizationCompletionDecision ?? null,
@@ -2841,6 +3136,191 @@ export class ReportService {
       closureReason: report.completionClosureReason ?? null,
       disputeReason: report.completionDisputeReason ?? null,
     };
+  }
+
+  private async evidenceCountsForReports(reportIds: string[]) {
+    const counts = new Map<string, number>();
+    if (reportIds.length === 0) return counts;
+    const grouped = await this.prisma.evidenceRecord.groupBy({
+      by: ['relatedEntityId'],
+      where: {
+        relatedEntityType: EvidenceRelatedEntityType.REPORT,
+        relatedEntityId: { in: reportIds },
+      },
+      _count: { _all: true },
+    });
+    grouped.forEach((item) =>
+      counts.set(item.relatedEntityId, item._count._all),
+    );
+    return counts;
+  }
+
+  private completionReviewQueueItem(report: any, evidenceCount: number) {
+    const governance = this.completionGovernanceSummary(report);
+    const deadlineAt = report.completionReviewDeadlineAt
+      ? new Date(report.completionReviewDeadlineAt)
+      : null;
+    const submittedAt = report.completedByProviderAt
+      ? new Date(report.completedByProviderAt)
+      : null;
+    const now = Date.now();
+    return {
+      id: report.id,
+      trackingId: report.id,
+      title: report.title,
+      category: report.category,
+      location: this.humanReportLocation(report),
+      provider: report.assignedProvider
+        ? {
+            id: report.assignedProvider.id,
+            name: report.assignedProvider.fullName,
+            email: report.assignedProvider.email,
+          }
+        : null,
+      providerCompletedAt: report.completedByProviderAt ?? null,
+      policy: this.humanCompletionPolicy(governance.policy),
+      policyCode: governance.policy,
+      policySource: governance.policySource,
+      citizenDecisionStatus: this.humanCompletionDecision(
+        governance.citizenDecision,
+      ),
+      organizationDecisionStatus: this.humanCompletionDecision(
+        governance.organizationDecision,
+      ),
+      reviewState: this.humanCompletionReviewState(
+        governance.reviewState,
+        governance,
+      ),
+      reviewStateCode: governance.reviewState,
+      reviewAgeHours: submittedAt
+        ? Math.max(0, Math.floor((now - submittedAt.getTime()) / 36_000) / 100)
+        : null,
+      reviewDeadlineAt: report.completionReviewDeadlineAt ?? null,
+      reviewDeadlineStatus: deadlineAt
+        ? deadlineAt.getTime() <= now
+          ? 'Expired'
+          : 'Pending'
+        : 'No deadline',
+      dispute: governance.reviewState === 'DISPUTED',
+      rework: governance.reviewState === 'REWORK_REQUESTED',
+      evidenceCount,
+    };
+  }
+
+  private humanReportLocation(report: {
+    locationName?: string | null;
+    locationAddress?: string | null;
+    locationLandmark?: string | null;
+    location?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+  }) {
+    return (
+      [
+        report.locationName,
+        report.locationAddress,
+        report.locationLandmark,
+        report.location,
+      ]
+        .filter(Boolean)
+        .join(', ') ||
+      (report.latitude && report.longitude
+        ? `${report.latitude}, ${report.longitude}`
+        : 'Location unavailable')
+    );
+  }
+
+  private humanCompletionPolicy(policy: CompletionPolicy | string | null) {
+    switch (policy) {
+      case CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED:
+        return 'Citizen confirmation required';
+      case CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED:
+        return 'Organization verification required';
+      case CompletionPolicy.BOTH_REQUIRED:
+        return 'Citizen and organization approval required';
+      case CompletionPolicy.CITIZEN_OR_ORGANIZATION:
+        return 'Citizen or organization approval required';
+      case CompletionPolicy.ADMIN_RESOLUTION_REQUIRED:
+        return 'Administrator resolution required';
+      case CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW:
+        return 'Review window with fallback closure';
+      default:
+        return 'Completion policy pending';
+    }
+  }
+
+  private humanCompletionDecision(decision: CompletionDecision | string | null) {
+    switch (decision) {
+      case CompletionDecision.CONFIRMED:
+        return 'Confirmed';
+      case CompletionDecision.VERIFIED:
+        return 'Verified';
+      case CompletionDecision.REWORK_REQUESTED:
+        return 'Rework requested';
+      case CompletionDecision.DISPUTED:
+        return 'Disputed';
+      case CompletionDecision.ESCALATED:
+        return 'Escalated';
+      case CompletionDecision.PENDING:
+        return 'Pending';
+      default:
+        return 'Not recorded';
+    }
+  }
+
+  private humanCompletionReviewState(
+    state: string | null,
+    governance: ReturnType<ReportService['completionGovernanceSummary']>,
+  ) {
+    if (state === 'DISPUTED') return 'Disputed';
+    if (state === 'REWORK_REQUESTED') return 'Citizen requested rework';
+    if (state === 'AWAITING_ADMIN_RESOLUTION') {
+      return 'Administrative resolution required';
+    }
+    if (state === 'AWAITING_REVIEW_WINDOW') return 'Review window expiring';
+    if (state === 'AWAITING_BOTH') return 'Awaiting both approvals';
+    if (
+      state === 'AWAITING_ORGANIZATION_VERIFICATION' &&
+      governance.citizenDecision === CompletionDecision.CONFIRMED
+    ) {
+      return 'Citizen confirmed - organization pending';
+    }
+    if (state === 'AWAITING_ORGANIZATION_VERIFICATION') {
+      return 'Awaiting organization verification';
+    }
+    if (state === 'AWAITING_CITIZEN_REVIEW') {
+      return 'Organization verified - citizen pending';
+    }
+    if (state === 'CLOSED') return 'Closed';
+    return 'Awaiting completion review';
+  }
+
+  private completionDeadlineSkipReason(report: {
+    status?: ReportStatus | null;
+    completionReviewState?: string | null;
+    citizenCompletionDecision?: CompletionDecision | null;
+    organizationCompletionDecision?: CompletionDecision | null;
+    completionGovernanceHoldReason?: string | null;
+    completionReviewProcessedAt?: Date | string | null;
+  }) {
+    if (report.status === ReportStatus.CLOSED) return 'already_closed';
+    if (report.completionReviewProcessedAt) return 'already_processed';
+    if (report.completionGovernanceHoldReason) return 'governance_hold';
+    if (
+      report.completionReviewState === 'DISPUTED' ||
+      report.citizenCompletionDecision === CompletionDecision.DISPUTED ||
+      report.organizationCompletionDecision === CompletionDecision.ESCALATED
+    ) {
+      return 'active_dispute';
+    }
+    if (
+      report.completionReviewState === 'REWORK_REQUESTED' ||
+      report.citizenCompletionDecision === CompletionDecision.REWORK_REQUESTED ||
+      report.organizationCompletionDecision === CompletionDecision.REWORK_REQUESTED
+    ) {
+      return 'active_rework';
+    }
+    return null;
   }
 
   private getUserId(user: JwtUser) {
@@ -4091,6 +4571,19 @@ export class ReportService {
   }) {
     const notification = (this.prisma as any).notification;
     if (!notification?.create) return;
+    if (notification.findFirst) {
+      const existing = await notification.findFirst({
+        where: {
+          userId: data.userId,
+          reportId: data.reportId ?? null,
+          type: data.type,
+          title: data.title,
+          message: data.message,
+        },
+        select: { id: true },
+      });
+      if (existing) return;
+    }
     await notification.create({ data });
   }
 
