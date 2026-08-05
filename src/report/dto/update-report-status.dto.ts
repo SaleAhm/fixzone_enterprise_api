@@ -11,7 +11,15 @@ import {
 } from 'class-validator';
 import { ReportStatus } from '@prisma/client';
 
-const LOCATION_SOURCES = ['DEVICE_GPS', 'MANUAL_PIN', 'UNKNOWN'] as const;
+const LOCATION_SOURCES = [
+  'DEVICE_GPS',
+  'MAP_PIN',
+  'ADDRESS_SEARCH',
+  'MANUAL_TEXT',
+  'PHOTO_METADATA',
+  'MANUAL_PIN',
+  'UNKNOWN',
+] as const;
 
 export class UpdateReportStatusDto {
   @IsEnum(ReportStatus)

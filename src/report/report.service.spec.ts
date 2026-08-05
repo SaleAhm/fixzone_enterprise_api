@@ -8,15 +8,135 @@ import {
   ReportStatus,
   UserRole,
 } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { ReportService } from './report.service';
 
+type TestUser = {
+  role: UserRole;
+  organizationId?: string | null;
+};
+
+type AssignmentReport = {
+  status: string;
+  assignedProviderId: string | null;
+  organizationId: string;
+};
+
+type OrganizationCandidate = {
+  eligible: boolean;
+  activeProviderCount: number;
+  capabilityBackedProviderCount: number;
+  inheritedProfileProviderCount: number;
+  coveredCategories: string[];
+  categoryMatch: {
+    source: string;
+    normalizedCategory: string;
+    matchedMaintenanceCapabilities: string[];
+  };
+  confidence: string;
+  reasons: string[];
+  diagnostics: {
+    providerCapabilitySource: string;
+    finalEligibilityDecision: boolean;
+  };
+};
+
+type ResponsibilityResult = {
+  outcome: string;
+  organization: { id: string } | null;
+  matchFactors: string[];
+  diagnostics: {
+    outcome: string;
+    candidateCount: number;
+    eligibleCandidateCount?: number;
+    proposedOrganizationId?: string;
+    reasonCode: string;
+    report?: {
+      category?: string | null;
+      normalizedCategory?: string | null;
+      location?: { text?: string | null };
+    };
+    candidates?: Array<{
+      organizationId: string;
+      coverageAreas: string[];
+      eligible: boolean;
+    }>;
+  };
+};
+
+type ProviderResponseMetric = {
+  averageHours: number | null;
+  sampleCount: number;
+  reason: string | null;
+};
+
+type ProviderResponseReport = {
+  status: string;
+  assignedAt?: Date | null;
+  activities?: Array<{
+    actorUserId?: string | null;
+    providerId?: string | null;
+    createdAt?: Date | null;
+  }>;
+};
+
+type ReportServiceInternals = {
+  assertAssignmentAllowed(
+    report: AssignmentReport,
+    providerOrganizationId: string | null,
+    providerLinkedToReportOrgOrUser: boolean | TestUser,
+    userOrProviderId?: TestUser | string,
+    providerId?: string,
+  ): void;
+  assertStatusTransitionAllowed(
+    report: AssignmentReport,
+    nextStatus: ReportStatus,
+    user: TestUser,
+    userId: string,
+  ): void;
+  enforceMonthlyReportQuota(organizationId: string): Promise<void>;
+  serializeOrganizationCandidate(
+    organization: unknown,
+    category: string,
+    report?: { location?: string; title?: string },
+  ): OrganizationCandidate;
+  resolveReportResponsibility(input: {
+    title: string;
+    description: string;
+    category: string;
+    location: string;
+  }): Promise<ResponsibilityResult>;
+  calculateProviderAverageResponse(
+    reports: ProviderResponseReport[],
+    providerId: string,
+  ): ProviderResponseMetric;
+};
+
+type ReportServicePublic = Pick<
+  ReportService,
+  | 'getAssignedReports'
+  | 'getReportById'
+  | 'createReportMessage'
+  | 'rejectAssignment'
+>;
+
+type TestReportService = ReportServicePublic & ReportServiceInternals;
+
+function prismaMock(value: unknown): PrismaService {
+  return value as PrismaService;
+}
+
+function reportService(value: unknown = {}): TestReportService {
+  return new ReportService(prismaMock(value)) as unknown as TestReportService;
+}
+
 describe('ReportService workflow validators', () => {
-  const service = new ReportService({} as any);
+  const service = reportService();
 
   describe('assertAssignmentAllowed', () => {
     it('allows same-org admin assignment from PENDING', () => {
       expect(() =>
-        (service as any).assertAssignmentAllowed(
+        service.assertAssignmentAllowed(
           {
             status: ReportStatus.PENDING,
             assignedProviderId: null,
@@ -33,7 +153,7 @@ describe('ReportService workflow validators', () => {
 
     it('allows assignment when a pending status arrives in lowercase', () => {
       expect(() =>
-        (service as any).assertAssignmentAllowed(
+        service.assertAssignmentAllowed(
           {
             status: 'pending',
             assignedProviderId: null,
@@ -51,7 +171,7 @@ describe('ReportService workflow validators', () => {
 
     it('rejects assignment when the report is already assigned', () => {
       expect(() =>
-        (service as any).assertAssignmentAllowed(
+        service.assertAssignmentAllowed(
           {
             status: ReportStatus.ASSIGNED,
             assignedProviderId: 'provider-1',
@@ -72,7 +192,7 @@ describe('ReportService workflow validators', () => {
 
     it('rejects cross-org assignment for org admins', () => {
       expect(() =>
-        (service as any).assertAssignmentAllowed(
+        service.assertAssignmentAllowed(
           {
             status: ReportStatus.PENDING,
             assignedProviderId: null,
@@ -89,7 +209,7 @@ describe('ReportService workflow validators', () => {
 
     it('allows super admin cross-org assignment from PENDING', () => {
       expect(() =>
-        (service as any).assertAssignmentAllowed(
+        service.assertAssignmentAllowed(
           {
             status: ReportStatus.PENDING,
             assignedProviderId: null,
@@ -108,7 +228,7 @@ describe('ReportService workflow validators', () => {
   describe('assertStatusTransitionAllowed', () => {
     it('allows provider to move assigned report to in progress', () => {
       expect(() =>
-        (service as any).assertStatusTransitionAllowed(
+        service.assertStatusTransitionAllowed(
           {
             status: ReportStatus.ASSIGNED,
             assignedProviderId: 'provider-1',
@@ -126,7 +246,7 @@ describe('ReportService workflow validators', () => {
 
     it('rejects provider skipping from assigned to completed', () => {
       expect(() =>
-        (service as any).assertStatusTransitionAllowed(
+        service.assertStatusTransitionAllowed(
           {
             status: ReportStatus.ASSIGNED,
             assignedProviderId: 'provider-1',
@@ -148,7 +268,7 @@ describe('ReportService workflow validators', () => {
 
     it('rejects updates from non-owner providers', () => {
       expect(() =>
-        (service as any).assertStatusTransitionAllowed(
+        service.assertStatusTransitionAllowed(
           {
             status: ReportStatus.ASSIGNED,
             assignedProviderId: 'provider-1',
@@ -166,7 +286,7 @@ describe('ReportService workflow validators', () => {
 
     it('rejects changes to closed reports even for super admins', () => {
       expect(() =>
-        (service as any).assertStatusTransitionAllowed(
+        service.assertStatusTransitionAllowed(
           {
             status: ReportStatus.CLOSED,
             assignedProviderId: 'provider-1',
@@ -190,44 +310,45 @@ describe('ReportService workflow validators', () => {
 
 describe('ReportService monthly quota guard', () => {
   it('allows reporting when monthly quota is unset', async () => {
-    const service = new ReportService({
+    const service = reportService({
       organization: {
         findUnique: jest
           .fn()
           .mockResolvedValue({ allowedReportsPerMonth: null }),
       },
       report: { count: jest.fn() },
-    } as any);
+    });
 
     await expect(
-      (service as any).enforceMonthlyReportQuota('org-1'),
+      service.enforceMonthlyReportQuota('org-1'),
     ).resolves.toBeUndefined();
   });
 
   it('rejects report creation after monthly quota is reached', async () => {
-    const service = new ReportService({
+    const service = reportService({
       organization: {
         findUnique: jest.fn().mockResolvedValue({ allowedReportsPerMonth: 2 }),
       },
       report: { count: jest.fn().mockResolvedValue(2) },
-    } as any);
+    });
 
-    await expect(
-      (service as any).enforceMonthlyReportQuota('org-1'),
-    ).rejects.toThrow(ConflictException);
+    await expect(service.enforceMonthlyReportQuota('org-1')).rejects.toThrow(
+      ConflictException,
+    );
   });
 });
 
 describe('ReportService provider tenant access', () => {
   it('lists directly assigned jobs even when provider organization membership is missing', async () => {
-    const service = new ReportService({
+    const prisma = {
       providerOrganization: {
         findMany: jest.fn().mockResolvedValue([{ organizationId: 'org-b' }]),
       },
       report: {
         findMany: jest.fn().mockResolvedValue([]),
       },
-    } as any);
+    };
+    const service = reportService(prisma);
 
     await service.getAssignedReports({
       id: 'provider-1',
@@ -235,7 +356,7 @@ describe('ReportService provider tenant access', () => {
       organizationId: 'org-a',
     });
 
-    expect((service as any).prisma.report.findMany).toHaveBeenCalledWith(
+    expect(prisma.report.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
           assignedProviderId: 'provider-1',
@@ -246,7 +367,7 @@ describe('ReportService provider tenant access', () => {
   });
 
   it('allows an explicitly assigned provider to open the assigned report', async () => {
-    const service = new ReportService({
+    const service = reportService({
       providerOrganization: {
         findMany: jest.fn().mockResolvedValue([]),
       },
@@ -258,7 +379,7 @@ describe('ReportService provider tenant access', () => {
           organizationId: 'org-b',
         }),
       },
-    } as any);
+    });
 
     await expect(
       service.getReportById('report-1', {
@@ -273,7 +394,7 @@ describe('ReportService provider tenant access', () => {
   });
 
   it('denies unassigned provider direct access without active organization membership', async () => {
-    const service = new ReportService({
+    const service = reportService({
       providerOrganization: {
         findMany: jest.fn().mockResolvedValue([]),
       },
@@ -285,7 +406,7 @@ describe('ReportService provider tenant access', () => {
           organizationId: 'org-b',
         }),
       },
-    } as any);
+    });
 
     await expect(
       service.getReportById('report-1', {
@@ -297,7 +418,7 @@ describe('ReportService provider tenant access', () => {
   });
 
   it('keeps closed report discussions read-only', async () => {
-    const service = new ReportService({
+    const service = reportService({
       report: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'report-1',
@@ -307,7 +428,7 @@ describe('ReportService provider tenant access', () => {
           organizationId: 'org-a',
         }),
       },
-    } as any);
+    });
 
     await expect(
       service.createReportMessage(
@@ -324,10 +445,10 @@ describe('ReportService provider tenant access', () => {
 });
 
 describe('ReportService organization candidates', () => {
-  const service = new ReportService({} as any);
+  const service = reportService();
 
   it('marks ready organizations eligible when provider category and explicit capability coverage exist', () => {
-    const candidate = (service as any).serializeOrganizationCandidate(
+    const candidate = service.serializeOrganizationCandidate(
       {
         id: 'org-1',
         name: 'Hunslow',
@@ -367,7 +488,7 @@ describe('ReportService organization candidates', () => {
   });
 
   it('treats inherited provider profile categories as routing-ready', () => {
-    const candidate = (service as any).serializeOrganizationCandidate(
+    const candidate = service.serializeOrganizationCandidate(
       {
         id: 'org-1',
         name: 'Hunslow',
@@ -405,7 +526,7 @@ describe('ReportService organization candidates', () => {
   });
 
   it('maps Telecom category to ICT capability diagnostics', () => {
-    const candidate = (service as any).serializeOrganizationCandidate(
+    const candidate = service.serializeOrganizationCandidate(
       {
         id: 'org-telecom',
         name: 'Hunslow Telecom',
@@ -452,7 +573,7 @@ describe('ReportService organization candidates', () => {
   });
 
   it('marks not-ready organizations unavailable with reasons', () => {
-    const candidate = (service as any).serializeOrganizationCandidate(
+    const candidate = service.serializeOrganizationCandidate(
       {
         id: 'org-2',
         name: 'No Providers',
@@ -482,7 +603,7 @@ describe('ReportService organization candidates', () => {
 
 describe('ReportService responsibility resolver', () => {
   it('prefers existing asset responsibility when a single eligible owner exists', async () => {
-    const service = new ReportService({
+    const service = reportService({
       potentialAsset: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -550,9 +671,9 @@ describe('ReportService responsibility resolver', () => {
           },
         ]),
       },
-    } as any);
+    });
 
-    const result = await (service as any).resolveReportResponsibility({
+    const result = await service.resolveReportResponsibility({
       title: 'Asset road report',
       description: 'Road issue',
       category: 'Road',
@@ -560,12 +681,32 @@ describe('ReportService responsibility resolver', () => {
     });
 
     expect(result.outcome).toBe('HIGH_CONFIDENCE');
-    expect(result.organization.id).toBe('org-asset');
+    expect(result.organization).toMatchObject({ id: 'org-asset' });
     expect(result.matchFactors).toContain('asset_or_ownership_responsibility');
+    expect(result.diagnostics).toMatchObject({
+      outcome: 'MATCHED',
+      candidateCount: 2,
+      eligibleCandidateCount: 2,
+      proposedOrganizationId: 'org-asset',
+      reasonCode: 'MATCHED_DETERMINISTIC',
+      report: { category: 'Road', normalizedCategory: 'road' },
+    });
+    expect(result.diagnostics.report?.location).toMatchObject({
+      text: 'Kubwa',
+    });
+    expect(result.diagnostics.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          organizationId: 'org-asset',
+          coverageAreas: ['Kubwa'],
+          eligible: true,
+        }),
+      ]),
+    );
   });
 
   it('blocks automatic routing when an explicit responsibility exclusion matches', async () => {
-    const service = new ReportService({
+    const service = reportService({
       potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
       organization: {
         findMany: jest.fn().mockResolvedValue([
@@ -602,9 +743,9 @@ describe('ReportService responsibility resolver', () => {
           },
         ]),
       },
-    } as any);
+    });
 
-    const result = await (service as any).resolveReportResponsibility({
+    const result = await service.resolveReportResponsibility({
       title: 'Restricted road report',
       description: 'Road issue',
       category: 'Road',
@@ -613,15 +754,52 @@ describe('ReportService responsibility resolver', () => {
 
     expect(result.outcome).toBe('RESTRICTED_OR_CONFLICTED');
     expect(result.organization).toBeNull();
+    expect(result.diagnostics).toMatchObject({
+      outcome: 'RESTRICTED',
+      candidateCount: 1,
+      reasonCode: 'EXPLICIT_EXCLUSION_OR_RESTRICTION',
+    });
+    expect(result.diagnostics.proposedOrganizationId).toBeUndefined();
+  });
+
+  it('returns explicit diagnostics when category or location is missing', async () => {
+    const service = reportService({
+      potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      organization: { findMany: jest.fn().mockResolvedValue([]) },
+    });
+
+    const noCategory = await service.resolveReportResponsibility({
+      title: 'Missing category report',
+      description: 'Issue',
+      category: '',
+      location: 'Kubwa',
+    });
+    expect(noCategory.diagnostics).toMatchObject({
+      outcome: 'NO_CATEGORY',
+      candidateCount: 0,
+      reasonCode: 'NO_CATEGORY_PROVIDED',
+    });
+
+    const noLocation = await service.resolveReportResponsibility({
+      title: 'Missing location report',
+      description: 'Issue',
+      category: 'Road',
+      location: '',
+    });
+    expect(noLocation.diagnostics).toMatchObject({
+      outcome: 'NO_LOCATION',
+      candidateCount: 0,
+      reasonCode: 'NO_LOCATION_PROVIDED',
+    });
   });
 });
 
 describe('ReportService assignment rejection', () => {
-  const findUnique = jest.fn();
-  const update = jest.fn();
-  const service = new ReportService({
+  const findUnique = jest.fn<Promise<unknown>, [unknown]>();
+  const update = jest.fn<Promise<unknown>, [unknown]>();
+  const service = reportService({
     report: { findUnique, update },
-  } as any);
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -642,18 +820,26 @@ describe('ReportService assignment rejection', () => {
       { id: 'provider-1', role: UserRole.PROVIDER, organizationId: 'org-1' },
     );
 
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'report-1' },
-        data: expect.objectContaining({
-          status: ReportStatus.PENDING,
-          assignedProviderId: null,
-          lastAssignmentOutcome: AssignmentOutcome.REJECTED,
-          lastAssignmentReason: 'Outside current service area',
-          lastAssignmentProviderId: 'provider-1',
-        }),
-      }),
-    );
+    const updateCall = update.mock.calls[0]?.[0] as
+      | {
+          where?: { id?: string };
+          data?: {
+            status?: ReportStatus;
+            assignedProviderId?: string | null;
+            lastAssignmentOutcome?: AssignmentOutcome;
+            lastAssignmentReason?: string;
+            lastAssignmentProviderId?: string;
+          };
+        }
+      | undefined;
+    expect(updateCall?.where).toEqual({ id: 'report-1' });
+    expect(updateCall?.data).toMatchObject({
+      status: ReportStatus.PENDING,
+      assignedProviderId: null,
+      lastAssignmentOutcome: AssignmentOutcome.REJECTED,
+      lastAssignmentReason: 'Outside current service area',
+      lastAssignmentProviderId: 'provider-1',
+    });
   });
 
   it('does not allow rejection after work has started', async () => {
@@ -675,9 +861,9 @@ describe('ReportService assignment rejection', () => {
 });
 
 describe('ReportService provider response metrics', () => {
-  const service = new ReportService({} as any);
-  const metric = (reports: any[]) =>
-    (service as any).calculateProviderAverageResponse(reports, 'provider-1');
+  const service = reportService();
+  const metric = (reports: ProviderResponseReport[]) =>
+    service.calculateProviderAverageResponse(reports, 'provider-1');
 
   it('returns a structured reason when no assignments were accepted', () => {
     expect(
@@ -812,9 +998,7 @@ describe('ReportService completion governance policy helpers', () => {
       findUnique: jest.fn().mockResolvedValue(null),
     },
   };
-  const service = new ReportService(
-    prisma as never,
-  ) as unknown as CompletionPolicyHarness;
+  const service = reportService(prisma) as unknown as CompletionPolicyHarness;
   const satisfied = (input: {
     policy: CompletionPolicy;
     citizenDecision?: CompletionDecision | null;

@@ -4,7 +4,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   AccountStatus,
   AssignmentOutcome,
+  CompletionDecision,
   CompletionPolicy,
+  Prisma,
   ReportStatus,
   UserRole,
 } from '@prisma/client';
@@ -15,11 +17,84 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
+type SupertestServer = Parameters<typeof request>[0];
+type TestApplication = Omit<INestApplication, 'getHttpServer'> & {
+  getHttpServer(): SupertestServer;
+};
+type ReportActivityRecord = {
+  metadata?: unknown;
+};
+type PrismaWithReportActivity = PrismaService & {
+  reportActivity: {
+    findFirst(args: unknown): Promise<ReportActivityRecord | null>;
+  };
+};
+type JsonResponseBody = Record<string, unknown> & {
+  [index: number]: Record<string, unknown>;
+  accessToken: string;
+  assignedOrganizationId: string | null;
+  assignedProviderId: string | null;
+  awaitingOrganizationDecision: number;
+  citizenCompletionDecision: string | null;
+  citizenId: string;
+  code: string;
+  completionFinalizedAt: string | null;
+  completionFinalizedByRole: string | null;
+  completionImagePath: string;
+  completionImageUrl: string;
+  completion: { imagePath: string; imageUrl: string };
+  completionLocationCapturedAt: string | null;
+  completionPolicy: string;
+  completionPolicySource: string;
+  completionReviewState: string;
+  evidenceImagePath: string;
+  evidenceImageUrl: string;
+  evidenceItems: Array<Record<string, unknown>>;
+  id: string;
+  length?: number;
+  locationCapturedAt: string | null;
+  locationName: string;
+  latitude: number;
+  map<T>(callback: (item: Record<string, unknown>) => T): T[];
+  message: string;
+  organizationCompletionDecision: string | null;
+  organizationId: string;
+  pending: number;
+  providers: Array<{ id: string }>;
+  responsibilityResolution: {
+    candidateCount: number;
+    candidates: Array<Record<string, unknown>>;
+    eligibleCandidateCount: number;
+    outcome: string;
+    proposedOrganizationId?: string;
+    reasonCode: string;
+    report: {
+      category: string;
+      normalizedCategory: string;
+      coordinates: { latitude: number; longitude: number };
+      location: {
+        text: string;
+        name: string;
+        landmark: string;
+        source: string;
+      };
+    };
+  };
+  status: string;
+  total: number;
+  user: { id: string };
+};
+
+function json(response: request.Response): JsonResponseBody {
+  return (response as unknown as { body: JsonResponseBody }).body;
+}
+
 describe('Report Workflow (e2e)', () => {
   jest.setTimeout(60000);
 
-  let app: INestApplication;
+  let app: TestApplication;
   let prisma: PrismaService;
+  let prismaWithActivity: PrismaWithReportActivity;
   let jwtService: JwtService;
 
   const onePixelPngBase64 =
@@ -34,11 +109,14 @@ describe('Report Workflow (e2e)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication({ bodyParser: false });
+    app = moduleFixture.createNestApplication({
+      bodyParser: false,
+    });
     configureApp(app);
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    prismaWithActivity = prisma as unknown as PrismaWithReportActivity;
     jwtService = moduleFixture.get(JwtService);
 
     await cleanupWorkflowArtifacts();
@@ -120,7 +198,7 @@ describe('Report Workflow (e2e)', () => {
     });
     const reportIds = reports.map((report) => report.id);
 
-    await cleanupUploadArtifacts(reportIds);
+    cleanupUploadArtifacts(reportIds);
 
     await prisma.notification.deleteMany({
       where: {
@@ -152,10 +230,11 @@ describe('Report Workflow (e2e)', () => {
   }
 
   async function cleanupTrackedUploadArtifacts() {
-    await cleanupUploadArtifacts([...createdReportIds]);
+    await Promise.resolve();
+    cleanupUploadArtifacts([...createdReportIds]);
   }
 
-  async function cleanupUploadArtifacts(reportIds: string[]) {
+  function cleanupUploadArtifacts(reportIds: string[]) {
     for (const reportId of reportIds) {
       for (const folder of ['report-completion', 'report-evidence']) {
         const uploadDirectory = join(
@@ -193,7 +272,7 @@ describe('Report Workflow (e2e)', () => {
     profileData?: Record<string, unknown>;
   }) {
     const user = await prisma.user.create({
-      data: data as any,
+      data: data as Prisma.UserUncheckedCreateInput,
     });
 
     createdUserIds.push(user.id);
@@ -300,7 +379,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: provider.id });
 
     expect(assignRes.status).toBe(200);
-    expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
+    expect(json(assignRes).status).toBe(ReportStatus.ASSIGNED);
 
     const inProgressRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
@@ -308,7 +387,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.IN_PROGRESS });
 
     expect(inProgressRes.status).toBe(200);
-    expect(inProgressRes.body.status).toBe(ReportStatus.IN_PROGRESS);
+    expect(json(inProgressRes).status).toBe(ReportStatus.IN_PROGRESS);
 
     const uploadRes = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/completion-evidence`)
@@ -327,7 +406,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
 
     expect(completedRes.status).toBe(200);
-    expect(completedRes.body.status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+    expect(json(completedRes).status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
 
     const closedRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
@@ -335,7 +414,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.CLOSED });
 
     expect(closedRes.status).toBe(200);
-    expect(closedRes.body.status).toBe(ReportStatus.CLOSED);
+    expect(json(closedRes).status).toBe(ReportStatus.CLOSED);
 
     const timelineRes = await request(app.getHttpServer())
       .get(`/api/report/${report.id}/timeline`)
@@ -343,7 +422,7 @@ describe('Report Workflow (e2e)', () => {
 
     expect(timelineRes.status).toBe(200);
     expect(
-      timelineRes.body.map((item: { action: string }) => item.action),
+      json(timelineRes).map((item: { action: string }) => item.action),
     ).toEqual(
       expect.arrayContaining([
         'PROVIDER_ASSIGNED',
@@ -399,23 +478,23 @@ describe('Report Workflow (e2e)', () => {
       .send({ message: 'Provider has reached the site.' });
 
     expect(createdMessage.status).toBe(201);
-    expect(createdMessage.body.message).toBe('Provider has reached the site.');
-    expect(createdMessage.body.organizationId).toBe(org.id);
+    expect(json(createdMessage).message).toBe('Provider has reached the site.');
+    expect(json(createdMessage).organizationId).toBe(org.id);
 
     const citizenMessages = await request(app.getHttpServer())
       .get(`/api/report/${report.id}/messages`)
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(citizenMessages.status).toBe(200);
-    expect(citizenMessages.body).toHaveLength(1);
-    expect(citizenMessages.body[0].authorRole).toBe(UserRole.PROVIDER);
+    expect(json(citizenMessages)).toHaveLength(1);
+    expect(json(citizenMessages)[0].authorRole).toBe(UserRole.PROVIDER);
 
     const adminMessages = await request(app.getHttpServer())
       .get(`/api/report/${report.id}/messages`)
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(adminMessages.status).toBe(200);
-    expect(adminMessages.body).toHaveLength(1);
+    expect(json(adminMessages)).toHaveLength(1);
 
     const forbiddenMessages = await request(app.getHttpServer())
       .get(`/api/report/${report.id}/messages`)
@@ -450,14 +529,16 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(createdRes.status).toBe(201);
-    createdReportIds.push(createdRes.body.id);
-    expect(createdRes.body).toMatchObject({
+    createdReportIds.push(json(createdRes).id);
+    expect(json(createdRes)).toMatchObject({
       latitude: 9.0765,
       longitude: 7.4938,
       locationAccuracy: 18.4,
       locationSource: 'DEVICE_GPS',
     });
-    expect(createdRes.body.locationCapturedAt).toBe('2026-07-12T09:00:00.000Z');
+    expect(json(createdRes).locationCapturedAt).toBe(
+      '2026-07-12T09:00:00.000Z',
+    );
 
     const legacyReport = await createReport({
       title: 'WF legacy location report',
@@ -534,6 +615,7 @@ describe('Report Workflow (e2e)', () => {
       organizationId: org.id,
       citizenId: citizen.id,
       assignedProviderId: provider.id,
+      category: 'General Maintenance',
     });
 
     const adminToken = await signToken(admin);
@@ -545,7 +627,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(engineRes.status).toBe(200);
-    expect(engineRes.body).toMatchObject({
+    expect(json(engineRes)).toMatchObject({
       activeProductionModule: 'maintenance',
       futureModulesOperational: false,
     });
@@ -575,14 +657,14 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(completedRes.status).toBe(200);
-    expect(completedRes.body.status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
-    expect(completedRes.body).toMatchObject({
+    expect(json(completedRes).status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+    expect(json(completedRes)).toMatchObject({
       completionLatitude: 9.081,
       completionLongitude: 7.492,
       completionAccuracy: 24,
       completionLocationSource: 'DEVICE_GPS',
     });
-    expect(completedRes.body.completionLocationCapturedAt).toBe(
+    expect(json(completedRes).completionLocationCapturedAt).toBe(
       '2026-07-12T10:15:00.000Z',
     );
 
@@ -591,7 +673,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(citizenNotifications.status).toBe(200);
-    expect(citizenNotifications.body).toEqual(
+    expect(json(citizenNotifications)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           reportId: report.id,
@@ -607,7 +689,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ rating: 5, feedback: 'Looks good.' });
 
     expect(confirmRes.status).toBe(201);
-    expect(confirmRes.body).toMatchObject({
+    expect(json(confirmRes)).toMatchObject({
       status: ReportStatus.CLOSED,
       citizenRating: 5,
       citizenFeedback: 'Looks good.',
@@ -618,7 +700,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`);
 
     expect(providerNotifications.status).toBe(200);
-    expect(providerNotifications.body).toEqual(
+    expect(json(providerNotifications)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           reportId: report.id,
@@ -696,10 +778,10 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`)
       .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
     expect(completedRes.status).toBe(200);
-    expect(completedRes.body.completionPolicy).toBe(
+    expect(json(completedRes).completionPolicy).toBe(
       CompletionPolicy.ORGANIZATION_CONFIRMATION_REQUIRED,
     );
-    expect(completedRes.body.completionReviewState).toBe(
+    expect(json(completedRes).completionReviewState).toBe(
       'AWAITING_ORGANIZATION_VERIFICATION',
     );
 
@@ -708,20 +790,20 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({ rating: 4, feedback: 'Looks acceptable.' });
     expect(citizenConfirmRes.status).toBe(201);
-    expect(citizenConfirmRes.body.status).toBe(
+    expect(json(citizenConfirmRes).status).toBe(
       ReportStatus.COMPLETED_BY_PROVIDER,
     );
-    expect(citizenConfirmRes.body.citizenCompletionDecision).toBe('CONFIRMED');
-    expect(citizenConfirmRes.body.completionFinalizedAt).toBeNull();
+    expect(json(citizenConfirmRes).citizenCompletionDecision).toBe('CONFIRMED');
+    expect(json(citizenConfirmRes).completionFinalizedAt).toBeNull();
 
     const verifyRes = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/organization-completion/verify`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ reason: 'Evidence and site checks passed.' });
     expect(verifyRes.status).toBe(201);
-    expect(verifyRes.body.status).toBe(ReportStatus.CLOSED);
-    expect(verifyRes.body.organizationCompletionDecision).toBe('VERIFIED');
-    expect(verifyRes.body.completionFinalizedByRole).toBe(UserRole.ORG_ADMIN);
+    expect(json(verifyRes).status).toBe(ReportStatus.CLOSED);
+    expect(json(verifyRes).organizationCompletionDecision).toBe('VERIFIED');
+    expect(json(verifyRes).completionFinalizedByRole).toBe(UserRole.ORG_ADMIN);
   });
 
   it('requires both citizen and organization approvals when policy is BOTH_REQUIRED', async () => {
@@ -776,16 +858,25 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`)
       .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
     expect(completedRes.status).toBe(200);
-    expect(completedRes.body.completionReviewState).toBe('AWAITING_BOTH');
+    expect(json(completedRes).completionReviewState).toBe('AWAITING_BOTH');
 
     const verifyRes = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/organization-completion/verify`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ reason: 'Organization verified first.' });
     expect(verifyRes.status).toBe(201);
-    expect(verifyRes.body.status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
-    expect(verifyRes.body.completionReviewState).toBe(
+    expect(json(verifyRes).status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+    expect(json(verifyRes).completionReviewState).toBe(
       'AWAITING_CITIZEN_REVIEW',
+    );
+
+    const duplicateVerifyRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Duplicate organization verification.' });
+    expect(duplicateVerifyRes.status).toBe(201);
+    expect(json(duplicateVerifyRes).status).toBe(
+      ReportStatus.COMPLETED_BY_PROVIDER,
     );
 
     const citizenConfirmRes = await request(app.getHttpServer())
@@ -793,10 +884,371 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({ rating: 5, feedback: 'Verified and satisfactory.' });
     expect(citizenConfirmRes.status).toBe(201);
-    expect(citizenConfirmRes.body.status).toBe(ReportStatus.CLOSED);
-    expect(citizenConfirmRes.body.completionFinalizedByRole).toBe(
+    expect(json(citizenConfirmRes).status).toBe(ReportStatus.CLOSED);
+    expect(json(citizenConfirmRes).completionFinalizedByRole).toBe(
       UserRole.CITIZEN,
     );
+  });
+
+  it('defaults Road work to dual completion governance without explicit configuration', async () => {
+    const org = await createOrganization(
+      'Workflow Road Default Governance Org',
+    );
+    const admin = await createUser({
+      email: 'wf-admin-road-default@test.com',
+      fullName: 'Workflow Road Default Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-road-default@test.com',
+      fullName: 'Workflow Road Default Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-road-default@test.com',
+      fullName: 'Workflow Road Default Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF road default dual confirmation',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+      category: 'Road & Infrastructure',
+    });
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const adminToken = await signToken(admin);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        images: [0, 1, 2].map((index) => ({
+          fileName: `road-completion-${index}.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          classification: 'after',
+          order: index,
+        })),
+      });
+    expect(uploadRes.status).toBe(201);
+    expect(json(uploadRes).evidenceItems).toHaveLength(3);
+
+    const completedRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(completedRes.status).toBe(200);
+    expect(json(completedRes).completionPolicy).toBe(
+      CompletionPolicy.BOTH_REQUIRED,
+    );
+    expect(json(completedRes).completionPolicySource).toBe(
+      'BUILT_IN_OPERATIONAL_CATEGORY_DEFAULT',
+    );
+    expect(json(completedRes).completionReviewState).toBe('AWAITING_BOTH');
+
+    const citizenConfirmRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Looks complete from my side.' });
+    expect(citizenConfirmRes.status).toBe(201);
+    expect(json(citizenConfirmRes).status).toBe(
+      ReportStatus.COMPLETED_BY_PROVIDER,
+    );
+    expect(json(citizenConfirmRes).completionReviewState).toBe(
+      'AWAITING_ORGANIZATION_VERIFICATION',
+    );
+    expect(json(citizenConfirmRes).completionFinalizedAt).toBeNull();
+
+    const duplicateCitizenConfirmRes = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 5, feedback: 'Duplicate citizen approval.' });
+    expect(duplicateCitizenConfirmRes.status).toBe(403);
+
+    const verifyRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Road evidence verified by organization.' });
+    expect(verifyRes.status).toBe(201);
+    expect(json(verifyRes).status).toBe(ReportStatus.CLOSED);
+    expect(json(verifyRes).organizationCompletionDecision).toBe('VERIFIED');
+  });
+
+  it('enforces rework, dispute, override reason, tenant isolation and immutable completion evidence', async () => {
+    const org = await createOrganization('Workflow Governance Rework Org');
+    await prisma.organization.update({
+      where: { id: org.id },
+      data: {
+        profileData: { completionPolicy: CompletionPolicy.BOTH_REQUIRED },
+      },
+    });
+    const otherOrg = await createOrganization('Workflow Governance Other Org');
+    const admin = await createUser({
+      email: 'wf-admin-governance-rework@test.com',
+      fullName: 'Workflow Governance Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const otherAdmin = await createUser({
+      email: 'wf-admin-governance-other@test.com',
+      fullName: 'Workflow Governance Other Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const superAdmin = await createUser({
+      email: 'wf-admin-governance-super@test.com',
+      fullName: 'Workflow Governance Super',
+      role: UserRole.SUPER_ADMIN,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-governance-rework@test.com',
+      fullName: 'Workflow Governance Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-governance-rework@test.com',
+      fullName: 'Workflow Governance Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF governance rework lifecycle',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+      category: 'Road & Infrastructure',
+    });
+    const adminToken = await signToken(admin);
+    const otherAdminToken = await signToken(otherAdmin);
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const superAdminToken = await signToken(superAdmin);
+
+    const firstUpload = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'first-attempt.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+        classification: 'after',
+      });
+    expect(firstUpload.status).toBe(201);
+
+    const firstSubmit = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(firstSubmit.status).toBe(200);
+    expect(json(firstSubmit).completionReviewState).toBe('AWAITING_BOTH');
+
+    const otherOrgVerify = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${otherAdminToken}`)
+      .send({ reason: 'Cross-tenant verification attempt.' });
+    expect(otherOrgVerify.status).toBe(403);
+
+    const missingOrgReworkReason = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/rework`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: '   ' });
+    expect(missingOrgReworkReason.status).toBe(400);
+
+    const orgRework = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/rework`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Repair edges before closure.' });
+    expect(orgRework.status).toBe(201);
+    expect(json(orgRework).status).toBe(ReportStatus.ASSIGNED);
+    expect(json(orgRework).organizationCompletionDecision).toBe(
+      CompletionDecision.REWORK_REQUESTED,
+    );
+
+    const resumeWork = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(resumeWork.status).toBe(200);
+
+    const secondUpload = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'second-attempt.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+        classification: 'after',
+      });
+    expect(secondUpload.status).toBe(201);
+
+    const secondSubmit = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(secondSubmit.status).toBe(200);
+    expect(json(secondSubmit).organizationCompletionDecision).toBe(
+      CompletionDecision.PENDING,
+    );
+    expect(json(secondSubmit).citizenCompletionDecision).toBe(
+      CompletionDecision.PENDING,
+    );
+
+    const evidenceRecords = await prisma.evidenceRecord.findMany({
+      where: {
+        relatedEntityId: report.id,
+        fileUrl: { contains: 'report-completion' },
+      },
+      orderBy: { uploadedAt: 'asc' },
+    });
+    expect(evidenceRecords.length).toBeGreaterThanOrEqual(2);
+
+    await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        completionReviewState: 'DISPUTED',
+        citizenCompletionDecision: CompletionDecision.DISPUTED,
+        completionDisputeReason: 'Citizen opened active dispute.',
+      },
+    });
+    const blockedByDispute = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Trying to close disputed report.' });
+    expect(blockedByDispute.status).toBe(409);
+
+    const adminOverrideWithoutReason = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/admin-completion/resolve-close`)
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({ reason: '   ' });
+    expect(adminOverrideWithoutReason.status).toBe(400);
+
+    await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        completionReviewState: 'AWAITING_BOTH',
+        citizenCompletionDecision: CompletionDecision.PENDING,
+        completionDisputeReason: null,
+      },
+    });
+
+    const citizenReworkReport = await createReport({
+      title: 'WF citizen rework lifecycle',
+      status: ReportStatus.COMPLETED_BY_PROVIDER,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+      category: 'Road & Infrastructure',
+    });
+    await prisma.report.update({
+      where: { id: citizenReworkReport.id },
+      data: {
+        completionPolicy: CompletionPolicy.BOTH_REQUIRED,
+        completionReviewState: 'AWAITING_BOTH',
+        citizenCompletionDecision: CompletionDecision.PENDING,
+        organizationCompletionDecision: CompletionDecision.PENDING,
+      },
+    });
+
+    const missingCitizenReworkReason = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${citizenReworkReport.id}/reject-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ reason: '   ' });
+    expect(missingCitizenReworkReason.status).toBe(400);
+
+    const citizenRework = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${citizenReworkReport.id}/reject-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ reason: 'Surface still fails at the shoulder.' });
+    expect(citizenRework.status).toBe(201);
+    expect(json(citizenRework).status).toBe(ReportStatus.ASSIGNED);
+    expect(json(citizenRework).citizenCompletionDecision).toBe(
+      CompletionDecision.REWORK_REQUESTED,
+    );
+  });
+
+  it('enforces multi-image evidence limits for citizen and provider uploads', async () => {
+    const org = await createOrganization('Workflow Multi Evidence Limit Org');
+    const provider = await createUser({
+      email: 'wf-provider-multi-evidence@test.com',
+      fullName: 'Workflow Multi Evidence Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-multi-evidence@test.com',
+      fullName: 'Workflow Multi Evidence Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF multi evidence limit',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const citizenToken = await signToken(citizen);
+    const providerToken = await signToken(provider);
+
+    const citizenFive = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/evidence`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        images: [0, 1, 2, 3, 4].map((index) => ({
+          fileName: `report-${index}.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          order: index,
+        })),
+      });
+    expect(citizenFive.status).toBe(201);
+    expect(json(citizenFive).evidenceItems).toHaveLength(5);
+
+    const citizenSixth = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/evidence`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        fileName: 'report-six.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      });
+    expect(citizenSixth.status).toBe(400);
+    expect(json(citizenSixth).code).toBe('EVIDENCE_LIMIT_EXCEEDED');
+
+    const providerTen = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        images: Array.from({ length: 10 }, (_, index) => ({
+          fileName: `completion-${index}.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          classification: 'after',
+          order: index,
+        })),
+      });
+    expect(providerTen.status).toBe(201);
+    expect(json(providerTen).evidenceItems).toHaveLength(10);
+
+    const providerEleventh = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'completion-eleven.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+        classification: 'after',
+      });
+    expect(providerEleventh.status).toBe(400);
+    expect(json(providerEleventh).code).toBe('EVIDENCE_LIMIT_EXCEEDED');
   });
 
   it('persists completion evidence with refresh-safe upload URL and path fields', async () => {
@@ -835,14 +1287,12 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(uploadRes.status).toBe(201);
-    expect(uploadRes.body).toMatchObject({
-      completionImagePath: expect.stringMatching(
-        new RegExp(`^report-completion/${report.id}/.+\\.png$`),
-      ),
-      completionImageUrl: expect.stringMatching(
-        new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
-      ),
-    });
+    expect(json(uploadRes).completionImagePath).toMatch(
+      new RegExp(`^report-completion/${report.id}/.+\\.png$`),
+    );
+    expect(json(uploadRes).completionImageUrl).toMatch(
+      new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+    );
 
     const completedRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
@@ -850,28 +1300,28 @@ describe('Report Workflow (e2e)', () => {
       .send({
         status: ReportStatus.COMPLETED_BY_PROVIDER,
         completionNote: 'Evidence should survive refresh.',
-        completionImageUrl: `https://api.securezonegroup.com${uploadRes.body.completionImageUrl}`,
-        completionImagePath: `https://api.securezonegroup.com/${uploadRes.body.completionImagePath}`,
+        completionImageUrl: `https://api.securezonegroup.com${json(uploadRes).completionImageUrl}`,
+        completionImagePath: `https://api.securezonegroup.com/${json(uploadRes).completionImagePath}`,
       });
 
     expect(completedRes.status).toBe(200);
-    expect(completedRes.body).toMatchObject({
-      status: ReportStatus.COMPLETED_BY_PROVIDER,
-      completionImagePath: uploadRes.body.completionImagePath,
-      completionImageUrl: expect.stringMatching(
-        new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
-      ),
-    });
+    expect(json(completedRes).status).toBe(ReportStatus.COMPLETED_BY_PROVIDER);
+    expect(json(completedRes).completionImagePath).toBe(
+      json(uploadRes).completionImagePath,
+    );
+    expect(json(completedRes).completionImageUrl).toMatch(
+      new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+    );
 
     const storedReport = await prisma.report.findUniqueOrThrow({
       where: { id: report.id },
     });
 
     expect(storedReport.completionImagePath).toBe(
-      uploadRes.body.completionImagePath,
+      json(uploadRes).completionImagePath,
     );
     expect(storedReport.completionImageUrl).toBe(
-      `/uploads/${uploadRes.body.completionImagePath}`,
+      `/uploads/${json(uploadRes).completionImagePath}`,
     );
 
     const reviewRes = await request(app.getHttpServer())
@@ -879,18 +1329,18 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(reviewRes.status).toBe(200);
-    expect(reviewRes.body).toMatchObject({
-      completionImagePath: uploadRes.body.completionImagePath,
-      completionImageUrl: expect.stringMatching(
-        new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
-      ),
-      completion: {
-        imagePath: uploadRes.body.completionImagePath,
-        imageUrl: expect.stringMatching(
-          new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
-        ),
-      },
-    });
+    expect(json(reviewRes).completionImagePath).toBe(
+      json(uploadRes).completionImagePath,
+    );
+    expect(json(reviewRes).completionImageUrl).toMatch(
+      new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+    );
+    expect(json(reviewRes).completion.imagePath).toBe(
+      json(uploadRes).completionImagePath,
+    );
+    expect(json(reviewRes).completion.imageUrl).toMatch(
+      new RegExp(`^/api/report/${report.id}/completion-evidence/.+\\.png$`),
+    );
   });
 
   it('persists citizen report evidence and returns canonical detail metadata', async () => {
@@ -921,31 +1371,31 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(uploadRes.status).toBe(201);
-    expect(uploadRes.body.evidenceImagePath).toMatch(
+    expect(json(uploadRes).evidenceImagePath).toMatch(
       new RegExp(`^report-evidence/${report.id}/.+\\.png$`),
     );
-    expect(uploadRes.body.evidenceImageUrl).toMatch(
+    expect(json(uploadRes).evidenceImageUrl).toMatch(
       new RegExp(`^/api/report/${report.id}/evidence/.+\\.png$`),
     );
 
     const stored = await prisma.report.findUniqueOrThrow({
       where: { id: report.id },
     });
-    expect(stored.evidenceImagePath).toBe(uploadRes.body.evidenceImagePath);
+    expect(stored.evidenceImagePath).toBe(json(uploadRes).evidenceImagePath);
     expect(stored.evidenceImageUrl).toBe(
-      `/uploads/${uploadRes.body.evidenceImagePath}`,
+      `/uploads/${json(uploadRes).evidenceImagePath}`,
     );
 
     const detailRes = await request(app.getHttpServer())
       .get(`/api/report/${report.id}`)
       .set('Authorization', `Bearer ${citizenToken}`);
     expect(detailRes.status).toBe(200);
-    expect(detailRes.body.evidenceItems).toHaveLength(1);
-    expect(detailRes.body.evidenceItems[0]).toMatchObject({
+    expect(json(detailRes).evidenceItems).toHaveLength(1);
+    expect(json(detailRes).evidenceItems[0]).toMatchObject({
       kind: 'report-evidence',
       source: 'CITIZEN_REPORT',
-      imagePath: uploadRes.body.evidenceImagePath,
-      imageUrl: uploadRes.body.evidenceImageUrl,
+      imagePath: json(uploadRes).evidenceImagePath,
+      imageUrl: json(uploadRes).evidenceImageUrl,
       mimeType: 'image/png',
       uploadedByRole: UserRole.CITIZEN,
     });
@@ -1140,8 +1590,8 @@ describe('Report Workflow (e2e)', () => {
       .get(`/api/report/${legacyUrlOnlyReport.id}`)
       .set('Authorization', `Bearer ${superAdminToken}`);
     expect(legacyDetailRes.status).toBe(200);
-    expect(legacyDetailRes.body.evidenceItems).toHaveLength(1);
-    expect(legacyDetailRes.body.evidenceItems[0]).toMatchObject({
+    expect(json(legacyDetailRes).evidenceItems).toHaveLength(1);
+    expect(json(legacyDetailRes).evidenceItems[0]).toMatchObject({
       kind: 'report-evidence',
       source: 'CITIZEN_REPORT',
       imagePath: legacyEvidencePath,
@@ -1214,7 +1664,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(reviewRes.status).toBe(200);
-    expect(reviewRes.body).toMatchObject({
+    expect(json(reviewRes)).toMatchObject({
       id: report.id,
       status: ReportStatus.COMPLETED_BY_PROVIDER,
       availableActions: {
@@ -1285,7 +1735,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ rating: 5, feedback: 'Verified by citizen.' });
 
     expect(confirmRes.status).toBe(201);
-    expect(confirmRes.body).toMatchObject({
+    expect(json(confirmRes)).toMatchObject({
       status: ReportStatus.CLOSED,
       citizenRating: 5,
       citizenFeedback: 'Verified by citizen.',
@@ -1345,7 +1795,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ reason: 'Drainage is still blocked near the entrance.' });
 
     expect(rejectRes.status).toBe(201);
-    expect(rejectRes.body).toMatchObject({
+    expect(json(rejectRes)).toMatchObject({
       status: ReportStatus.ASSIGNED,
       completionRejectionReason: 'Drainage is still blocked near the entrance.',
     });
@@ -1355,7 +1805,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`);
 
     expect(providerNotifications.status).toBe(200);
-    expect(providerNotifications.body).toEqual(
+    expect(json(providerNotifications)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           reportId: report.id,
@@ -1369,7 +1819,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(adminNotifications.status).toBe(200);
-    expect(adminNotifications.body).toEqual(
+    expect(json(adminNotifications)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           reportId: report.id,
@@ -1408,7 +1858,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toContain('Invalid status transition');
+    expect(json(res).message).toContain('Invalid status transition');
 
     const storedReport = await prisma.report.findUnique({
       where: { id: report.id },
@@ -1452,7 +1902,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.IN_PROGRESS });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe('Not your report');
+    expect(json(res).message).toBe('Not your report');
   });
 
   it('rejects citizen status updates', async () => {
@@ -1513,7 +1963,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({
+    expect(json(res)).toMatchObject({
       total: 2,
       pending: 1,
       assigned: 1,
@@ -1544,8 +1994,8 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].title).toBe('WF current citizen report');
+    expect(json(res)).toHaveLength(1);
+    expect(json(res)[0].title).toBe('WF current citizen report');
   });
 
   it('uses the Prisma user id for Firebase citizen report creation and retrieval', async () => {
@@ -1562,18 +2012,18 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(loginRes.status).toBe(201);
-    expect(loginRes.body.accessToken).toBeDefined();
-    expect(loginRes.body.user.id).toBeDefined();
-    expect(loginRes.body.user.id).not.toBe(firebaseUid);
+    expect(json(loginRes).accessToken).toBeDefined();
+    expect(json(loginRes).user.id).toBeDefined();
+    expect(json(loginRes).user.id).not.toBe(firebaseUid);
 
     const citizen = await prisma.user.findUniqueOrThrow({
-      where: { id: loginRes.body.user.id },
+      where: { id: json(loginRes).user.id },
     });
     createdUserIds.push(citizen.id);
 
     const createRes = await request(app.getHttpServer())
       .post('/api/report')
-      .set('Authorization', `Bearer ${loginRes.body.accessToken}`)
+      .set('Authorization', `Bearer ${json(loginRes).accessToken}`)
       .send({
         title: 'WF Firebase citizen report',
         description: 'Created through backend citizen report endpoint',
@@ -1582,19 +2032,19 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(createRes.status).toBe(201);
-    expect(createRes.body.citizenId).toBe(citizen.id);
-    expect(createRes.body.citizenId).not.toBe(firebaseUid);
-    createdReportIds.push(createRes.body.id);
+    expect(json(createRes).citizenId).toBe(citizen.id);
+    expect(json(createRes).citizenId).not.toBe(firebaseUid);
+    createdReportIds.push(json(createRes).id);
 
     const reportsRes = await request(app.getHttpServer())
       .get('/api/report/citizen/my')
-      .set('Authorization', `Bearer ${loginRes.body.accessToken}`);
+      .set('Authorization', `Bearer ${json(loginRes).accessToken}`);
 
     expect(reportsRes.status).toBe(200);
-    expect(reportsRes.body).toEqual(
+    expect(json(reportsRes)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: createRes.body.id,
+          id: json(createRes).id,
           citizenId: citizen.id,
           title: 'WF Firebase citizen report',
         }),
@@ -1672,7 +2122,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: providerB.id });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe(
+    expect(json(res).message).toBe(
       'Report cannot be assigned in its current status',
     );
   });
@@ -1710,7 +2160,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: citizen.id });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe('Invalid provider');
+    expect(json(res).message).toBe('Invalid provider');
   });
 
   it('allows admins to assign only within their own organization', async () => {
@@ -1747,7 +2197,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: provider.id });
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe('Provider must be same org');
+    expect(json(res).message).toBe('Provider must be same org');
   });
 
   it('allows super admins to assign across organizations while obeying the workflow', async () => {
@@ -1784,7 +2234,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: provider.id });
 
     expect(silentBypassRes.status).toBe(403);
-    expect(silentBypassRes.body.code).toBe(
+    expect(json(silentBypassRes).code).toBe(
       'ORGANIZATION_ROUTING_OVERRIDE_REQUIRED',
     );
 
@@ -1798,7 +2248,7 @@ describe('Report Workflow (e2e)', () => {
       });
 
     expect(assignRes.status).toBe(200);
-    expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
+    expect(json(assignRes).status).toBe(ReportStatus.ASSIGNED);
 
     const providerToken = await signToken(provider);
     const assignedJobs = await request(app.getHttpServer())
@@ -1806,7 +2256,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`);
 
     expect(assignedJobs.status).toBe(200);
-    expect(assignedJobs.body.map((item: { id: string }) => item.id)).toContain(
+    expect(json(assignedJobs).map((item: { id: string }) => item.id)).toContain(
       report.id,
     );
 
@@ -1815,7 +2265,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`);
 
     expect(providerDetail.status).toBe(200);
-    expect(providerDetail.body.id).toBe(report.id);
+    expect(json(providerDetail).id).toBe(report.id);
 
     const closeRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
@@ -1823,7 +2273,7 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.CLOSED });
 
     expect(closeRes.status).toBe(403);
-    expect(closeRes.body.message).toContain('Invalid status transition');
+    expect(json(closeRes).message).toContain('Invalid status transition');
   });
 
   it('rejects any change to closed reports', async () => {
@@ -1906,7 +2356,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${dispatchToken}`);
 
     expect(res.status).toBe(403);
-    expect(res.body.message).toBe(
+    expect(json(res).message).toBe(
       'Report cannot be assigned in its current status',
     );
   });
@@ -1952,12 +2402,12 @@ describe('Report Workflow (e2e)', () => {
       .send({ reason: 'Crew unavailable today' });
 
     expect(rejectRes.status).toBe(201);
-    expect(rejectRes.body.status).toBe(ReportStatus.PENDING);
-    expect(rejectRes.body.assignedProviderId).toBeNull();
-    expect(rejectRes.body.lastAssignmentOutcome).toBe(
+    expect(json(rejectRes).status).toBe(ReportStatus.PENDING);
+    expect(json(rejectRes).assignedProviderId).toBeNull();
+    expect(json(rejectRes).lastAssignmentOutcome).toBe(
       AssignmentOutcome.REJECTED,
     );
-    expect(rejectRes.body.lastAssignmentReason).toBe('Crew unavailable today');
+    expect(json(rejectRes).lastAssignmentReason).toBe('Crew unavailable today');
 
     const dispatchToken = await signToken(dispatchOfficer);
     const reassignRes = await request(app.getHttpServer())
@@ -1966,8 +2416,8 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: providerB.id });
 
     expect(reassignRes.status).toBe(200);
-    expect(reassignRes.body.status).toBe(ReportStatus.ASSIGNED);
-    expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
+    expect(json(reassignRes).status).toBe(ReportStatus.ASSIGNED);
+    expect(json(reassignRes).assignedProviderId).toBe(providerB.id);
   });
 
   it('expires overdue provider offers when acceptance is attempted after the deadline', async () => {
@@ -2006,7 +2456,9 @@ describe('Report Workflow (e2e)', () => {
       .send({ status: ReportStatus.IN_PROGRESS });
 
     expect(acceptRes.status).toBe(409);
-    expect(acceptRes.body.message).toBe('Assignment acceptance window expired');
+    expect(json(acceptRes).message).toBe(
+      'Assignment acceptance window expired',
+    );
 
     const stored = await prisma.report.findUniqueOrThrow({
       where: { id: report.id },
@@ -2070,7 +2522,7 @@ describe('Report Workflow (e2e)', () => {
         reason: 'Provider did not respond before dispatch review',
       });
     expect(reassignRes.status).toBe(200);
-    expect(reassignRes.body.assignedProviderId).toBe(providerB.id);
+    expect(json(reassignRes).assignedProviderId).toBe(providerB.id);
 
     const oldProviderToken = await signToken(providerA);
     const oldAcceptRes = await request(app.getHttpServer())
@@ -2078,7 +2530,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${oldProviderToken}`)
       .send({ status: ReportStatus.IN_PROGRESS });
     expect(oldAcceptRes.status).toBe(403);
-    expect(oldAcceptRes.body.message).toBe('Not your report');
+    expect(json(oldAcceptRes).message).toBe('Not your report');
 
     const newProviderToken = await signToken(providerB);
     const newAcceptRes = await request(app.getHttpServer())
@@ -2086,8 +2538,8 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${newProviderToken}`)
       .send({ status: ReportStatus.IN_PROGRESS });
     expect(newAcceptRes.status).toBe(200);
-    expect(newAcceptRes.body.status).toBe(ReportStatus.IN_PROGRESS);
-    expect(newAcceptRes.body.assignedProviderId).toBe(providerB.id);
+    expect(json(newAcceptRes).status).toBe(ReportStatus.IN_PROGRESS);
+    expect(json(newAcceptRes).assignedProviderId).toBe(providerB.id);
   });
 
   it('allows a directly assigned provider to act despite membership drift', async () => {
@@ -2138,17 +2590,17 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${driftedProviderToken}`)
       .send({ status: ReportStatus.IN_PROGRESS });
     expect(acceptRes.status).toBe(200);
-    expect(acceptRes.body.status).toBe(ReportStatus.IN_PROGRESS);
-    expect(acceptRes.body.assignedProviderId).toBe(driftedProvider.id);
+    expect(json(acceptRes).status).toBe(ReportStatus.IN_PROGRESS);
+    expect(json(acceptRes).assignedProviderId).toBe(driftedProvider.id);
 
     const rejectRes = await request(app.getHttpServer())
       .post(`/api/report/provider/${rejectReport.id}/reject`)
       .set('Authorization', `Bearer ${driftedProviderToken}`)
       .send({ reason: 'Outside current route' });
     expect(rejectRes.status).toBe(201);
-    expect(rejectRes.body.status).toBe(ReportStatus.PENDING);
-    expect(rejectRes.body.assignedProviderId).toBeNull();
-    expect(rejectRes.body.lastAssignmentOutcome).toBe(
+    expect(json(rejectRes).status).toBe(ReportStatus.PENDING);
+    expect(json(rejectRes).assignedProviderId).toBeNull();
+    expect(json(rejectRes).lastAssignmentOutcome).toBe(
       AssignmentOutcome.REJECTED,
     );
   });
@@ -2282,9 +2734,9 @@ describe('Report Workflow (e2e)', () => {
         reason: 'Super admin routed report to Hunslow jurisdiction',
       });
     expect(routeRes.status).toBe(200);
-    expect(routeRes.body.organizationId).toBe(sourceOrg.id);
-    expect(routeRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
-    expect(routeRes.body.status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(routeRes).organizationId).toBe(sourceOrg.id);
+    expect(json(routeRes).assignedOrganizationId).toBe(hunslowOrg.id);
+    expect(json(routeRes).status).toBe(ReportStatus.ORG_REVIEW);
 
     const stored = await prisma.report.findUniqueOrThrow({
       where: { id: report.id },
@@ -2301,25 +2753,25 @@ describe('Report Workflow (e2e)', () => {
       .get(`/api/report/${report.id}`)
       .set('Authorization', `Bearer ${hunslowAdminToken}`);
     expect(hunslowReadAfterRoute.status).toBe(200);
-    expect(hunslowReadAfterRoute.body.organizationId).toBe(sourceOrg.id);
-    expect(hunslowReadAfterRoute.body.status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(hunslowReadAfterRoute).organizationId).toBe(sourceOrg.id);
+    expect(json(hunslowReadAfterRoute).status).toBe(ReportStatus.ORG_REVIEW);
 
     const hunslowReviewQueue = await request(app.getHttpServer())
       .get('/api/report/organization/responsibility-review')
       .set('Authorization', `Bearer ${hunslowAdminToken}`);
     expect(hunslowReviewQueue.status).toBe(200);
     expect(
-      hunslowReviewQueue.body.map((item: { id: string }) => item.id),
+      json(hunslowReviewQueue).map((item: { id: string }) => item.id),
     ).toContain(report.id);
 
     const hunslowSummary = await request(app.getHttpServer())
       .get('/api/report/admin/dashboard/summary')
       .set('Authorization', `Bearer ${hunslowAdminToken}`);
     expect(hunslowSummary.status).toBe(200);
-    expect(hunslowSummary.body.total).toBeGreaterThanOrEqual(1);
-    expect(hunslowSummary.body.pending).toBeGreaterThanOrEqual(1);
+    expect(json(hunslowSummary).total).toBeGreaterThanOrEqual(1);
+    expect(json(hunslowSummary).pending).toBeGreaterThanOrEqual(1);
     expect(
-      hunslowSummary.body.awaitingOrganizationDecision,
+      json(hunslowSummary).awaitingOrganizationDecision,
     ).toBeGreaterThanOrEqual(1);
 
     const earlyAssign = await request(app.getHttpServer())
@@ -2327,7 +2779,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${hunslowAdminToken}`)
       .send({ providerId: hunslowProvider.id });
     expect(earlyAssign.status).toBe(403);
-    expect(earlyAssign.body.message).toContain(
+    expect(json(earlyAssign).message).toContain(
       'Report cannot be assigned in its current status',
     );
 
@@ -2336,25 +2788,25 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${hunslowAdminToken}`)
       .send({ note: 'Accepted for Hunslow dispatch' });
     expect(acceptRes.status).toBe(200);
-    expect(acceptRes.body.status).toBe(ReportStatus.PENDING);
-    expect(acceptRes.body.organizationId).toBe(hunslowOrg.id);
-    expect(acceptRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
+    expect(json(acceptRes).status).toBe(ReportStatus.PENDING);
+    expect(json(acceptRes).organizationId).toBe(hunslowOrg.id);
+    expect(json(acceptRes).assignedOrganizationId).toBe(hunslowOrg.id);
 
     const hunslowCandidates = await request(app.getHttpServer())
       .get(`/api/report/${report.id}/assignment-candidates`)
       .set('Authorization', `Bearer ${hunslowAdminToken}`);
     expect(hunslowCandidates.status).toBe(200);
     expect(
-      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+      json(hunslowCandidates).providers.map((item: { id: string }) => item.id),
     ).toContain(hunslowProvider.id);
     expect(
-      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+      json(hunslowCandidates).providers.map((item: { id: string }) => item.id),
     ).not.toContain(inactiveProvider.id);
     expect(
-      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+      json(hunslowCandidates).providers.map((item: { id: string }) => item.id),
     ).not.toContain(otherOrgProvider.id);
     expect(
-      hunslowCandidates.body.providers.map((item: { id: string }) => item.id),
+      json(hunslowCandidates).providers.map((item: { id: string }) => item.id),
     ).not.toContain(revokedLinkedProvider.id);
 
     const inactiveAssign = await request(app.getHttpServer())
@@ -2380,8 +2832,8 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${hunslowDispatchToken}`)
       .send({ providerId: hunslowProvider.id });
     expect(assignRes.status).toBe(200);
-    expect(assignRes.body.status).toBe(ReportStatus.ASSIGNED);
-    expect(assignRes.body.assignedProviderId).toBe(hunslowProvider.id);
+    expect(json(assignRes).status).toBe(ReportStatus.ASSIGNED);
+    expect(json(assignRes).assignedProviderId).toBe(hunslowProvider.id);
 
     const duplicateAssign = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/assign`)
@@ -2395,7 +2847,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`)
       .send({ status: ReportStatus.IN_PROGRESS });
     expect(providerAccept.status).toBe(200);
-    expect(providerAccept.body.status).toBe(ReportStatus.IN_PROGRESS);
+    expect(json(providerAccept).status).toBe(ReportStatus.IN_PROGRESS);
 
     const assignedNotification = await prisma.notification.findFirst({
       where: {
@@ -2406,13 +2858,14 @@ describe('Report Workflow (e2e)', () => {
     });
     expect(assignedNotification).toBeTruthy();
 
-    const assignmentActivity = await (prisma as any).reportActivity.findFirst({
-      where: {
-        reportId: report.id,
-        action: 'PROVIDER_ASSIGNED',
-        providerId: hunslowProvider.id,
-      },
-    });
+    const assignmentActivity =
+      await prismaWithActivity.reportActivity.findFirst({
+        where: {
+          reportId: report.id,
+          action: 'PROVIDER_ASSIGNED',
+          providerId: hunslowProvider.id,
+        },
+      });
     expect(assignmentActivity).toBeTruthy();
 
     const otherRouteAttempt = await request(app.getHttpServer())
@@ -2436,9 +2889,9 @@ describe('Report Workflow (e2e)', () => {
         establishAuthoritativeOwnership: true,
       });
     expect(overrideRes.status).toBe(200);
-    expect(overrideRes.body.status).toBe(ReportStatus.PENDING);
-    expect(overrideRes.body.organizationId).toBe(hunslowOrg.id);
-    expect(overrideRes.body.assignedOrganizationId).toBe(hunslowOrg.id);
+    expect(json(overrideRes).status).toBe(ReportStatus.PENDING);
+    expect(json(overrideRes).organizationId).toBe(hunslowOrg.id);
+    expect(json(overrideRes).assignedOrganizationId).toBe(hunslowOrg.id);
   });
 
   it('automatically routes only one deterministic eligible organization match', async () => {
@@ -2501,22 +2954,38 @@ describe('Report Workflow (e2e)', () => {
         location: 'Kubwa Township',
       });
     expect(createRes.status).toBe(201);
-    createdReportIds.push(createRes.body.id);
-    expect(createRes.body.status).toBe(ReportStatus.ORG_REVIEW);
-    expect(createRes.body.organizationId).toBe(sourceOrg.id);
-    expect(createRes.body.assignedOrganizationId).toBe(routedOrg.id);
+    createdReportIds.push(json(createRes).id);
+    expect(json(createRes).status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(createRes).organizationId).toBe(sourceOrg.id);
+    expect(json(createRes).assignedOrganizationId).toBe(routedOrg.id);
 
     const routedAdminToken = await signToken(routedAdmin);
     const otherAdminToken = await signToken(otherAdmin);
     const routedRead = await request(app.getHttpServer())
-      .get(`/api/report/${createRes.body.id}`)
+      .get(`/api/report/${json(createRes).id}`)
       .set('Authorization', `Bearer ${routedAdminToken}`);
     expect(routedRead.status).toBe(200);
 
     const otherRead = await request(app.getHttpServer())
-      .get(`/api/report/${createRes.body.id}`)
+      .get(`/api/report/${json(createRes).id}`)
       .set('Authorization', `Bearer ${otherAdminToken}`);
     expect(otherRead.status).toBe(403);
+
+    const routedQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${routedAdminToken}`);
+    expect(routedQueue.status).toBe(200);
+    expect(json(routedQueue).map((item: { id: string }) => item.id)).toContain(
+      json(createRes).id,
+    );
+
+    const unrelatedQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${otherAdminToken}`);
+    expect(unrelatedQueue.status).toBe(200);
+    expect(
+      json(unrelatedQueue).map((item: { id: string }) => item.id),
+    ).not.toContain(json(createRes).id);
 
     const ambiguousOrgA = await prisma.organization.create({
       data: {
@@ -2576,9 +3045,16 @@ describe('Report Workflow (e2e)', () => {
         location: 'Jabi District',
       });
     expect(ambiguousRes.status).toBe(201);
-    createdReportIds.push(ambiguousRes.body.id);
-    expect(ambiguousRes.body.status).toBe(ReportStatus.TRIAGE);
-    expect(ambiguousRes.body.assignedOrganizationId).toBeNull();
+    createdReportIds.push(json(ambiguousRes).id);
+    expect(json(ambiguousRes).status).toBe(ReportStatus.TRIAGE);
+    expect(json(ambiguousRes).assignedOrganizationId).toBeNull();
+    expect(json(ambiguousRes).responsibilityResolution).toMatchObject({
+      outcome: 'AMBIGUOUS',
+      reasonCode: 'MULTIPLE_ELIGIBLE_CANDIDATES',
+    });
+    expect(
+      json(ambiguousRes).responsibilityResolution.proposedOrganizationId,
+    ).toBeUndefined();
 
     const noMatchRes = await request(app.getHttpServer())
       .post('/api/report')
@@ -2590,9 +3066,25 @@ describe('Report Workflow (e2e)', () => {
         location: 'Gwarinpa',
       });
     expect(noMatchRes.status).toBe(201);
-    createdReportIds.push(noMatchRes.body.id);
-    expect(noMatchRes.body.status).toBe(ReportStatus.TRIAGE);
-    expect(noMatchRes.body.assignedOrganizationId).toBeNull();
+    createdReportIds.push(json(noMatchRes).id);
+    expect(json(noMatchRes).status).toBe(ReportStatus.TRIAGE);
+    expect(json(noMatchRes).assignedOrganizationId).toBeNull();
+    expect(json(noMatchRes).responsibilityResolution).toMatchObject({
+      outcome: 'UNMATCHED',
+    });
+    expect(
+      json(noMatchRes).responsibilityResolution.proposedOrganizationId,
+    ).toBeUndefined();
+
+    const queueAfterUnresolved = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${routedAdminToken}`);
+    expect(queueAfterUnresolved.status).toBe(200);
+    const unresolvedQueueIds = json(queueAfterUnresolved).map(
+      (item: { id: string }) => item.id,
+    );
+    expect(unresolvedQueueIds).not.toContain(json(ambiguousRes).id);
+    expect(unresolvedQueueIds).not.toContain(json(noMatchRes).id);
 
     const superAdmin = await createUser({
       email: `wf-auto-super-admin-${unique}@test.com`,
@@ -2601,19 +3093,19 @@ describe('Report Workflow (e2e)', () => {
     });
     const superAdminToken = await signToken(superAdmin);
     const manualRouteRes = await request(app.getHttpServer())
-      .patch(`/api/report/${ambiguousRes.body.id}/assign-organization`)
+      .patch(`/api/report/${json(ambiguousRes).id}/assign-organization`)
       .set('Authorization', `Bearer ${superAdminToken}`)
       .send({
         organizationId: ambiguousOrgA.id,
         reason: 'Manual triage routing',
       });
     expect(manualRouteRes.status).toBe(200);
-    expect(manualRouteRes.body.status).toBe(ReportStatus.ORG_REVIEW);
-    expect(manualRouteRes.body.organizationId).toBe(sourceOrg.id);
-    expect(manualRouteRes.body.assignedOrganizationId).toBe(ambiguousOrgA.id);
+    expect(json(manualRouteRes).status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(manualRouteRes).organizationId).toBe(sourceOrg.id);
+    expect(json(manualRouteRes).assignedOrganizationId).toBe(ambiguousOrgA.id);
 
     const manualOverrideRes = await request(app.getHttpServer())
-      .patch(`/api/report/${noMatchRes.body.id}/assign-organization`)
+      .patch(`/api/report/${json(noMatchRes).id}/assign-organization`)
       .set('Authorization', `Bearer ${superAdminToken}`)
       .send({
         organizationId: ambiguousOrgA.id,
@@ -2622,11 +3114,204 @@ describe('Report Workflow (e2e)', () => {
         establishAuthoritativeOwnership: true,
       });
     expect(manualOverrideRes.status).toBe(200);
-    expect(manualOverrideRes.body.status).toBe(ReportStatus.PENDING);
-    expect(manualOverrideRes.body.organizationId).toBe(ambiguousOrgA.id);
-    expect(manualOverrideRes.body.assignedOrganizationId).toBe(
+    expect(json(manualOverrideRes).status).toBe(ReportStatus.PENDING);
+    expect(json(manualOverrideRes).organizationId).toBe(ambiguousOrgA.id);
+    expect(json(manualOverrideRes).assignedOrganizationId).toBe(
       ambiguousOrgA.id,
     );
+  });
+
+  it('routes a real citizen submission into organization review without Super Admin assignment', async () => {
+    const unique = Date.now().toString(36);
+    const category = `Road Infrastructure ${unique}`;
+    const sourceOrg = await createOrganization(
+      `Workflow Real Intake Source ${unique}`,
+    );
+    const routedOrg = await prisma.organization.create({
+      data: {
+        name: `Workflow Hunslow Intake ${unique}`,
+        contactEmail: `wf-real-routed-${unique}@test.com`,
+        state: 'Katsina',
+        lga: 'Katsina',
+        address: 'Katsina Township Road',
+      },
+    });
+    createdOrgIds.push(routedOrg.id);
+    const citizen = await createUser({
+      email: `wf-real-citizen-${unique}@test.com`,
+      fullName: 'Workflow Real Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: sourceOrg.id,
+    });
+    const routedAdmin = await createUser({
+      email: `wf-real-admin-${unique}@test.com`,
+      fullName: 'Workflow Real Routed Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: routedOrg.id,
+    });
+    const provider = await createUser({
+      email: `wf-real-provider-${unique}@test.com`,
+      fullName: 'Workflow Real Routed Provider',
+      role: UserRole.PROVIDER,
+      organizationId: routedOrg.id,
+      serviceCategories: [category],
+      coverageAreas: ['Katsina Township Road'],
+      profileData: {
+        secureZoneProviderCapabilities: [
+          { id: 'civil_works', status: 'ACTIVE' },
+        ],
+      },
+    });
+
+    const citizenToken = await signToken(citizen);
+    const routedAdminToken = await signToken(routedAdmin);
+    const createRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF Katsina Township Road Project',
+        description: 'Road surface failure near township junction',
+        category,
+        location: 'Katsina Township Road',
+        locationName: 'Katsina Township Road',
+        locationLandmark: 'Township junction',
+        latitude: 12.9891,
+        longitude: 7.6006,
+        locationAccuracy: 18,
+        locationSource: 'DEVICE_GPS',
+      });
+
+    expect(createRes.status).toBe(201);
+    createdReportIds.push(json(createRes).id);
+    expect(json(createRes).status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(createRes).organizationId).toBe(sourceOrg.id);
+    expect(json(createRes).assignedOrganizationId).toBe(routedOrg.id);
+    expect(json(createRes).locationName).toBe('Katsina Township Road');
+    expect(json(createRes).latitude).toBe(12.9891);
+    expect(json(createRes).responsibilityResolution).toMatchObject({
+      outcome: 'MATCHED',
+      eligibleCandidateCount: 1,
+      proposedOrganizationId: routedOrg.id,
+      reasonCode: 'MATCHED_DETERMINISTIC',
+      report: {
+        category,
+        coordinates: { latitude: 12.9891, longitude: 7.6006 },
+      },
+    });
+    expect(typeof json(createRes).responsibilityResolution.candidateCount).toBe(
+      'number',
+    );
+    expect(
+      typeof json(createRes).responsibilityResolution.report.normalizedCategory,
+    ).toBe('string');
+    expect(
+      json(createRes).responsibilityResolution.report.location,
+    ).toMatchObject({
+      text: 'Katsina Township Road',
+      name: 'Katsina Township Road',
+      landmark: 'Township junction',
+      source: 'DEVICE_GPS',
+    });
+    expect(
+      json(createRes).responsibilityResolution.candidateCount,
+    ).toBeGreaterThan(0);
+    expect(json(createRes).responsibilityResolution.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          organizationId: routedOrg.id,
+          organizationStatus: 'ACTIVE',
+          coverageAreas: ['Katsina Township Road'],
+          eligible: true,
+          reasons: [],
+        }),
+      ]),
+    );
+
+    const evidenceRes = await request(app.getHttpServer())
+      .post(`/api/report/${json(createRes).id}/evidence`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        images: [0, 1, 2].map((index) => ({
+          fileName: `citizen-${index}.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          order: index,
+        })),
+      });
+    expect(evidenceRes.status).toBe(201);
+    expect(json(evidenceRes).evidenceItems).toHaveLength(3);
+
+    const routeActivity = await prismaWithActivity.reportActivity.findFirst({
+      where: {
+        reportId: json(createRes).id,
+        action: 'RESPONSIBILITY_RESOLUTION_ATTEMPTED',
+      },
+    });
+    expect(routeActivity).toBeTruthy();
+    if (!routeActivity) throw new Error('Expected route activity');
+    expect(routeActivity.metadata).toMatchObject({
+      responsibilityResolution: {
+        outcome: 'MATCHED',
+        proposedOrganizationId: routedOrg.id,
+        reasonCode: 'MATCHED_DETERMINISTIC',
+      },
+    });
+
+    const earlyAssign = await request(app.getHttpServer())
+      .patch(`/api/report/${json(createRes).id}/assign`)
+      .set('Authorization', `Bearer ${routedAdminToken}`)
+      .send({ providerId: provider.id });
+    expect(earlyAssign.status).toBe(403);
+
+    const queueRes = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${routedAdminToken}`);
+    expect(queueRes.status).toBe(200);
+    expect(json(queueRes).map((item: { id: string }) => item.id)).toContain(
+      json(createRes).id,
+    );
+
+    const acceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${json(createRes).id}/organization-accept`)
+      .set('Authorization', `Bearer ${routedAdminToken}`)
+      .send({ note: 'Accepted by responsible road authority.' });
+    expect(acceptRes.status).toBe(200);
+    expect(json(acceptRes).status).toBe(ReportStatus.PENDING);
+    expect(json(acceptRes).organizationId).toBe(routedOrg.id);
+    expect(json(acceptRes).assignedOrganizationId).toBe(routedOrg.id);
+
+    const acceptedActivity = await prismaWithActivity.reportActivity.findFirst({
+      where: {
+        reportId: json(createRes).id,
+        action: 'ORGANIZATION_ACCEPTED_REPORT',
+      },
+    });
+    expect(acceptedActivity).toBeTruthy();
+    expect(
+      await prisma.notification.findFirst({
+        where: {
+          reportId: json(createRes).id,
+          userId: citizen.id,
+          type: 'organization_report_accepted',
+        },
+      }),
+    ).toBeTruthy();
+    expect(
+      await prisma.notification.findFirst({
+        where: {
+          reportId: json(createRes).id,
+          userId: routedAdmin.id,
+          type: 'organization_report_accepted',
+        },
+      }),
+    ).toBeTruthy();
+
+    const assignRes = await request(app.getHttpServer())
+      .patch(`/api/report/${json(createRes).id}/assign`)
+      .set('Authorization', `Bearer ${routedAdminToken}`)
+      .send({ providerId: provider.id });
+    expect(assignRes.status).toBe(200);
+    expect(json(assignRes).status).toBe(ReportStatus.ASSIGNED);
   });
 
   it('returns organization-rejected reports to platform triage', async () => {
@@ -2669,9 +3354,9 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ reason: 'Outside Hunslow jurisdiction' });
     expect(rejectRes.status).toBe(200);
-    expect(rejectRes.body.status).toBe(ReportStatus.TRIAGE);
-    expect(rejectRes.body.assignedOrganizationId).toBeNull();
-    expect(rejectRes.body.lastAssignmentReason).toBe(
+    expect(json(rejectRes).status).toBe(ReportStatus.TRIAGE);
+    expect(json(rejectRes).assignedOrganizationId).toBeNull();
+    expect(json(rejectRes).lastAssignmentReason).toBe(
       'Outside Hunslow jurisdiction',
     );
 
@@ -2680,7 +3365,7 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${adminToken}`);
     expect(orgReports.status).toBe(200);
     expect(
-      orgReports.body.map((item: { id: string }) => item.id),
+      json(orgReports).map((item: { id: string }) => item.id),
     ).not.toContain(report.id);
 
     const staleAssign = await request(app.getHttpServer())

@@ -81,14 +81,196 @@ type ResponsibilityOutcome =
   | 'HIGH_CONFIDENCE'
   | 'AMBIGUOUS'
   | 'UNMATCHED'
-  | 'RESTRICTED_OR_CONFLICTED';
+  | 'RESTRICTED_OR_CONFLICTED'
+  | 'NO_LOCATION'
+  | 'NO_CATEGORY';
+
+type CanonicalResponsibilityOutcome =
+  | 'MATCHED'
+  | 'AMBIGUOUS'
+  | 'UNMATCHED'
+  | 'RESTRICTED'
+  | 'NO_LOCATION'
+  | 'NO_CATEGORY';
+
+type ResponsibilityResolutionDiagnostics = {
+  outcome: CanonicalResponsibilityOutcome;
+  candidateCount: number;
+  eligibleCandidateCount: number;
+  proposedOrganizationId?: string;
+  selectedCandidateId?: string;
+  reasonCode: string;
+  evaluatedAt: string;
+  report: {
+    category: string | null;
+    normalizedCategory: string | null;
+    normalizedCategoryAliases: string[];
+    coordinates: { latitude: number | null; longitude: number | null };
+    location: {
+      text: string | null;
+      name: string | null;
+      address: string | null;
+      landmark: string | null;
+      source: string | null;
+    };
+  };
+  candidates: Array<{
+    organizationId: string;
+    organizationName: string;
+    organizationStatus: string | null;
+    organizationVerificationState: string | null;
+    mandateCategories: string[];
+    providerCategories: string[];
+    coverageAreas: string[];
+    eligible: boolean;
+    confidence: string | null;
+    reasons: string[];
+  }>;
+};
+
+type ResponsibilityProviderProfile = {
+  id: string;
+  accountStatus?: string | null;
+  serviceCategories?: unknown;
+  coverageAreas?: unknown;
+  profileData?: Prisma.JsonValue | null;
+};
+
+type ResponsibilityOrganizationProfile = {
+  id: string;
+  name: string;
+  status?: OrganizationStatus | null;
+  billingStatus?: BillingStatus | null;
+  contactEmail?: string | null;
+  contactPhone?: string | null;
+  country?: string | null;
+  state?: string | null;
+  lga?: string | null;
+  address?: string | null;
+  enabledModules?: unknown;
+  identityVerificationStatus?: string | null;
+  verificationStatus?: string | null;
+  profileData?: Prisma.JsonValue | null;
+  providerLinks?: Array<{
+    provider?: ResponsibilityProviderProfile | null;
+  }>;
+  users?: ResponsibilityProviderProfile[];
+};
+
+type OrganizationCandidate = {
+  type: 'ORGANIZATION';
+  id: string;
+  name: string;
+  eligible: boolean;
+  ready: boolean;
+  reasons: string[];
+  exclusionReasons: string[];
+  categoryMatch: {
+    requestedCategory: string;
+    normalizedCategory: string;
+    matched: boolean;
+    matchedMaintenanceCapabilities: string[];
+    source: string;
+  };
+  jurisdictionMatch: boolean;
+  serviceModuleReady: boolean;
+  confidence: string;
+  activeProviderCount: number;
+  acceptedProviderCount: number;
+  capabilityBackedProviderCount: number;
+  inheritedProfileProviderCount: number;
+  verifiedCapabilityProviderCount: number;
+  coveredCategories: string[];
+  mandateCategories: string[];
+  excludedCategories: string[];
+  inheritedProfileCategories: string[];
+  explicitCapabilities: string[];
+  readiness: Record<string, unknown>;
+  diagnostics: {
+    organizationStatus?: OrganizationStatus | null;
+    organizationVerificationState?: string | null;
+  };
+  jurisdictionSummary: {
+    country?: string | null;
+    state?: string | null;
+    lga?: string | null;
+    address?: string | null;
+    coverageAreas: string[];
+  };
+};
+
+type PrismaCreateDelegate = {
+  create(args: unknown): Promise<unknown>;
+};
+
+type PrismaFindManyDelegate<T> = {
+  findMany(args: unknown): Promise<T[]>;
+};
+
+type PrismaNotificationDelegate = PrismaCreateDelegate &
+  PrismaFindFirstDelegate<{ id: string }>;
+
+type PrismaFindFirstDelegate<T> = {
+  findFirst(args: unknown): Promise<T | null>;
+};
+
+type OptionalReportActivityRecord = {
+  id: string;
+  action?: string | null;
+  reportId?: string | null;
+  organizationId?: string | null;
+  actorUserId?: string | null;
+  actorRole?: UserRole | null;
+  actorName?: string | null;
+  providerId?: string | null;
+  fromStatus?: ReportStatus | null;
+  toStatus?: ReportStatus | null;
+  reason?: string | null;
+  note?: string | null;
+  metadata?: unknown;
+  createdAt?: Date | string | null;
+};
+
+type OptionalNotificationRecord = {
+  id: string;
+  reportId?: string | null;
+  userId?: string | null;
+  type?: string | null;
+  title?: string | null;
+  message?: string | null;
+  read?: boolean | null;
+  createdAt?: Date | string | null;
+};
+
+type OptionalEvidenceRecord = {
+  id: string;
+  fileUrl: string;
+  fileType?: string | null;
+  uploadedAt?: Date | string | null;
+  metadata?: unknown;
+};
+
+type PotentialAssetRecord = {
+  id: string;
+  organizationId?: string | null;
+  ownershipStatus?: string | null;
+};
+
+type AssetCandidateOwnerRecord = {
+  organizationId?: string | null;
+};
+
+type AssetClaimRecord = {
+  claimantOrganizationId?: string | null;
+};
 
 type ResponsibilityResolution = {
   outcome: ResponsibilityOutcome;
   organization: { id: string } | null;
-  candidates: any[];
+  candidates: OrganizationCandidate[];
   reasons: string[];
   matchFactors: string[];
+  diagnostics: ResponsibilityResolutionDiagnostics;
 };
 
 type ReportWithEvidence = {
@@ -108,6 +290,14 @@ type ReportWithEvidence = {
 };
 
 type EnterpriseReportWithEvidence = ReportWithEvidence & {
+  title?: string | null;
+  category?: string | null;
+  location?: string | null;
+  locationName?: string | null;
+  locationAddress?: string | null;
+  locationLandmark?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   completionNote?: string | null;
   completedByProviderAt?: Date | string | null;
   completionLatitude?: number | null;
@@ -141,7 +331,14 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   assignmentDeadlineAt?: Date | string | null;
   lastAssignmentOutcome?: AssignmentOutcome | null;
   lastAssignmentReason?: string | null;
-  assignedProvider?: unknown;
+  assignedProvider?: {
+    id: string;
+    fullName?: string | null;
+    email?: string | null;
+    providerId?: string | null;
+  } | null;
+  organization?: { id: string; name?: string | null } | null;
+  assignedOrganization?: { id: string; name?: string | null } | null;
 };
 
 const COMPLETION_REVIEW_WINDOW_FALLBACK_RULE =
@@ -196,6 +393,18 @@ export class ReportService {
     @Inject(UploadSecurityService)
     private readonly uploadSecurity?: UploadSecurityService,
   ) {}
+
+  private prismaDelegate<T>(name: string): T | undefined {
+    return this.prismaDelegateFrom<T>(this.prisma, name);
+  }
+
+  private prismaDelegateFrom<T>(source: unknown, name: string): T | undefined {
+    const delegates = source as Record<string, unknown>;
+    const delegate = delegates[name];
+    return delegate && typeof delegate === 'object'
+      ? (delegate as T)
+      : undefined;
+  }
 
   // ===================== CREATE =====================
 
@@ -272,6 +481,7 @@ export class ReportService {
       responsibilityCandidateOrganizationId: report.assignedOrganizationId,
       responsibilityReasons: intakeRoute.reasons,
       responsibilityMatchFactors: intakeRoute.matchFactors,
+      responsibilityResolution: intakeRoute.diagnostics,
     });
     await this.recordReportActivity(report.id, 'REPORT_CREATED', user, {
       organizationId: report.organizationId,
@@ -283,6 +493,7 @@ export class ReportService {
         responsibilityOutcome: intakeRoute.outcome,
         responsibilityReasons: intakeRoute.reasons,
         responsibilityMatchFactors: intakeRoute.matchFactors,
+        responsibilityResolution: intakeRoute.diagnostics,
       },
     });
     await this.recordReportActivity(
@@ -303,6 +514,7 @@ export class ReportService {
           ),
           reasons: intakeRoute.reasons,
           matchFactors: intakeRoute.matchFactors,
+          responsibilityResolution: intakeRoute.diagnostics,
         },
       },
     );
@@ -322,6 +534,7 @@ export class ReportService {
             assignedOrganizationId: report.assignedOrganizationId,
             routingSource: report.organizationAssignmentSource,
             outcome: intakeRoute.outcome,
+            responsibilityResolution: intakeRoute.diagnostics,
           },
         },
       );
@@ -344,7 +557,10 @@ export class ReportService {
       });
     }
 
-    return this.withProtectedEvidenceUrls(report);
+    return {
+      ...this.withProtectedEvidenceUrls(report),
+      responsibilityResolution: intakeRoute.diagnostics,
+    };
   }
 
   // ===================== CITIZEN =====================
@@ -547,8 +763,11 @@ export class ReportService {
 
   async getReportTimeline(reportId: string, user: JwtUser) {
     await this.getReportById(reportId, user);
-    const activity = (this.prisma as any).reportActivity;
-    if (!activity?.findMany) return [];
+    const activity =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalReportActivityRecord>>(
+        'reportActivity',
+      );
+    if (!activity) return [];
     return activity.findMany({
       where: { reportId },
       orderBy: { createdAt: 'asc' },
@@ -793,7 +1012,7 @@ export class ReportService {
     return {
       reportId,
       reportCategory: report.category,
-      assignedOrganization: (report as any).assignedOrganization ?? null,
+      assignedOrganization: report.assignedOrganization ?? null,
       assignedProvider: report.assignedProvider ?? null,
       routing: this.routingDiagnostics(report, organizationCandidates),
       providers: providers.map((provider) => ({
@@ -960,12 +1179,15 @@ export class ReportService {
           lastAssignmentReason: null,
           lastAssignmentAt: new Date(),
           lastAssignmentProviderId: null,
-        } as any,
+        } satisfies Prisma.ReportUncheckedUpdateInput,
         include: this.includeRelations(),
       });
 
-      const audit = (tx as any).demoAuditLog;
-      if (audit?.create) {
+      const audit = this.prismaDelegateFrom<PrismaCreateDelegate>(
+        tx,
+        'demoAuditLog',
+      );
+      if (audit) {
         await audit.create({
           data: {
             action: 'Report Assigned To Organization',
@@ -986,8 +1208,11 @@ export class ReportService {
         });
       }
 
-      const activity = (tx as any).reportActivity;
-      if (activity?.create) {
+      const activity = this.prismaDelegateFrom<PrismaCreateDelegate>(
+        tx,
+        'reportActivity',
+      );
+      if (activity) {
         await activity.create({
           data: {
             reportId,
@@ -1082,7 +1307,7 @@ export class ReportService {
         lastAssignmentOutcome: null,
         lastAssignmentReason: null,
         lastAssignmentAt: new Date(),
-      } as any,
+      } satisfies Prisma.ReportUncheckedUpdateInput,
       include: this.includeRelations(),
     });
 
@@ -1184,7 +1409,7 @@ export class ReportService {
         lastAssignmentOutcome: AssignmentOutcome.REJECTED,
         lastAssignmentReason: reason,
         lastAssignmentAt: new Date(),
-      } as any,
+      } satisfies Prisma.ReportUncheckedUpdateInput,
       include: this.includeRelations(),
     });
 
@@ -1765,38 +1990,55 @@ export class ReportService {
       );
     }
 
-    await this.assertEvidenceLimit(reportId, 'report-completion');
-
-    const saved = await this.getUploadSecurity().saveBase64Image({
-      imageBase64: dto.imageBase64,
-      contentType: dto.contentType,
-      folder: 'report-completion',
+    const images = this.completionEvidencePayloads(dto);
+    await this.assertEvidenceLimit(
       reportId,
-      invalidSizeMessage: 'Invalid completion image size',
-    });
+      'report-completion',
+      images.length,
+    );
 
-    await this.createEvidenceRecord({
-      reportId,
-      organizationId: report.organizationId,
-      ownerUserId: report.citizenId,
-      uploadedById: userId,
-      fileUrl: saved.imageUrl,
-      contentType: dto.contentType,
-      description: 'Provider completion evidence',
-      metadata: {
-        kind: 'report-completion',
-        imagePath: saved.imagePath,
-        classification: dto.classification ?? 'completion',
-        order: dto.order ?? null,
-      },
-    });
+    const savedItems: Array<{ imagePath: string; imageUrl: string }> = [];
+    for (const [index, image] of images.entries()) {
+      const saved = await this.getUploadSecurity().saveBase64Image({
+        imageBase64: image.imageBase64,
+        contentType: image.contentType,
+        folder: 'report-completion',
+        reportId,
+        invalidSizeMessage: 'Invalid completion image size',
+      });
 
-    if (!report.completionImagePath && !report.completionImageUrl) {
+      await this.createEvidenceRecord({
+        reportId,
+        organizationId: report.organizationId,
+        ownerUserId: report.citizenId,
+        uploadedById: userId,
+        fileUrl: saved.imageUrl,
+        contentType: image.contentType,
+        description: 'Provider completion evidence',
+        metadata: {
+          kind: 'report-completion',
+          evidenceType: this.providerEvidenceType(image.classification),
+          imagePath: saved.imagePath,
+          classification: image.classification ?? 'after',
+          order: image.order ?? index,
+          sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
+        },
+      });
+
+      savedItems.push(saved);
+    }
+
+    const firstSaved = savedItems[0];
+    if (
+      firstSaved &&
+      !report.completionImagePath &&
+      !report.completionImageUrl
+    ) {
       await this.prisma.report.update({
         where: { id: reportId },
         data: {
-          completionImagePath: saved.imagePath,
-          completionImageUrl: saved.imageUrl,
+          completionImagePath: firstSaved.imagePath,
+          completionImageUrl: firstSaved.imageUrl,
         },
       });
     }
@@ -1804,7 +2046,7 @@ export class ReportService {
     await this.audit('Provider Completion Evidence Uploaded', user, {
       targetType: 'Report',
       targetId: reportId,
-      imagePath: saved.imagePath,
+      imagePaths: savedItems.map((item) => item.imagePath),
     });
     await this.recordReportActivity(
       reportId,
@@ -1815,18 +2057,32 @@ export class ReportService {
         fromStatus: report.status,
         toStatus: report.status,
         providerId: userId,
-        metadata: { imagePath: saved.imagePath, imageUrl: saved.imageUrl },
+        metadata: {
+          imagePaths: savedItems.map((item) => item.imagePath),
+          imageUrls: savedItems.map((item) => item.imageUrl),
+          count: savedItems.length,
+        },
       },
     );
 
     return {
-      completionImagePath: saved.imagePath,
-      completionImageUrl:
-        this.protectedEvidenceUrl(
-          reportId,
-          'report-completion',
-          saved.imagePath,
-        ) ?? saved.imageUrl,
+      completionImagePath: firstSaved?.imagePath ?? null,
+      completionImageUrl: firstSaved
+        ? (this.protectedEvidenceUrl(
+            reportId,
+            'report-completion',
+            firstSaved.imagePath,
+          ) ?? firstSaved.imageUrl)
+        : null,
+      evidenceItems: savedItems.map((item) => ({
+        imagePath: item.imagePath,
+        imageUrl:
+          this.protectedEvidenceUrl(
+            reportId,
+            'report-completion',
+            item.imagePath,
+          ) ?? item.imageUrl,
+      })),
     };
   }
 
@@ -1851,43 +2107,55 @@ export class ReportService {
       throw new ForbiddenException('Not your report');
     }
 
-    await this.assertEvidenceLimit(reportId, 'report-evidence');
+    const images = this.reportEvidencePayloads(dto);
+    await this.assertEvidenceLimit(reportId, 'report-evidence', images.length);
 
-    const saved = await this.getUploadSecurity().saveBase64Image({
-      imageBase64: dto.imageBase64,
-      contentType: dto.contentType,
-      folder: 'report-evidence',
-      reportId,
-      invalidSizeMessage: 'Invalid report image size',
-    });
+    const savedItems: Array<{ imagePath: string; imageUrl: string }> = [];
+    for (const [index, image] of images.entries()) {
+      const saved = await this.getUploadSecurity().saveBase64Image({
+        imageBase64: image.imageBase64,
+        contentType: image.contentType,
+        folder: 'report-evidence',
+        reportId,
+        invalidSizeMessage: 'Invalid report image size',
+      });
 
-    await this.createEvidenceRecord({
-      reportId,
-      organizationId: report.organizationId,
-      ownerUserId: userId,
-      uploadedById: userId,
-      fileUrl: saved.imageUrl,
-      contentType: dto.contentType,
-      description: 'Citizen report evidence',
-      metadata: {
-        kind: 'report-evidence',
-        imagePath: saved.imagePath,
-        order: dto.order ?? null,
-      },
-    });
+      await this.createEvidenceRecord({
+        reportId,
+        organizationId: report.organizationId,
+        ownerUserId: userId,
+        uploadedById: userId,
+        fileUrl: saved.imageUrl,
+        contentType: image.contentType,
+        description: 'Citizen report evidence',
+        metadata: {
+          kind: 'report-evidence',
+          evidenceType: 'CITIZEN_REPORT',
+          imagePath: saved.imagePath,
+          order: image.order ?? index,
+          sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
+        },
+      });
 
+      savedItems.push(saved);
+    }
+
+    const firstSaved = savedItems[0];
     const updated = await this.prisma.report.update({
       where: { id: reportId },
-      data: {
-        evidenceImagePath: saved.imagePath,
-        evidenceImageUrl: saved.imageUrl,
-      },
+      data:
+        firstSaved && !report.evidenceImagePath && !report.evidenceImageUrl
+          ? {
+              evidenceImagePath: firstSaved.imagePath,
+              evidenceImageUrl: firstSaved.imageUrl,
+            }
+          : {},
       include: this.includeRelations(),
     });
     await this.audit('Report Evidence Uploaded', user, {
       targetType: 'Report',
       targetId: reportId,
-      imagePath: saved.imagePath,
+      imagePaths: savedItems.map((item) => item.imagePath),
     });
     await this.recordReportActivity(
       reportId,
@@ -1897,10 +2165,25 @@ export class ReportService {
         organizationId: report.organizationId,
         fromStatus: report.status,
         toStatus: report.status,
-        metadata: { imagePath: saved.imagePath, imageUrl: saved.imageUrl },
+        metadata: {
+          imagePaths: savedItems.map((item) => item.imagePath),
+          imageUrls: savedItems.map((item) => item.imageUrl),
+          count: savedItems.length,
+        },
       },
     );
-    return this.withProtectedEvidenceUrls(updated);
+    return {
+      ...this.withProtectedEvidenceUrls(updated),
+      evidenceItems: savedItems.map((item) => ({
+        imagePath: item.imagePath,
+        imageUrl:
+          this.protectedEvidenceUrl(
+            reportId,
+            'report-evidence',
+            item.imagePath,
+          ) ?? item.imageUrl,
+      })),
+    };
   }
 
   async confirmCitizenCompletion(
@@ -2011,15 +2294,16 @@ export class ReportService {
     user: JwtUser,
   ) {
     const report = await this.getCitizenReviewReport(reportId, user);
+    const reason = this.requiredGovernanceReason(dto.reason);
     const updated = await this.prisma.report.update({
       where: { id: report.id },
       data: {
         status: ReportStatus.ASSIGNED,
-        completionRejectionReason: dto.reason.trim(),
+        completionRejectionReason: reason,
         citizenCompletionDecision: CompletionDecision.REWORK_REQUESTED,
         citizenCompletionDecidedAt: new Date(),
         completionReviewState: 'REWORK_REQUESTED',
-        completionDisputeReason: dto.reason.trim(),
+        completionDisputeReason: reason,
       },
       include: this.includeRelations(),
     });
@@ -2028,7 +2312,7 @@ export class ReportService {
     await this.audit('Citizen Requested Completion Review', user, {
       targetType: 'Report',
       targetId: reportId,
-      reason: dto.reason.trim(),
+      reason,
     });
     await this.recordReportActivity(
       reportId,
@@ -2039,7 +2323,7 @@ export class ReportService {
         fromStatus: report.status,
         toStatus: updated.status,
         providerId: updated.assignedProviderId ?? undefined,
-        reason: dto.reason.trim(),
+        reason,
       },
     );
     await this.notifyOrganizationOperators(updated.organizationId, {
@@ -2057,7 +2341,7 @@ export class ReportService {
       toStatus: updated.status,
       providerId: updated.assignedProviderId ?? null,
       citizenId: updated.citizenId,
-      metadata: { reason: dto.reason.trim() },
+      metadata: { reason },
     });
     return updated;
   }
@@ -2164,7 +2448,7 @@ export class ReportService {
       reportId,
       user,
     );
-    const reason = dto.reason.trim();
+    const reason = this.requiredGovernanceReason(dto.reason);
     const updated = await this.prisma.report.update({
       where: { id: report.id },
       data: {
@@ -2339,7 +2623,7 @@ export class ReportService {
     return this.withEnterpriseReportDetails({
       ...report,
       completionGovernance: this.completionGovernanceSummary(report),
-    } as any);
+    });
   }
 
   async getAdminCompletionGovernanceQueue(
@@ -3066,7 +3350,7 @@ export class ReportService {
   }
 
   async getProviderPerformance(user: JwtUser) {
-    const where: any = { role: UserRole.PROVIDER };
+    const where: Prisma.UserWhereInput = { role: UserRole.PROVIDER };
     if (!this.isSuperAdmin(user)) {
       const organizationId = this.requireUserOrganizationId(user);
       where.OR = [
@@ -3084,7 +3368,7 @@ export class ReportService {
     const reportScope = this.isSuperAdmin(user)
       ? undefined
       : { organizationId: this.requireUserOrganizationId(user) };
-    const providers = (await this.prisma.user.findMany({
+    const providers = await this.prisma.user.findMany({
       where,
       include: {
         assignedReports: {
@@ -3102,7 +3386,7 @@ export class ReportService {
           },
         },
       },
-    })) as any[];
+    });
 
     return providers.map((p) => {
       const completed = p.assignedReports.filter(
@@ -3157,7 +3441,7 @@ export class ReportService {
     reports: Array<{
       assignedAt?: Date | null;
       assignedProviderId?: string | null;
-      status?: ReportStatus | string | null;
+      status?: string | null;
       activities?: Array<{
         actorUserId?: string | null;
         providerId?: string | null;
@@ -3237,7 +3521,9 @@ export class ReportService {
   async getRecentReports(user: JwtUser) {
     const where = this.buildOrgScope(user);
     await this.expireOverdueAssignments({
-      organizationId: where.organizationId,
+      organizationId: this.isSuperAdmin(user)
+        ? undefined
+        : this.requireUserOrganizationId(user),
       actor: user,
     });
     const reports = await this.prisma.report.findMany({
@@ -3357,6 +3643,13 @@ export class ReportService {
       process.env.FIXZONE_COMPLETION_POLICY,
     );
     if (configured) return { policy: configured, source: 'PLATFORM_ENV' };
+
+    if (this.requiresDualCompletionByDefault(report.category)) {
+      return {
+        policy: CompletionPolicy.BOTH_REQUIRED,
+        source: 'BUILT_IN_OPERATIONAL_CATEGORY_DEFAULT',
+      };
+    }
 
     return {
       policy: CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
@@ -3517,6 +3810,27 @@ export class ReportService {
     )
       ? (normalized as CompletionPolicy)
       : null;
+  }
+
+  private requiresDualCompletionByDefault(category?: string | null) {
+    const normalized = this.normalizeResponsibilityCategory(category ?? '');
+    return [
+      'road',
+      'roads',
+      'road maintenance',
+      'road infrastructure',
+      'infrastructure',
+      'civil works',
+      'drainage',
+      'bridge',
+      'street lighting',
+      'public works',
+    ].some((item) =>
+      this.categoriesCompatible(
+        normalized,
+        this.normalizeResponsibilityCategory(item),
+      ),
+    );
   }
 
   private reviewDeadlineFor(policy: CompletionPolicy) {
@@ -3697,7 +4011,10 @@ export class ReportService {
     return counts;
   }
 
-  private completionReviewQueueItem(report: any, evidenceCount: number) {
+  private completionReviewQueueItem(
+    report: EnterpriseReportWithEvidence,
+    evidenceCount: number,
+  ) {
     const governance = this.completionGovernanceSummary(report);
     const deadlineAt = report.completionReviewDeadlineAt
       ? new Date(report.completionReviewDeadlineAt)
@@ -3772,7 +4089,7 @@ export class ReportService {
     );
   }
 
-  private humanCompletionPolicy(policy: CompletionPolicy | string | null) {
+  private humanCompletionPolicy(policy: string | null) {
     switch (policy) {
       case CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED:
         return 'Citizen confirmation required';
@@ -3791,9 +4108,7 @@ export class ReportService {
     }
   }
 
-  private humanCompletionDecision(
-    decision: CompletionDecision | string | null,
-  ) {
+  private humanCompletionDecision(decision: string | null) {
     switch (decision) {
       case CompletionDecision.CONFIRMED:
         return 'Confirmed';
@@ -3914,7 +4229,7 @@ export class ReportService {
     return Object.values(conditions);
   }
 
-  private adminGovernanceQueueItem(report: any) {
+  private adminGovernanceQueueItem(report: EnterpriseReportWithEvidence) {
     const governance = this.completionGovernanceSummary(report);
     return {
       id: report.id,
@@ -4108,8 +4423,8 @@ export class ReportService {
   }
 
   private async recordGovernanceAction(
-    previous: any,
-    updated: any,
+    previous: EnterpriseReportWithEvidence,
+    updated: EnterpriseReportWithEvidence,
     user: JwtUser,
     input: {
       action: string;
@@ -4179,8 +4494,11 @@ export class ReportService {
     return user.organizationId;
   }
 
-  private buildOrgScope(user: JwtUser, period?: string) {
-    const where: any = {};
+  private buildOrgScope(
+    user: JwtUser,
+    period?: string,
+  ): Prisma.ReportWhereInput {
+    const where: Prisma.ReportWhereInput = {};
 
     if (!this.isSuperAdmin(user)) {
       if (!user.organizationId) throw new ForbiddenException('No org');
@@ -4242,14 +4560,14 @@ export class ReportService {
   }
 
   private serializeOrganizationCandidate(
-    organization: any,
+    organization: ResponsibilityOrganizationProfile,
     category: string,
     report?: {
       location?: string | null;
       description?: string | null;
       title?: string | null;
     },
-  ) {
+  ): OrganizationCandidate {
     const profileData =
       organization?.profileData && typeof organization.profileData === 'object'
         ? (organization.profileData as Record<string, unknown>)
@@ -4426,6 +4744,11 @@ export class ReportService {
     const diagnostics = {
       organizationId: organization.id,
       organizationName: organization.name,
+      organizationStatus: organization.status ?? null,
+      organizationVerificationState:
+        organization.identityVerificationStatus ??
+        organization.verificationStatus ??
+        null,
       originalCategory: category,
       normalizedCategory,
       matchedMaintenanceCapabilities: requiredCapabilityIds,
@@ -4537,8 +4860,10 @@ export class ReportService {
     };
   }
 
-  private organizationActiveProviders(organization: any) {
-    const providers = new Map<string, any>();
+  private organizationActiveProviders(
+    organization: ResponsibilityOrganizationProfile,
+  ): ResponsibilityProviderProfile[] {
+    const providers = new Map<string, ResponsibilityProviderProfile>();
     for (const link of organization.providerLinks ?? []) {
       const provider = link.provider;
       if (provider?.id && provider.accountStatus === 'ACTIVE') {
@@ -4553,8 +4878,10 @@ export class ReportService {
     return Array.from(providers.values());
   }
 
-  private organizationAcceptedProviders(organization: any) {
-    const providers = new Map<string, any>();
+  private organizationAcceptedProviders(
+    organization: ResponsibilityOrganizationProfile,
+  ): ResponsibilityProviderProfile[] {
+    const providers = new Map<string, ResponsibilityProviderProfile>();
     for (const link of organization.providerLinks ?? []) {
       const provider = link.provider;
       if (provider?.id && provider.accountStatus === 'ACTIVE') {
@@ -4564,17 +4891,27 @@ export class ReportService {
     return Array.from(providers.values());
   }
 
-  private activeProviderCapabilityIds(provider: any) {
+  private activeProviderCapabilityIds(provider: ResponsibilityProviderProfile) {
     const profileData =
       provider?.profileData && typeof provider.profileData === 'object'
         ? (provider.profileData as Record<string, unknown>)
         : {};
     const assignments = profileData[PROVIDER_CAPABILITIES_KEY];
     if (!Array.isArray(assignments)) return [];
-    return assignments
+    return (assignments as unknown[])
       .filter((item): item is Record<string, unknown> => {
         if (!item || typeof item !== 'object') return false;
-        return (item.status?.toString() || 'ACTIVE') === 'ACTIVE';
+        const record = item as Record<string, unknown>;
+        const status = record['status'];
+        if (status == null) return true;
+        if (
+          typeof status !== 'string' &&
+          typeof status !== 'number' &&
+          typeof status !== 'boolean'
+        ) {
+          return false;
+        }
+        return String(status) === 'ACTIVE';
       })
       .map((item) => item.id?.toString().trim() ?? '')
       .filter((item) => item.length > 0);
@@ -4599,7 +4936,10 @@ export class ReportService {
     return true;
   }
 
-  private routingDiagnostics(report: any, candidates: any[]) {
+  private routingDiagnostics(
+    report: { status: string; organizationAssignmentSource?: string | null },
+    candidates: OrganizationCandidate[],
+  ) {
     const eligible = candidates.filter((candidate) => candidate.eligible);
     return {
       status: report.status,
@@ -4624,6 +4964,28 @@ export class ReportService {
   private async resolveReportResponsibility(
     dto: CreateReportDto,
   ): Promise<ResponsibilityResolution> {
+    if (!dto.category?.trim()) {
+      return this.responsibilityResolutionResult(dto, {
+        outcome: 'NO_CATEGORY',
+        organization: null,
+        candidates: [],
+        allCandidates: [],
+        reasons: ['Report category is missing'],
+        matchFactors: [],
+      });
+    }
+
+    if (!this.hasResponsibilityLocation(dto)) {
+      return this.responsibilityResolutionResult(dto, {
+        outcome: 'NO_LOCATION',
+        organization: null,
+        candidates: [],
+        allCandidates: [],
+        reasons: ['Report location is missing'],
+        matchFactors: [],
+      });
+    }
+
     const organizations = await this.prisma.organization.findMany({
       where: { status: OrganizationStatus.ACTIVE },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -4660,51 +5022,49 @@ export class ReportService {
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
-    const evaluated = organizations
-      .map((organization) => ({
+    const allCandidates = organizations.map((organization) => ({
+      organization,
+      candidate: this.serializeOrganizationCandidate(
         organization,
-        candidate: this.serializeOrganizationCandidate(
-          organization,
-          dto.category,
-          dto,
-        ),
-      }))
-      .filter(({ organization, candidate }) => {
-        if (!candidate.eligible) return false;
-        const jurisdiction = [
-          organization.lga,
-          organization.state,
-          organization.address,
-          ...candidate.jurisdictionSummary.coverageAreas,
-        ]
-          .filter(
-            (item): item is string =>
-              typeof item === 'string' && item.trim().length > 0,
-          )
-          .map((item) => item.toLowerCase());
-        return (
-          jurisdiction.length === 0 ||
-          jurisdiction.some((item) => location.includes(item))
-        );
-      });
+        dto.category,
+        dto,
+      ),
+    }));
+    const evaluated = allCandidates.filter(({ organization, candidate }) => {
+      if (!candidate.eligible) return false;
+      const jurisdiction = [
+        organization.lga,
+        organization.state,
+        organization.address,
+        ...candidate.jurisdictionSummary.coverageAreas,
+      ]
+        .filter(
+          (item): item is string =>
+            typeof item === 'string' && item.trim().length > 0,
+        )
+        .map((item) => item.toLowerCase());
+      return (
+        jurisdiction.length === 0 ||
+        jurisdiction.some((item) => location.includes(item))
+      );
+    });
 
-    const restricted = organizations
-      .map((organization) =>
-        this.serializeOrganizationCandidate(organization, dto.category, dto),
-      )
+    const restricted = allCandidates
+      .map(({ candidate }) => candidate)
       .filter((candidate) =>
         candidate.reasons.some((reason: string) =>
           reason.toLowerCase().includes('explicit responsibility exclusion'),
         ),
       );
     if (restricted.length > 0) {
-      return {
+      return this.responsibilityResolutionResult(dto, {
         outcome: 'RESTRICTED_OR_CONFLICTED',
         organization: null,
         candidates: restricted,
+        allCandidates: allCandidates.map(({ candidate }) => candidate),
         reasons: restricted.flatMap((candidate) => candidate.reasons),
         matchFactors: ['explicit_exclusion_or_restriction'],
-      };
+      });
     }
 
     const assetBacked = assetOrganizationIds.length
@@ -4722,41 +5082,190 @@ export class ReportService {
     ];
 
     if (decisive.length === 1) {
-      return {
+      return this.responsibilityResolutionResult(dto, {
         outcome: 'HIGH_CONFIDENCE',
         organization: decisive[0].organization,
         candidates: decisive.map(({ candidate }) => candidate),
+        allCandidates: allCandidates.map(({ candidate }) => candidate),
         reasons: decisive[0].candidate.reasons,
         matchFactors,
-      };
+      });
     }
 
     if (decisive.length > 1) {
-      return {
+      return this.responsibilityResolutionResult(dto, {
         outcome: 'AMBIGUOUS',
         organization: null,
         candidates: decisive.map(({ candidate }) => candidate),
+        allCandidates: allCandidates.map(({ candidate }) => candidate),
         reasons: ['Multiple responsible organizations qualified'],
         matchFactors,
-      };
+      });
     }
 
-    return {
+    return this.responsibilityResolutionResult(dto, {
       outcome: 'UNMATCHED',
       organization: null,
       candidates: [],
+      allCandidates: allCandidates.map(({ candidate }) => candidate),
       reasons: ['No active operational organization matched deterministically'],
       matchFactors,
+    });
+  }
+
+  private responsibilityResolutionResult(
+    dto: CreateReportDto,
+    input: {
+      outcome: ResponsibilityOutcome;
+      organization: { id: string } | null;
+      candidates: OrganizationCandidate[];
+      allCandidates: OrganizationCandidate[];
+      reasons: string[];
+      matchFactors: string[];
+    },
+  ): ResponsibilityResolution {
+    return {
+      outcome: input.outcome,
+      organization: input.organization,
+      candidates: input.candidates,
+      reasons: input.reasons,
+      matchFactors: input.matchFactors,
+      diagnostics: this.responsibilityResolutionDiagnostics(dto, input),
     };
   }
 
+  private hasResponsibilityLocation(dto: CreateReportDto) {
+    return Boolean(
+      dto.location?.trim() ||
+      dto.locationName?.trim() ||
+      dto.locationAddress?.trim() ||
+      dto.locationLandmark?.trim() ||
+      (dto.latitude != null && dto.longitude != null),
+    );
+  }
+
+  private responsibilityResolutionDiagnostics(
+    dto: CreateReportDto,
+    input: {
+      outcome: ResponsibilityOutcome;
+      organization: { id: string } | null;
+      candidates: OrganizationCandidate[];
+      allCandidates: OrganizationCandidate[];
+      reasons: string[];
+      matchFactors: string[];
+    },
+  ): ResponsibilityResolutionDiagnostics {
+    const normalizedCategory = dto.category?.trim()
+      ? this.normalizeResponsibilityCategory(dto.category)
+      : null;
+    const candidates = input.allCandidates.length
+      ? input.allCandidates
+      : input.candidates;
+    return {
+      outcome: this.canonicalResponsibilityOutcome(input.outcome),
+      candidateCount: candidates.length,
+      eligibleCandidateCount: candidates.filter(
+        (candidate) => candidate.eligible,
+      ).length,
+      proposedOrganizationId: input.organization?.id,
+      selectedCandidateId: input.organization?.id,
+      reasonCode: this.responsibilityReasonCode(input.outcome, candidates),
+      evaluatedAt: new Date().toISOString(),
+      report: {
+        category: dto.category?.trim() || null,
+        normalizedCategory,
+        normalizedCategoryAliases: normalizedCategory
+          ? this.normalizedCategoryAliases(normalizedCategory)
+          : [],
+        coordinates: {
+          latitude: dto.latitude ?? null,
+          longitude: dto.longitude ?? null,
+        },
+        location: {
+          text: dto.location?.trim() || null,
+          name: dto.locationName?.trim() || null,
+          address: dto.locationAddress?.trim() || null,
+          landmark: dto.locationLandmark?.trim() || null,
+          source: dto.locationSource ?? this.locationSourceFor(dto),
+        },
+      },
+      candidates: candidates.map((candidate) => ({
+        organizationId: candidate.id,
+        organizationName: candidate.name,
+        organizationStatus:
+          candidate.diagnostics?.organizationStatus == null
+            ? null
+            : String(candidate.diagnostics.organizationStatus),
+        organizationVerificationState:
+          candidate.diagnostics?.organizationVerificationState == null
+            ? null
+            : String(candidate.diagnostics.organizationVerificationState),
+        mandateCategories: candidate.mandateCategories ?? [],
+        providerCategories: candidate.inheritedProfileCategories ?? [],
+        coverageAreas: candidate.jurisdictionSummary?.coverageAreas ?? [],
+        eligible: Boolean(candidate.eligible),
+        confidence: candidate.confidence ?? null,
+        reasons: candidate.reasons ?? [],
+      })),
+    };
+  }
+
+  private canonicalResponsibilityOutcome(
+    outcome: ResponsibilityOutcome,
+  ): CanonicalResponsibilityOutcome {
+    switch (outcome) {
+      case 'HIGH_CONFIDENCE':
+        return 'MATCHED';
+      case 'RESTRICTED_OR_CONFLICTED':
+        return 'RESTRICTED';
+      case 'NO_CATEGORY':
+      case 'NO_LOCATION':
+      case 'AMBIGUOUS':
+      case 'UNMATCHED':
+        return outcome;
+    }
+  }
+
+  private responsibilityReasonCode(
+    outcome: ResponsibilityOutcome,
+    candidates: OrganizationCandidate[],
+  ) {
+    switch (outcome) {
+      case 'HIGH_CONFIDENCE':
+        return 'MATCHED_DETERMINISTIC';
+      case 'AMBIGUOUS':
+        return 'MULTIPLE_ELIGIBLE_CANDIDATES';
+      case 'RESTRICTED_OR_CONFLICTED':
+        return 'EXPLICIT_EXCLUSION_OR_RESTRICTION';
+      case 'NO_LOCATION':
+        return 'NO_LOCATION_PROVIDED';
+      case 'NO_CATEGORY':
+        return 'NO_CATEGORY_PROVIDED';
+      case 'UNMATCHED':
+      default:
+        return candidates.length === 0
+          ? 'NO_ORGANIZATION_CANDIDATES'
+          : 'NO_ELIGIBLE_ORGANIZATION';
+    }
+  }
+
+  private normalizedCategoryAliases(normalizedCategory: string) {
+    const aliases = Object.keys(CATEGORY_CAPABILITY_ALIASES).filter((alias) =>
+      this.categoriesCompatible(alias, normalizedCategory),
+    );
+    return this.collectStringList([normalizedCategory, ...aliases]);
+  }
+
   private async assetResponsibilityOrganizationIds(dto: CreateReportDto) {
-    const assetModels = this.prisma as any;
     const category = dto.category?.trim();
     const location = dto.location?.trim();
-    if (!assetModels.potentialAsset?.findMany || !category) return [];
+    const potentialAsset =
+      this.prismaDelegate<PrismaFindManyDelegate<PotentialAssetRecord>>(
+        'potentialAsset',
+      );
+    if (!potentialAsset || !category) return [];
 
-    const potentialAssets = await assetModels.potentialAsset.findMany({
+    const potentialAssets = await potentialAsset.findMany({
       where: {
         category,
         OR: [
@@ -4768,11 +5277,7 @@ export class ReportService {
       take: 25,
     });
     const ids = new Set<string>();
-    for (const asset of potentialAssets as Array<{
-      id: string;
-      organizationId?: string | null;
-      ownershipStatus?: string | null;
-    }>) {
+    for (const asset of potentialAssets) {
       if (
         asset.organizationId &&
         asset.ownershipStatus !== 'DISPUTED' &&
@@ -4782,11 +5287,12 @@ export class ReportService {
       }
     }
 
-    const assetIds = (potentialAssets as Array<{ id: string }>).map(
-      (asset) => asset.id,
-    );
-    if (assetIds.length && assetModels.assetCandidateOwner?.findMany) {
-      const owners = await assetModels.assetCandidateOwner.findMany({
+    const assetIds = potentialAssets.map((asset) => asset.id);
+    const assetCandidateOwner = this.prismaDelegate<
+      PrismaFindManyDelegate<AssetCandidateOwnerRecord>
+    >('assetCandidateOwner');
+    if (assetIds.length && assetCandidateOwner) {
+      const owners = await assetCandidateOwner.findMany({
         where: {
           potentialAssetId: { in: assetIds },
           organizationId: { not: null },
@@ -4795,13 +5301,17 @@ export class ReportService {
         select: { organizationId: true },
         take: 25,
       });
-      for (const owner of owners as Array<{ organizationId?: string | null }>) {
+      for (const owner of owners) {
         if (owner.organizationId) ids.add(owner.organizationId);
       }
     }
 
-    if (assetIds.length && assetModels.assetClaim?.findMany) {
-      const claims = await assetModels.assetClaim.findMany({
+    const assetClaim =
+      this.prismaDelegate<PrismaFindManyDelegate<AssetClaimRecord>>(
+        'assetClaim',
+      );
+    if (assetIds.length && assetClaim) {
+      const claims = await assetClaim.findMany({
         where: {
           potentialAssetId: { in: assetIds },
           claimantOrganizationId: { not: null },
@@ -4810,9 +5320,7 @@ export class ReportService {
         select: { claimantOrganizationId: true },
         take: 25,
       });
-      for (const claim of claims as Array<{
-        claimantOrganizationId?: string | null;
-      }>) {
+      for (const claim of claims) {
         if (claim.claimantOrganizationId) ids.add(claim.claimantOrganizationId);
       }
     }
@@ -5012,29 +5520,41 @@ export class ReportService {
   private async withEnterpriseReportDetails<
     T extends EnterpriseReportWithEvidence,
   >(report: T) {
+    const activity =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalReportActivityRecord>>(
+        'reportActivity',
+      );
+    const notification =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalNotificationRecord>>(
+        'notification',
+      );
+    const evidenceRecord =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalEvidenceRecord>>(
+        'evidenceRecord',
+      );
     const [timeline, notifications, evidenceRecords] = await Promise.all([
-      (this.prisma as any).reportActivity?.findMany
-        ? (this.prisma as any).reportActivity.findMany({
+      activity
+        ? activity.findMany({
             where: { reportId: report.id },
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
           })
-        : [],
-      (this.prisma as any).notification?.findMany
-        ? (this.prisma as any).notification.findMany({
+        : Promise.resolve([]),
+      notification
+        ? notification.findMany({
             where: { reportId: report.id },
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: 25,
           })
-        : [],
-      (this.prisma as any).evidenceRecord?.findMany
-        ? (this.prisma as any).evidenceRecord.findMany({
+        : Promise.resolve([]),
+      evidenceRecord
+        ? evidenceRecord.findMany({
             where: {
               relatedEntityType: EvidenceRelatedEntityType.REPORT,
               relatedEntityId: report.id,
             },
             orderBy: [{ uploadedAt: 'asc' }, { id: 'asc' }],
           })
-        : [],
+        : Promise.resolve([]),
     ]);
 
     const protectedReport = this.withProtectedEvidenceUrls(report);
@@ -5078,7 +5598,61 @@ export class ReportService {
     };
   }
 
-  private async assertEvidenceLimit(reportId: string, kind: EvidenceKind) {
+  private reportEvidencePayloads(dto: UploadReportEvidenceDto) {
+    const images = dto.images?.length ? dto.images : [dto];
+    return images.map((image) => {
+      if (!image.contentType || !image.imageBase64) {
+        throw new BadRequestException('Evidence image is required');
+      }
+      return {
+        contentType: image.contentType,
+        imageBase64: image.imageBase64,
+        order: image.order,
+      };
+    });
+  }
+
+  private completionEvidencePayloads(dto: UploadCompletionEvidenceDto) {
+    const images = dto.images?.length ? dto.images : [dto];
+    return images.map((image) => {
+      if (!image.contentType || !image.imageBase64) {
+        throw new BadRequestException('Completion evidence image is required');
+      }
+      return {
+        contentType: image.contentType,
+        imageBase64: image.imageBase64,
+        classification: image.classification,
+        order: image.order,
+      };
+    });
+  }
+
+  private providerEvidenceType(classification?: string | null) {
+    switch (classification) {
+      case 'before':
+        return 'BEFORE_WORK';
+      case 'during':
+        return 'DURING_WORK';
+      case 'after':
+      case 'completion':
+      default:
+        return 'AFTER_WORK';
+    }
+  }
+
+  private evidenceLimitFor(kind: EvidenceKind) {
+    return kind === 'report-evidence' ? 5 : 10;
+  }
+
+  private async assertEvidenceLimit(
+    reportId: string,
+    kind: EvidenceKind,
+    incomingCount = 1,
+  ) {
+    if (incomingCount < 1) {
+      throw new BadRequestException('At least one evidence image is required');
+    }
+    const limit = this.evidenceLimitFor(kind);
     const currentCount = await this.prisma.evidenceRecord.count({
       where: {
         relatedEntityType: EvidenceRelatedEntityType.REPORT,
@@ -5086,14 +5660,14 @@ export class ReportService {
         fileUrl: { contains: kind },
       },
     });
-    if (currentCount >= 5) {
+    if (currentCount + incomingCount > limit) {
       throw new BadRequestException({
         code: 'EVIDENCE_LIMIT_EXCEEDED',
         message:
           kind === 'report-evidence'
             ? 'You can upload up to 5 report evidence images.'
-            : 'You can upload up to 5 completion evidence images.',
-        limit: 5,
+            : 'You can upload up to 10 completion evidence images.',
+        limit,
       });
     }
   }
@@ -5304,7 +5878,7 @@ export class ReportService {
   private resolveReportPriority(report: {
     description?: string | null;
     createdAt?: Date | string | null;
-    status?: ReportStatus | string;
+    status?: string;
   }) {
     const text = (report.description ?? '').toLowerCase();
     let priority = 'Low';
@@ -5414,8 +5988,9 @@ export class ReportService {
     title: string;
     message: string;
   }) {
-    const notification = (this.prisma as any).notification;
-    if (!notification?.create) return;
+    const notification =
+      this.prismaDelegate<PrismaNotificationDelegate>('notification');
+    if (!notification) return;
     if (notification.findFirst) {
       const existing = await notification.findFirst({
         where: {
@@ -5743,13 +6318,15 @@ export class ReportService {
     const userId = this.getUserId(user);
     const ids = new Set<string>();
     if (user.organizationId) ids.add(user.organizationId);
-    const linkModel = (this.prisma as any).providerOrganization;
-    if (linkModel?.findMany) {
+    const linkModel = this.prismaDelegate<
+      PrismaFindManyDelegate<{ organizationId?: string | null }>
+    >('providerOrganization');
+    if (linkModel) {
       const links = await linkModel.findMany({
         where: { providerId: userId, active: true },
         select: { organizationId: true },
       });
-      for (const link of links as Array<{ organizationId?: string | null }>) {
+      for (const link of links) {
         if (link.organizationId) ids.add(link.organizationId);
       }
     }
@@ -5777,8 +6354,9 @@ export class ReportService {
     metadata: Record<string, unknown> = {},
   ) {
     const actorUserId = user.id ?? user.userId ?? user.sub;
-    const complianceAudit = (this.prisma as any).complianceAuditLog;
-    if (complianceAudit?.create) {
+    const complianceAudit =
+      this.prismaDelegate<PrismaCreateDelegate>('complianceAuditLog');
+    if (complianceAudit) {
       await complianceAudit.create({
         data: {
           action,
@@ -5805,8 +6383,8 @@ export class ReportService {
       });
     }
 
-    const audit = (this.prisma as any).demoAuditLog;
-    if (!audit?.create) return;
+    const audit = this.prismaDelegate<PrismaCreateDelegate>('demoAuditLog');
+    if (!audit) return;
     if (!actorUserId) return;
     await audit.create({
       data: {
@@ -5831,8 +6409,9 @@ export class ReportService {
       metadata?: Record<string, unknown>;
     },
   ) {
-    const activity = (this.prisma as any).reportActivity;
-    if (!activity?.create) return;
+    const activity =
+      this.prismaDelegate<PrismaCreateDelegate>('reportActivity');
+    if (!activity) return;
 
     const actorUserId = user.id ?? user.userId ?? user.sub;
     await activity.create({
@@ -5933,7 +6512,7 @@ export class ReportService {
   private assertAssignmentAllowed(
     report: {
       id?: string;
-      status: ReportStatus | string;
+      status: string;
       assignedProviderId: string | null;
       organizationId: string;
     },
