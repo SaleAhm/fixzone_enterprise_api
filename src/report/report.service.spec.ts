@@ -797,7 +797,7 @@ describe('ReportService completion governance policy helpers', () => {
       completionPolicy?: CompletionPolicy | null;
       category?: string | null;
       organization?: { profileData?: unknown } | null;
-    }): { policy: CompletionPolicy; source: string };
+    }): Promise<{ policy: CompletionPolicy; source: string }>;
     completionDeadlineSkipReason(report: {
       status?: ReportStatus | null;
       completionReviewState?: string | null;
@@ -807,8 +807,13 @@ describe('ReportService completion governance policy helpers', () => {
       completionReviewProcessedAt?: Date | string | null;
     }): string | null;
   };
+  const prisma = {
+    platformSetting: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
+  };
   const service = new ReportService(
-    {} as never,
+    prisma as never,
   ) as unknown as CompletionPolicyHarness;
   const satisfied = (input: {
     policy: CompletionPolicy;
@@ -916,8 +921,8 @@ describe('ReportService completion governance policy helpers', () => {
     ).toThrow(ConflictException);
   });
 
-  it('resolves category policy before organization default policy', () => {
-    expect(
+  it('resolves category policy before organization default policy', async () => {
+    await expect(
       service.resolveCompletionPolicy({
         category: 'telecom infrastructure',
         organization: {
@@ -929,14 +934,14 @@ describe('ReportService completion governance policy helpers', () => {
           },
         },
       }),
-    ).toEqual({
+    ).resolves.toEqual({
       policy: CompletionPolicy.BOTH_REQUIRED,
       source: 'ORGANIZATION_SERVICE_CATEGORY',
     });
   });
 
-  it('keeps report override above category policy', () => {
-    expect(
+  it('keeps report override above category policy', async () => {
+    await expect(
       service.resolveCompletionPolicy({
         completionPolicy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
         category: 'sanitation',
@@ -948,9 +953,30 @@ describe('ReportService completion governance policy helpers', () => {
           },
         },
       }),
-    ).toEqual({
+    ).resolves.toEqual({
       policy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
       source: 'REPORT_OVERRIDE',
+    });
+  });
+
+  it('applies persisted platform category policy before organization default policy', async () => {
+    prisma.platformSetting.findUnique.mockResolvedValueOnce({
+      value: {
+        sanitation: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+      },
+    });
+    await expect(
+      service.resolveCompletionPolicy({
+        category: 'sanitation',
+        organization: {
+          profileData: {
+            completionPolicy: CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      policy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+      source: 'PLATFORM_SERVICE_CATEGORY',
     });
   });
 

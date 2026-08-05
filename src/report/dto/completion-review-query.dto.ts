@@ -35,4 +35,8 @@ export class ProcessCompletionReviewDeadlinesDto {
   @IsOptional()
   @IsIn(['true', true])
   dryRun?: true | 'true';
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }

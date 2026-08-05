@@ -31,6 +31,11 @@ import {
   ProcessCompletionReviewDeadlinesDto,
 } from './dto/completion-review-query.dto';
 import {
+  AdminCategoryCompletionPolicyDto,
+  AdminCompletionGovernanceReasonDto,
+  AdminCompletionPolicyOverrideDto,
+} from './dto/admin-completion-governance.dto';
+import {
   OrganizationAcceptReportDto,
   OrganizationRejectReportDto,
 } from './dto/organization-intake-decision.dto';
@@ -254,6 +259,99 @@ export class ReportController {
     @Body() dto: ProcessCompletionReviewDeadlinesDto,
   ) {
     return this.reportService.processCompletionReviewDeadlines(user, dto);
+  }
+
+  @Get('admin/completion-governance')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getAdminCompletionGovernanceQueue(
+    @CurrentUser() user: CurrentAuthUser,
+    @Query() query: CompletionReviewQueueQueryDto,
+  ) {
+    return this.reportService.getAdminCompletionGovernanceQueue(user, query);
+  }
+
+  @Post('admin/completion-governance/category-policy')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  setCategoryCompletionPolicy(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: AdminCategoryCompletionPolicyDto,
+  ) {
+    return this.reportService.setCategoryCompletionPolicy(user, dto);
+  }
+
+  @Get('admin/completion-governance/category-policy')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getCategoryCompletionPolicies(@CurrentUser() user: CurrentAuthUser) {
+    return this.reportService.getCategoryCompletionPolicies(user);
+  }
+
+  @Post(':id/admin-completion/resolve-close')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  adminResolveAndClose(
+    @Param('id') id: string,
+    @Body() dto: AdminCompletionGovernanceReasonDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.adminResolveAndClose(id, dto, user);
+  }
+
+  @Post(':id/admin-completion/rework')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  adminReturnForCompletionRework(
+    @Param('id') id: string,
+    @Body() dto: AdminCompletionGovernanceReasonDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.adminReturnForCompletionRework(id, dto, user);
+  }
+
+  @Post(':id/admin-completion/hold')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  adminPlaceCompletionHold(
+    @Param('id') id: string,
+    @Body() dto: AdminCompletionGovernanceReasonDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.adminPlaceCompletionHold(id, dto, user);
+  }
+
+  @Post(':id/admin-completion/remove-hold')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  adminRemoveCompletionHold(
+    @Param('id') id: string,
+    @Body() dto: AdminCompletionGovernanceReasonDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.adminRemoveCompletionHold(id, dto, user);
+  }
+
+  @Post(':id/admin-completion/reopen')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  adminReopenCompletion(
+    @Param('id') id: string,
+    @Body() dto: AdminCompletionGovernanceReasonDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.adminReopenCompletion(id, dto, user);
+  }
+
+  @Post(':id/admin-completion/policy')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  adminOverrideCompletionPolicy(
+    @Param('id') id: string,
+    @Body() dto: AdminCompletionPolicyOverrideDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.adminOverrideCompletionPolicy(id, dto, user);
   }
 
   // ===================== SINGLE REPORT =====================

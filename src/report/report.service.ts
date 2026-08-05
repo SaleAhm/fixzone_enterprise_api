@@ -38,6 +38,11 @@ import {
   CompletionReviewQueueQueryDto,
   ProcessCompletionReviewDeadlinesDto,
 } from './dto/completion-review-query.dto';
+import {
+  AdminCategoryCompletionPolicyDto,
+  AdminCompletionGovernanceReasonDto,
+  AdminCompletionPolicyOverrideDto,
+} from './dto/admin-completion-governance.dto';
 import { RejectAssignmentDto } from './dto/reject-assignment.dto';
 import { CitizenConfirmCompletionDto } from './dto/citizen-confirm-completion.dto';
 import { CitizenRejectCompletionDto } from './dto/citizen-reject-completion.dto';
@@ -1638,7 +1643,7 @@ export class ReportService {
           message: 'Upload at least one completion evidence image.',
         });
       }
-      const policy = this.resolveCompletionPolicy(report);
+      const policy = await this.resolveCompletionPolicy(report);
       const reviewDeadline = this.reviewDeadlineFor(policy.policy);
       data.completionNote = dto.completionNote?.trim() || null;
       data.completionImageUrl = completionEvidence.imageUrl;
@@ -2317,7 +2322,10 @@ export class ReportService {
       limit,
       offset,
       items: reports.map((report) =>
-        this.completionReviewQueueItem(report, evidenceCounts.get(report.id) ?? 0),
+        this.completionReviewQueueItem(
+          report,
+          evidenceCounts.get(report.id) ?? 0,
+        ),
       ),
     };
   }
@@ -2334,25 +2342,455 @@ export class ReportService {
     } as any);
   }
 
+  async getAdminCompletionGovernanceQueue(
+    user: JwtUser,
+    query: CompletionReviewQueueQueryDto = {},
+  ) {
+    this.assertSuperAdmin(user);
+    const now = new Date();
+    const limit = query.limit ?? 50;
+    const offset = query.offset ?? 0;
+    const stateFilter = query.state?.trim();
+    const governanceWhere: Prisma.ReportWhereInput = {
+      ...(query.category ? { category: query.category } : {}),
+      OR: this.adminGovernanceQueueConditions(stateFilter, now),
+    };
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where: governanceWhere }),
+      this.prisma.report.findMany({
+        where: governanceWhere,
+        include: this.includeRelations(),
+        orderBy: [
+          { completionReviewDeadlineAt: 'asc' },
+          { updatedAt: 'desc' },
+          { id: 'asc' },
+        ],
+        take: limit,
+        skip: offset,
+      }),
+    ]);
+    return {
+      workspace: 'Completion Governance',
+      total,
+      limit,
+      offset,
+      filters: [
+        'ADMIN_RESOLUTION_REQUIRED',
+        'DISPUTED',
+        'REWORK_ESCALATED',
+        'ON_HOLD',
+        'REVIEW_WINDOW_EXPIRED',
+        'APPROVAL_CONFLICT',
+        'REOPENED',
+        'GOVERNANCE_CLOSED',
+      ],
+      counters: await this.getCompletionGovernanceCounters(user),
+      items: reports.map((report) => this.adminGovernanceQueueItem(report)),
+    };
+  }
+
+  async adminResolveAndClose(
+    reportId: string,
+    dto: AdminCompletionGovernanceReasonDto,
+    user: JwtUser,
+  ) {
+    this.assertSuperAdmin(user);
+    const report = await this.getAdminGovernanceReport(reportId);
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ConflictException('Report is already closed');
+    }
+    if (report.completionGovernanceHoldReason) {
+      throw new ConflictException('Remove governance hold before resolving');
+    }
+    const reason = this.requiredGovernanceReason(dto.reason);
+    const now = new Date();
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: ReportStatus.CLOSED,
+        completionReviewState: 'CLOSED',
+        completionFinalizedAt: now,
+        completionFinalizedById: this.getUserId(user),
+        completionFinalizedByRole: user.role,
+        completionFinalActorType: 'SUPER_ADMIN_GOVERNANCE',
+        completionClosureReason: reason,
+      },
+      include: this.includeRelations(),
+    });
+    await this.recordGovernanceAction(report, updated, user, {
+      action: 'ADMIN_COMPLETION_RESOLVED_CLOSED',
+      auditAction: 'Admin Completion Resolved And Closed',
+      reason,
+      notifyType: 'governance_resolution_closed',
+      notifyTitle: 'Report closed by governance resolution',
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async adminReturnForCompletionRework(
+    reportId: string,
+    dto: AdminCompletionGovernanceReasonDto,
+    user: JwtUser,
+  ) {
+    this.assertSuperAdmin(user);
+    const report = await this.getAdminGovernanceReport(reportId);
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ConflictException(
+        'Closed reports must be reopened before rework',
+      );
+    }
+    if (report.completionReviewState === 'REWORK_REQUESTED') {
+      throw new ConflictException('Report is already returned for rework');
+    }
+    const reason = this.requiredGovernanceReason(dto.reason);
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: ReportStatus.ASSIGNED,
+        completionReviewState: 'REWORK_REQUESTED',
+        organizationCompletionDecision: CompletionDecision.ESCALATED,
+        organizationCompletionReason: reason,
+        completionRejectionReason: reason,
+        completionDisputeReason: reason,
+      },
+      include: this.includeRelations(),
+    });
+    await this.recordGovernanceAction(report, updated, user, {
+      action: 'ADMIN_COMPLETION_RETURNED_FOR_REWORK',
+      auditAction: 'Admin Completion Returned For Rework',
+      reason,
+      notifyType: 'governance_rework_requested',
+      notifyTitle: 'Report returned for provider rework',
+    });
+    if (updated.assignedProviderId) {
+      await this.createNotification({
+        userId: updated.assignedProviderId,
+        reportId,
+        type: 'governance_rework_requested',
+        title: 'Report returned for rework',
+        message: `Governance returned "${updated.title}" for provider rework.`,
+      });
+    }
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async adminPlaceCompletionHold(
+    reportId: string,
+    dto: AdminCompletionGovernanceReasonDto,
+    user: JwtUser,
+  ) {
+    this.assertSuperAdmin(user);
+    const report = await this.getAdminGovernanceReport(reportId);
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ConflictException('Reopen closed reports before placing hold');
+    }
+    const reason = this.requiredGovernanceReason(dto.reason);
+    if (report.completionGovernanceHoldReason) {
+      throw new ConflictException('Report is already on governance hold');
+    }
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        completionGovernanceHoldReason: reason,
+        completionReviewState: 'GOVERNANCE_HOLD',
+      },
+      include: this.includeRelations(),
+    });
+    await this.recordGovernanceAction(report, updated, user, {
+      action: 'ADMIN_COMPLETION_HOLD_PLACED',
+      auditAction: 'Admin Completion Hold Placed',
+      reason,
+      notifyType: 'completion_governance_hold',
+      notifyTitle: 'Report placed on governance hold',
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async adminRemoveCompletionHold(
+    reportId: string,
+    dto: AdminCompletionGovernanceReasonDto,
+    user: JwtUser,
+  ) {
+    this.assertSuperAdmin(user);
+    const report = await this.getAdminGovernanceReport(reportId);
+    const reason = this.requiredGovernanceReason(dto.reason);
+    if (!report.completionGovernanceHoldReason) {
+      throw new ConflictException('Report is not on governance hold');
+    }
+    const policy = this.policyForReport(report);
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        completionGovernanceHoldReason: null,
+        completionReviewState:
+          report.status === ReportStatus.CLOSED
+            ? 'CLOSED'
+            : this.reviewStateFor({
+                policy,
+                citizenDecision: report.citizenCompletionDecision,
+                organizationDecision: report.organizationCompletionDecision,
+              }),
+      },
+      include: this.includeRelations(),
+    });
+    await this.recordGovernanceAction(report, updated, user, {
+      action: 'ADMIN_COMPLETION_HOLD_REMOVED',
+      auditAction: 'Admin Completion Hold Removed',
+      reason,
+      notifyType: 'completion_governance_hold_removed',
+      notifyTitle: 'Governance hold removed',
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async adminReopenCompletion(
+    reportId: string,
+    dto: AdminCompletionGovernanceReasonDto,
+    user: JwtUser,
+  ) {
+    this.assertSuperAdmin(user);
+    const report = await this.getAdminGovernanceReport(reportId);
+    if (report.status !== ReportStatus.CLOSED) {
+      throw new ConflictException('Only closed reports can be reopened');
+    }
+    const reason = this.requiredGovernanceReason(dto.reason);
+    const policy = this.policyForReport(report);
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionReviewState: this.reviewStateFor({
+          policy,
+          citizenDecision: report.citizenCompletionDecision,
+          organizationDecision: report.organizationCompletionDecision,
+        }),
+      },
+      include: this.includeRelations(),
+    });
+    await this.recordGovernanceAction(report, updated, user, {
+      action: 'ADMIN_COMPLETION_REOPENED',
+      auditAction: 'Admin Completion Reopened',
+      reason,
+      notifyType: 'completion_governance_reopened',
+      notifyTitle: 'Report reopened by governance',
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async adminOverrideCompletionPolicy(
+    reportId: string,
+    dto: AdminCompletionPolicyOverrideDto,
+    user: JwtUser,
+  ) {
+    this.assertSuperAdmin(user);
+    const report = await this.getAdminGovernanceReport(reportId);
+    const reason = this.requiredGovernanceReason(dto.reason);
+    const previousPolicy = this.policyForReport(report);
+    if (report.status === ReportStatus.CLOSED) {
+      throw new ConflictException(
+        'Reopen closed reports before overriding policy',
+      );
+    }
+    if (previousPolicy === dto.policy) {
+      throw new ConflictException('Report already uses this policy');
+    }
+    const updated = await this.prisma.report.update({
+      where: { id: report.id },
+      data: {
+        completionPolicy: dto.policy,
+        completionPolicySource: 'SUPER_ADMIN_REPORT_OVERRIDE',
+        completionReviewState: this.reviewStateFor({
+          policy: dto.policy,
+          citizenDecision: report.citizenCompletionDecision,
+          organizationDecision: report.organizationCompletionDecision,
+        }),
+      },
+      include: this.includeRelations(),
+    });
+    await this.recordGovernanceAction(report, updated, user, {
+      action: 'ADMIN_COMPLETION_POLICY_OVERRIDDEN',
+      auditAction: 'Admin Completion Policy Overridden',
+      reason,
+      notifyType: 'completion_policy_overridden',
+      notifyTitle: 'Completion policy overridden',
+      metadata: { previousPolicy, newPolicy: dto.policy },
+    });
+    return this.withProtectedEvidenceUrls(updated);
+  }
+
+  async setCategoryCompletionPolicy(
+    user: JwtUser,
+    dto: AdminCategoryCompletionPolicyDto,
+  ) {
+    this.assertSuperAdmin(user);
+    const reason = this.requiredGovernanceReason(dto.reason);
+    const normalizedCategory = this.normalizeResponsibilityCategory(
+      dto.category,
+    );
+    if (!normalizedCategory) {
+      throw new BadRequestException('Category is required');
+    }
+    await this.assertKnownCompletionCategory(normalizedCategory);
+    if (dto.organizationId) {
+      const organization = await this.prisma.organization.findUnique({
+        where: { id: dto.organizationId },
+      });
+      if (!organization) throw new NotFoundException('Organization not found');
+      const profile =
+        organization.profileData &&
+        typeof organization.profileData === 'object' &&
+        !Array.isArray(organization.profileData)
+          ? { ...(organization.profileData as Record<string, unknown>) }
+          : {};
+      const current =
+        profile.completionPoliciesByCategory &&
+        typeof profile.completionPoliciesByCategory === 'object' &&
+        !Array.isArray(profile.completionPoliciesByCategory)
+          ? {
+              ...(profile.completionPoliciesByCategory as Record<
+                string,
+                unknown
+              >),
+            }
+          : {};
+      const previous = current[normalizedCategory] ?? null;
+      current[normalizedCategory] = dto.policy;
+      profile.completionPoliciesByCategory = current;
+      await this.prisma.organization.update({
+        where: { id: organization.id },
+        data: { profileData: profile as Prisma.InputJsonValue },
+      });
+      await this.audit(
+        'Organization Category Completion Policy Updated',
+        user,
+        {
+          targetType: 'Organization',
+          targetId: organization.id,
+          category: normalizedCategory,
+          previousPolicy: previous,
+          newPolicy: dto.policy,
+          reason,
+        },
+      );
+      return {
+        scope: 'ORGANIZATION_SERVICE_CATEGORY',
+        organizationId: organization.id,
+        category: normalizedCategory,
+        previousPolicy: previous,
+        policy: dto.policy,
+      };
+    }
+
+    const settingKey = 'completionPoliciesByCategory';
+    const existing = await this.prisma.platformSetting.findUnique({
+      where: { key: settingKey },
+    });
+    const current =
+      existing?.value &&
+      typeof existing.value === 'object' &&
+      !Array.isArray(existing.value)
+        ? { ...(existing.value as Record<string, unknown>) }
+        : {};
+    const previous = current[normalizedCategory] ?? null;
+    current[normalizedCategory] = dto.policy;
+    await this.prisma.platformSetting.upsert({
+      where: { key: settingKey },
+      create: { key: settingKey, value: current as Prisma.InputJsonValue },
+      update: { value: current as Prisma.InputJsonValue },
+    });
+    await this.audit('Platform Category Completion Policy Updated', user, {
+      targetType: 'PlatformSetting',
+      targetId: settingKey,
+      category: normalizedCategory,
+      previousPolicy: previous,
+      newPolicy: dto.policy,
+      reason,
+    });
+    return {
+      scope: 'PLATFORM_SERVICE_CATEGORY',
+      category: normalizedCategory,
+      previousPolicy: previous,
+      policy: dto.policy,
+    };
+  }
+
+  async getCategoryCompletionPolicies(user: JwtUser) {
+    this.assertSuperAdmin(user);
+    const settingKey = 'completionPoliciesByCategory';
+    const [setting, reportCategories, providerCategoryUsers] =
+      await Promise.all([
+        this.prisma.platformSetting.findUnique({ where: { key: settingKey } }),
+        this.prisma.report.findMany({
+          distinct: ['category'],
+          where: { category: { not: '' } },
+          select: { category: true },
+          orderBy: { category: 'asc' },
+        }),
+        this.prisma.user.findMany({
+          where: { serviceCategories: { not: Prisma.JsonNull } },
+          select: { serviceCategories: true },
+        }),
+      ]);
+    const persisted =
+      setting?.value &&
+      typeof setting.value === 'object' &&
+      !Array.isArray(setting.value)
+        ? (setting.value as Record<string, unknown>)
+        : {};
+    const categoryLabels = this.collectStringList([
+      ...Object.keys(CATEGORY_CAPABILITY_ALIASES),
+      ...reportCategories.map((item) => item.category),
+      ...providerCategoryUsers.flatMap((user) =>
+        this.jsonStringList(user.serviceCategories),
+      ),
+    ]);
+    return {
+      scope: 'PLATFORM_SERVICE_CATEGORY',
+      categories: categoryLabels.map((label) => {
+        const category = this.normalizeResponsibilityCategory(label);
+        const policy = this.policyFromCategoryRecord(persisted, category);
+        const fallback = this.normalizeCompletionPolicy(
+          process.env.FIXZONE_COMPLETION_POLICY,
+        );
+        return {
+          category,
+          label,
+          policy,
+          source: policy ? 'PLATFORM_SERVICE_CATEGORY' : 'FALLBACK',
+          fallbackPolicy:
+            fallback ?? CompletionPolicy.CITIZEN_CONFIRMATION_REQUIRED,
+        };
+      }),
+      policies: Object.values(CompletionPolicy),
+      scheduler: {
+        automatedSchedulerActive: false,
+        requirement:
+          'Invoke the protected deadline endpoint from an approved cron or worker until a scheduler module is enabled.',
+      },
+    };
+  }
+
   async processCompletionReviewDeadlines(
     user: JwtUser,
     dto: ProcessCompletionReviewDeadlinesDto = {},
   ) {
     const processorRoles: UserRole[] = [
-        UserRole.SUPER_ADMIN,
-        UserRole.COMPLIANCE_ADMIN,
-        UserRole.REGULATORY_ADMIN,
-      ];
+      UserRole.SUPER_ADMIN,
+      UserRole.COMPLIANCE_ADMIN,
+      UserRole.REGULATORY_ADMIN,
+    ];
     if (!processorRoles.includes(user.role)) {
       throw new ForbiddenException('Platform completion processing required');
     }
     const now = new Date();
     const limit = dto.limit ?? 100;
+    const dryRun = dto.dryRun === true || dto.dryRun === 'true';
+    const executionReason = dryRun
+      ? (dto.reason?.trim() ?? null)
+      : this.requiredGovernanceReason(dto.reason);
     const candidates = await this.prisma.report.findMany({
       where: {
-        status: ReportStatus.COMPLETED_BY_PROVIDER,
         completionPolicy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
-        completionReviewDeadlineAt: { lte: now },
       },
       include: this.includeRelations(),
       orderBy: [{ completionReviewDeadlineAt: 'asc' }, { id: 'asc' }],
@@ -2360,14 +2798,49 @@ export class ReportService {
     });
     const processed: string[] = [];
     const skipped: Array<{ id: string; reason: string }> = [];
+    const counts = {
+      eligible: 0,
+      blockedByDispute: 0,
+      blockedByRework: 0,
+      blockedByHold: 0,
+      alreadyProcessed: 0,
+      alreadyClosed: 0,
+      notYetDue: 0,
+      invalidIncomplete: 0,
+      processed: 0,
+      skipped: 0,
+    };
 
     for (const report of candidates) {
+      if (!report.completionReviewDeadlineAt) {
+        counts.invalidIncomplete += 1;
+        skipped.push({ id: report.id, reason: 'missing_deadline' });
+        continue;
+      }
+      if (
+        new Date(report.completionReviewDeadlineAt).getTime() > now.getTime()
+      ) {
+        counts.notYetDue += 1;
+        skipped.push({ id: report.id, reason: 'not_yet_due' });
+        continue;
+      }
       const skipReason = this.completionDeadlineSkipReason(report);
       if (skipReason) {
+        if (skipReason === 'active_dispute') counts.blockedByDispute += 1;
+        if (skipReason === 'active_rework') counts.blockedByRework += 1;
+        if (skipReason === 'governance_hold') counts.blockedByHold += 1;
+        if (skipReason === 'already_processed') counts.alreadyProcessed += 1;
+        if (skipReason === 'already_closed') counts.alreadyClosed += 1;
         skipped.push({ id: report.id, reason: skipReason });
         continue;
       }
-      if (dto.dryRun === true || dto.dryRun === 'true') {
+      if (report.status !== ReportStatus.COMPLETED_BY_PROVIDER) {
+        counts.invalidIncomplete += 1;
+        skipped.push({ id: report.id, reason: 'not_awaiting_review' });
+        continue;
+      }
+      counts.eligible += 1;
+      if (dryRun) {
         processed.push(report.id);
         continue;
       }
@@ -2418,13 +2891,24 @@ export class ReportService {
         fallbackRule: COMPLETION_REVIEW_WINDOW_FALLBACK_RULE,
       });
       processed.push(updated.id);
+      counts.processed += 1;
     }
+    counts.skipped = skipped.length;
+    await this.audit('Completion Review Deadline Processor Executed', user, {
+      targetType: 'Report',
+      targetId: 'completion-review-deadline-processor',
+      dryRun,
+      limit,
+      reason: executionReason,
+      counts,
+    });
     return {
       processedCount: processed.length,
       skippedCount: skipped.length,
+      counts,
       processed,
       skipped,
-      dryRun: dto.dryRun === true || dto.dryRun === 'true',
+      dryRun,
       automatedSchedulerActive: false,
       schedulerRequirement:
         'Invoke this protected endpoint from an approved cron or worker until a scheduler module is enabled.',
@@ -2488,6 +2972,7 @@ export class ReportService {
       inProgress,
       completed,
       closed,
+      completionGovernance: await this.getCompletionGovernanceCounters(user),
     };
   }
 
@@ -2832,11 +3317,11 @@ export class ReportService {
     return report;
   }
 
-  private resolveCompletionPolicy(report: {
+  private async resolveCompletionPolicy(report: {
     completionPolicy?: CompletionPolicy | null;
     category?: string | null;
     organization?: { profileData?: Prisma.JsonValue | null } | null;
-  }): CompletionPolicyResolution {
+  }): Promise<CompletionPolicyResolution> {
     if (report.completionPolicy) {
       return { policy: report.completionPolicy, source: 'REPORT_OVERRIDE' };
     }
@@ -2852,9 +3337,8 @@ export class ReportService {
       };
     }
 
-    const platformCategoryPolicy = this.completionPolicyFromPlatformCategory(
-      report.category,
-    );
+    const platformCategoryPolicy =
+      await this.completionPolicyFromPlatformCategory(report.category);
     if (platformCategoryPolicy) {
       return {
         policy: platformCategoryPolicy,
@@ -2904,7 +3388,11 @@ export class ReportService {
     const normalizedCategory = this.normalizeResponsibilityCategory(
       category ?? '',
     );
-    if (!normalizedCategory || !profileData || typeof profileData !== 'object') {
+    if (
+      !normalizedCategory ||
+      !profileData ||
+      typeof profileData !== 'object'
+    ) {
       return null;
     }
     if (Array.isArray(profileData)) return null;
@@ -2912,7 +3400,10 @@ export class ReportService {
     const maps = [
       profile.completionPoliciesByCategory,
       profile.categoryCompletionPolicies,
-      this.profilePath(profile, ['serviceConfiguration', 'completionPoliciesByCategory']),
+      this.profilePath(profile, [
+        'serviceConfiguration',
+        'completionPoliciesByCategory',
+      ]),
     ];
     for (const map of maps) {
       const policy = this.policyFromCategoryRecord(map, normalizedCategory);
@@ -2921,13 +3412,27 @@ export class ReportService {
     return null;
   }
 
-  private completionPolicyFromPlatformCategory(
+  private async completionPolicyFromPlatformCategory(
     category: string | null | undefined,
   ) {
     const normalizedCategory = this.normalizeResponsibilityCategory(
       category ?? '',
     );
     if (!normalizedCategory) return null;
+    const setting = await this.prisma.platformSetting.findUnique({
+      where: { key: 'completionPoliciesByCategory' },
+    });
+    if (
+      setting?.value &&
+      typeof setting.value === 'object' &&
+      !Array.isArray(setting.value)
+    ) {
+      const persisted = this.policyFromCategoryRecord(
+        setting.value,
+        normalizedCategory,
+      );
+      if (persisted) return persisted;
+    }
     const raw =
       process.env.FIXZONE_COMPLETION_CATEGORY_POLICIES ??
       process.env.FIXZONE_SERVICE_CATEGORY_COMPLETION_POLICIES;
@@ -2939,11 +3444,47 @@ export class ReportService {
     }
   }
 
-  private policyFromCategoryRecord(
-    value: unknown,
-    normalizedCategory: string,
-  ) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  private async assertKnownCompletionCategory(normalizedCategory: string) {
+    if (CATEGORY_CAPABILITY_ALIASES[normalizedCategory]) return;
+    const reports = await this.prisma.report.findMany({
+      where: { category: { not: '' } },
+      select: { category: true },
+      take: 250,
+    });
+    if (
+      reports.some((report) =>
+        this.categoriesCompatible(
+          this.normalizeResponsibilityCategory(report.category),
+          normalizedCategory,
+        ),
+      )
+    ) {
+      return;
+    }
+    const providers = await this.prisma.user.findMany({
+      where: { serviceCategories: { not: Prisma.JsonNull } },
+      select: { serviceCategories: true },
+      take: 250,
+    });
+    const providerCategories = providers.flatMap((provider) =>
+      this.jsonStringList(provider.serviceCategories),
+    );
+    if (
+      providerCategories.some((item) =>
+        this.categoriesCompatible(
+          this.normalizeResponsibilityCategory(item),
+          normalizedCategory,
+        ),
+      )
+    ) {
+      return;
+    }
+    throw new BadRequestException('Unknown service category');
+  }
+
+  private policyFromCategoryRecord(value: unknown, normalizedCategory: string) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return null;
     const record = value as Record<string, unknown>;
     for (const [key, policy] of Object.entries(record)) {
       if (
@@ -2959,10 +3500,7 @@ export class ReportService {
     return null;
   }
 
-  private profilePath(
-    value: Record<string, unknown>,
-    path: string[],
-  ): unknown {
+  private profilePath(value: Record<string, unknown>, path: string[]): unknown {
     return path.reduce<unknown>((current, key) => {
       if (!current || typeof current !== 'object' || Array.isArray(current)) {
         return null;
@@ -3067,6 +3605,7 @@ export class ReportService {
     completionReviewState?: string | null;
     citizenCompletionDecision?: CompletionDecision | null;
     organizationCompletionDecision?: CompletionDecision | null;
+    completionGovernanceHoldReason?: string | null;
     status?: ReportStatus | null;
   }) {
     if (report.status === ReportStatus.CLOSED) {
@@ -3078,6 +3617,9 @@ export class ReportService {
       report.organizationCompletionDecision === CompletionDecision.ESCALATED
     ) {
       throw new ConflictException('Completion is under dispute');
+    }
+    if (report.completionGovernanceHoldReason) {
+      throw new ConflictException('Completion is on governance hold');
     }
     if (
       report.completionReviewState === 'REWORK_REQUESTED' ||
@@ -3249,7 +3791,9 @@ export class ReportService {
     }
   }
 
-  private humanCompletionDecision(decision: CompletionDecision | string | null) {
+  private humanCompletionDecision(
+    decision: CompletionDecision | string | null,
+  ) {
     switch (decision) {
       case CompletionDecision.CONFIRMED:
         return 'Confirmed';
@@ -3315,12 +3859,313 @@ export class ReportService {
     }
     if (
       report.completionReviewState === 'REWORK_REQUESTED' ||
-      report.citizenCompletionDecision === CompletionDecision.REWORK_REQUESTED ||
-      report.organizationCompletionDecision === CompletionDecision.REWORK_REQUESTED
+      report.citizenCompletionDecision ===
+        CompletionDecision.REWORK_REQUESTED ||
+      report.organizationCompletionDecision ===
+        CompletionDecision.REWORK_REQUESTED
     ) {
       return 'active_rework';
     }
     return null;
+  }
+
+  private adminGovernanceQueueConditions(
+    stateFilter: string | undefined,
+    now: Date,
+  ): Prisma.ReportWhereInput[] {
+    const conditions: Record<string, Prisma.ReportWhereInput> = {
+      ADMIN_RESOLUTION_REQUIRED: {
+        completionPolicy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+      },
+      DISPUTED: { completionReviewState: 'DISPUTED' },
+      REWORK_ESCALATED: {
+        OR: [
+          { completionReviewState: 'REWORK_REQUESTED' },
+          { organizationCompletionDecision: CompletionDecision.ESCALATED },
+        ],
+      },
+      ON_HOLD: { completionGovernanceHoldReason: { not: null } },
+      REVIEW_WINDOW_EXPIRED: {
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionPolicy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+        completionReviewDeadlineAt: { lte: now },
+      },
+      APPROVAL_CONFLICT: {
+        OR: [
+          {
+            citizenCompletionDecision: CompletionDecision.CONFIRMED,
+            organizationCompletionDecision: CompletionDecision.REWORK_REQUESTED,
+          },
+          {
+            citizenCompletionDecision: CompletionDecision.REWORK_REQUESTED,
+            organizationCompletionDecision: CompletionDecision.VERIFIED,
+          },
+        ],
+      },
+      REOPENED: { completionReviewState: { startsWith: 'AWAITING_' } },
+      GOVERNANCE_CLOSED: {
+        status: ReportStatus.CLOSED,
+        completionFinalActorType: 'SUPER_ADMIN_GOVERNANCE',
+      },
+    };
+    const normalized = stateFilter?.trim().toUpperCase();
+    if (normalized && conditions[normalized]) return [conditions[normalized]];
+    return Object.values(conditions);
+  }
+
+  private adminGovernanceQueueItem(report: any) {
+    const governance = this.completionGovernanceSummary(report);
+    return {
+      id: report.id,
+      trackingId: report.id,
+      title: report.title,
+      category: report.category,
+      organization: report.organization
+        ? { id: report.organization.id, name: report.organization.name }
+        : null,
+      provider: report.assignedProvider
+        ? {
+            id: report.assignedProvider.id,
+            name: report.assignedProvider.fullName,
+            email: report.assignedProvider.email,
+          }
+        : null,
+      policy: this.humanCompletionPolicy(governance.policy),
+      policyCode: governance.policy,
+      policySource: governance.policySource,
+      citizenDecision: this.humanCompletionDecision(governance.citizenDecision),
+      organizationDecision: this.humanCompletionDecision(
+        governance.organizationDecision,
+      ),
+      reviewState: this.humanCompletionReviewState(
+        governance.reviewState,
+        governance,
+      ),
+      reviewStateCode: governance.reviewState,
+      hold: Boolean(governance.governanceHoldReason),
+      reviewDeadlineAt: governance.reviewDeadlineAt,
+      reviewProcessedAt: governance.reviewProcessedAt,
+      finalActorType: governance.finalActorType,
+      closureReason: governance.closureReason,
+      actions: this.adminGovernanceActionsFor(report),
+    };
+  }
+
+  private adminGovernanceActionsFor(report: {
+    status?: ReportStatus | null;
+    completionGovernanceHoldReason?: string | null;
+    completionReviewState?: string | null;
+  }) {
+    const closed = report.status === ReportStatus.CLOSED;
+    return {
+      resolveAndClose: !closed,
+      returnForRework: !closed,
+      placeHold: !report.completionGovernanceHoldReason,
+      removeHold: Boolean(report.completionGovernanceHoldReason),
+      reopen: closed,
+      overridePolicy: true,
+    };
+  }
+
+  private async getAdminGovernanceReport(reportId: string) {
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    return report;
+  }
+
+  private async getCompletionGovernanceCounters(user: JwtUser) {
+    const where = this.buildOrgScope(user);
+    const now = new Date();
+    const [
+      adminResolutionRequired,
+      onHold,
+      approvalConflict,
+      deadlineExpired,
+      disputed,
+      reopened,
+      awaitingCompletionReview,
+      citizenConfirmedOrganizationPending,
+      reworkRequired,
+      verifiedClosed,
+    ] = await Promise.all([
+      this.prisma.report.count({
+        where: {
+          ...where,
+          completionPolicy: CompletionPolicy.ADMIN_RESOLUTION_REQUIRED,
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+        },
+      }),
+      this.prisma.report.count({
+        where: { ...where, completionGovernanceHoldReason: { not: null } },
+      }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          OR: [
+            {
+              citizenCompletionDecision: CompletionDecision.CONFIRMED,
+              organizationCompletionDecision:
+                CompletionDecision.REWORK_REQUESTED,
+            },
+            {
+              citizenCompletionDecision: CompletionDecision.REWORK_REQUESTED,
+              organizationCompletionDecision: CompletionDecision.VERIFIED,
+            },
+          ],
+        },
+      }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+          completionPolicy: CompletionPolicy.AUTO_CLOSE_AFTER_REVIEW_WINDOW,
+          completionReviewDeadlineAt: { lte: now },
+        },
+      }),
+      this.prisma.report.count({
+        where: { ...where, completionReviewState: 'DISPUTED' },
+      }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+          completionFinalizedAt: { not: null },
+        },
+      }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+          completionReviewState: { not: 'CLOSED' },
+        },
+      }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          completionReviewState: 'AWAITING_ORGANIZATION_VERIFICATION',
+          citizenCompletionDecision: CompletionDecision.CONFIRMED,
+        },
+      }),
+      this.prisma.report.count({
+        where: { ...where, completionReviewState: 'REWORK_REQUESTED' },
+      }),
+      this.prisma.report.count({
+        where: {
+          ...where,
+          status: ReportStatus.CLOSED,
+          organizationCompletionDecision: CompletionDecision.VERIFIED,
+        },
+      }),
+    ]);
+    return {
+      superAdmin: {
+        adminResolutionRequired,
+        onHold,
+        approvalConflict,
+        deadlineExpired,
+        disputed,
+        reopened,
+      },
+      organization: {
+        awaitingCompletionReview,
+        citizenConfirmedOrganizationPending,
+        reworkRequired,
+        disputed,
+        verifiedClosed,
+      },
+      provider: {
+        awaitingReview: awaitingCompletionReview,
+        reworkRequired,
+        underDispute: disputed,
+        closed: verifiedClosed,
+      },
+      citizen: {
+        readyForReview: awaitingCompletionReview,
+        confirmationRecorded: citizenConfirmedOrganizationPending,
+        awaitingOrganization: citizenConfirmedOrganizationPending,
+        reworkOrDisputed: reworkRequired + disputed,
+        closed: verifiedClosed,
+      },
+    };
+  }
+
+  private requiredGovernanceReason(reason?: string | null) {
+    const trimmed = reason?.trim();
+    if (!trimmed) throw new BadRequestException('Reason is required');
+    return trimmed;
+  }
+
+  private assertSuperAdmin(user: JwtUser) {
+    if (user.role !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException(
+        'Super Admin completion governance required',
+      );
+    }
+  }
+
+  private async recordGovernanceAction(
+    previous: any,
+    updated: any,
+    user: JwtUser,
+    input: {
+      action: string;
+      auditAction: string;
+      reason: string;
+      notifyType: string;
+      notifyTitle: string;
+      metadata?: Record<string, unknown>;
+    },
+  ) {
+    const metadata = {
+      previousState: {
+        status: previous.status,
+        completionReviewState: previous.completionReviewState,
+        completionPolicy: previous.completionPolicy,
+        hold: Boolean(previous.completionGovernanceHoldReason),
+      },
+      newState: {
+        status: updated.status,
+        completionReviewState: updated.completionReviewState,
+        completionPolicy: updated.completionPolicy,
+        hold: Boolean(updated.completionGovernanceHoldReason),
+      },
+      actorId: this.getUserId(user),
+      actorRole: user.role,
+      timestamp: new Date().toISOString(),
+      ...input.metadata,
+    };
+    await this.recordReportActivity(updated.id, input.action, user, {
+      organizationId: updated.organizationId,
+      fromStatus: previous.status,
+      toStatus: updated.status,
+      providerId: updated.assignedProviderId ?? undefined,
+      reason: input.reason,
+      metadata,
+    });
+    await this.audit(input.auditAction, user, {
+      targetType: 'Report',
+      targetId: updated.id,
+      organizationId: updated.organizationId,
+      reason: input.reason,
+      ...metadata,
+    });
+    await this.createNotification({
+      userId: updated.citizenId,
+      reportId: updated.id,
+      type: input.notifyType,
+      title: input.notifyTitle,
+      message: `Governance updated "${updated.title}".`,
+    });
+    await this.notifyOrganizationOperators(updated.organizationId, {
+      reportId: updated.id,
+      type: input.notifyType,
+      title: input.notifyTitle,
+      message: `Governance updated "${updated.title}".`,
+    });
   }
 
   private getUserId(user: JwtUser) {

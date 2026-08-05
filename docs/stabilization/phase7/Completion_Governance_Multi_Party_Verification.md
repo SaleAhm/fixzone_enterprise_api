@@ -1,8 +1,8 @@
 # Completion Governance And Multi-Party Verification
 
-Date: 2026-08-04
+Date: 2026-08-05
 
-Result: PASS WITH NOTES
+Result: PASS WITH NOTES - Stage B completion-governance slice is implemented and locally verified.
 
 ## Root Cause
 
@@ -64,12 +64,12 @@ This tranche uses the safest available existing configuration sources without ad
 
 1. Existing report `completionPolicy`, when already persisted.
 2. Organization category policy from `profileData.completionPoliciesByCategory`, `profileData.categoryCompletionPolicies`, or `profileData.serviceConfiguration.completionPoliciesByCategory`.
-3. Platform category policy from `FIXZONE_COMPLETION_CATEGORY_POLICIES` or `FIXZONE_SERVICE_CATEGORY_COMPLETION_POLICIES` JSON.
+3. Persisted platform category policy from `PlatformSetting.completionPoliciesByCategory`.
 4. Organization `profileData.completionPolicy`, resolved when provider completion is submitted.
 5. Platform default from `FIXZONE_COMPLETION_POLICY`.
 6. Fallback default: `CITIZEN_CONFIRMATION_REQUIRED`.
 
-Category matching reuses the existing category normalization and compatibility helpers used for responsibility routing. No duplicate category table was introduced.
+Environment category JSON remains a compatibility fallback when no persisted platform category setting exists. Category matching reuses the existing category normalization and compatibility helpers used for responsibility routing. No duplicate category table was introduced.
 
 ## Lifecycle States
 
@@ -156,9 +156,24 @@ Super Admin remains the exceptional governance actor rather than an ordinary ver
 - citizen decision;
 - organization decision;
 - final actor and role;
-- closure or dispute reason.
+- closure or dispute reason;
+- hold state and deadline processing state.
 
-Dedicated Super Admin resolution endpoints, policy override controls, compliance hold actions, and governed reopening were not completed in this tranche. The backend now has a durable `completionGovernanceHoldReason` field that the deadline processor respects, but no Super Admin UI or action endpoint writes it yet.
+Super Admin completion governance endpoints now exist:
+
+- `GET /api/report/admin/completion-governance`
+- `POST /api/report/:id/admin-completion/resolve-close`
+- `POST /api/report/:id/admin-completion/rework`
+- `POST /api/report/:id/admin-completion/hold`
+- `POST /api/report/:id/admin-completion/remove-hold`
+- `POST /api/report/:id/admin-completion/reopen`
+- `POST /api/report/:id/admin-completion/policy`
+- `GET /api/report/admin/completion-governance/category-policy`
+- `POST /api/report/admin/completion-governance/category-policy`
+
+Every mutation requires `SUPER_ADMIN`, a non-empty reason, records previous and resulting state in report activity/audit metadata, and sends persistent in-app notifications through the existing notification table. Ordinary organization/admin roles are not allowed to call these routes.
+
+The Flutter admin shell now exposes a separate Super Admin-only `Completion Governance` workspace. It is distinct from organization `Completion Review` and provides queue, filters, counters, loading/error/empty states, deadline preview, separate reason-required deadline execution, report policy override, category policy administration, and reason-required action dialogs for resolve, rework, hold, unhold, and reopen. The UI uses backend action flags to avoid showing ordinary organization-only actions in this workspace.
 
 ## Dispute And Rework
 
@@ -184,7 +199,21 @@ Authorized roles:
 
 The processor closes only reports that are still `COMPLETED_BY_PROVIDER`, use `AUTO_CLOSE_AFTER_REVIEW_WINDOW`, and have a deadline at or before processing time. It skips active dispute, active rework, governance hold, already processed, and already closed reports. It records `completionReviewProcessedAt`, `completionFallbackRule`, `completionFinalActorType`, final actor role, closure reason, report activity, audit event, and ordinary closure notifications.
 
+Dry-run mode returns classified preview counts:
+
+- eligible;
+- blocked by dispute;
+- blocked by rework;
+- blocked by hold;
+- already processed;
+- already closed;
+- not yet due;
+- invalid or incomplete;
+- processed and skipped counts.
+
 No scheduler module was found or enabled. The processor response explicitly reports `automatedSchedulerActive: false`; an approved cron or worker must call this endpoint before review-window closure is truly automated. No citizen or organization approval is fabricated after timeout.
+
+Manual execution requires an authorized processor role, a bounded batch size, and a non-empty reason. The frontend keeps execution disabled until a successful preview has been returned and displays skipped/blocked counts truthfully instead of reporting unconditional success.
 
 ## Schema And Migration
 
@@ -225,6 +254,63 @@ Citizen completion review responses now include `completionGovernance` so client
 
 Enterprise report details now include `enterpriseDetails.completionGovernance`.
 
+Super Admin action requests:
+
+```json
+{
+  "reason": "Required governance reason"
+}
+```
+
+Report policy override request:
+
+```json
+{
+  "policy": "BOTH_REQUIRED",
+  "reason": "Required governance reason"
+}
+```
+
+Category policy request:
+
+```json
+{
+  "category": "telecom",
+  "policy": "BOTH_REQUIRED",
+  "organizationId": "optional-org-id",
+  "reason": "Required governance reason"
+}
+```
+
+Category policy read response:
+
+```json
+{
+  "scope": "PLATFORM_SERVICE_CATEGORY",
+  "categories": [
+    {
+      "category": "telecom",
+      "label": "telecom",
+      "policy": "BOTH_REQUIRED",
+      "source": "PLATFORM_SERVICE_CATEGORY",
+      "fallbackPolicy": "CITIZEN_CONFIRMATION_REQUIRED"
+    }
+  ],
+  "policies": [
+    "CITIZEN_CONFIRMATION_REQUIRED",
+    "ORGANIZATION_CONFIRMATION_REQUIRED",
+    "BOTH_REQUIRED",
+    "CITIZEN_OR_ORGANIZATION",
+    "ADMIN_RESOLUTION_REQUIRED",
+    "AUTO_CLOSE_AFTER_REVIEW_WINDOW"
+  ],
+  "scheduler": {
+    "automatedSchedulerActive": false,
+    "requirement": "Invoke the protected deadline endpoint from an approved cron or worker until a scheduler module is enabled."
+  }
+}
+```
+
 Organization completion review queue response:
 
 ```json
@@ -264,6 +350,8 @@ Implemented and tested:
 - provider cannot confirm as citizen;
 - organization users must belong to the report organization to verify;
 - organization queue and detail access are scoped to the authenticated user's organization;
+- Super Admin governance actions require `SUPER_ADMIN`;
+- completion governance hold blocks ordinary citizen, organization, and deadline closure;
 - duplicate citizen confirmation is rejected;
 - active rework or dispute blocks ordinary closure paths.
 
@@ -279,6 +367,16 @@ New organization actions record:
 - `Organization Requested Completion Rework`
 - `ORGANIZATION_VERIFIED_COMPLETION`
 - `ORGANIZATION_REQUESTED_COMPLETION_REWORK`
+
+New Super Admin actions record:
+
+- `ADMIN_COMPLETION_RESOLVED_CLOSED`
+- `ADMIN_COMPLETION_RETURNED_FOR_REWORK`
+- `ADMIN_COMPLETION_HOLD_PLACED`
+- `ADMIN_COMPLETION_HOLD_REMOVED`
+- `ADMIN_COMPLETION_REOPENED`
+- `ADMIN_COMPLETION_POLICY_OVERRIDDEN`
+- `COMPLETION_REVIEW_WINDOW_FALLBACK_CLOSED`
 
 Provider completion now sends truthful in-app notifications to the required reviewer group for the selected policy. Citizen confirmation under a still-pending organization policy notifies organization operators. Organization rework notifies the assigned provider and citizen. Deadline fallback sends the existing closure notifications and records an explicit activity event. No email, SMS, or push delivery is claimed.
 
@@ -298,6 +396,8 @@ Persisted data now supports truthful calculation of:
 
 Existing analytics queries were not broadly rewritten in this tranche.
 
+`getDashboardSummary` now includes a `completionGovernance` object with real persisted counters for Super Admin, organization, provider, and citizen governance buckets. Legacy status counters remain unchanged for compatibility.
+
 ## Tests
 
 Backend coverage added:
@@ -305,20 +405,36 @@ Backend coverage added:
 - policy helper tests for citizen-only, organization-only, both-required, either-party, admin-resolution, rework/dispute states, and blockers;
 - category policy precedence tests for report override and organization service-category policy;
 - deadline skip tests for rework and hold blockers;
+- persisted platform category policy precedence test;
 - e2e organization-confirmation policy where citizen feedback remains saved until organization verification closes;
 - e2e both-required policy where either approval order waits for the missing approval;
 - existing duplicate citizen confirmation test preserved and passing.
 
-Frontend validation added admin navigation coverage for the organization `Completion Review` destination. No widget test was added for the new queue card action dialogs in this tranche.
+Frontend validation added admin navigation coverage for the organization `Completion Review` destination and the Super Admin `Completion Governance` destination. The full Flutter test suite remains green after adding the Super Admin workspace.
+
+Verified locally on 2026-08-05:
+
+- `npx prisma format`: passed.
+- `npx prisma validate`: passed.
+- `npx prisma generate`: passed.
+- `npx prisma migrate status`: 27 migrations, schema up to date.
+- `npm run build`: passed.
+- `npm test -- report.service.spec.ts --runInBand`: 1 suite / 37 tests passed.
+- `npm test -- --runInBand`: 20 suites / 174 tests passed.
+- `npm run test:e2e -- report-workflow.e2e-spec.ts --runInBand`: 1 suite / 32 tests passed.
+- `dart format` on touched frontend files: completed.
+- `flutter analyze`: passed.
+- `flutter test test/admin_navigation_test.dart`: 10 tests passed.
+- `flutter test`: 111 tests passed.
+- `flutter build web`: passed.
 
 ## Remaining Known Limitations
 
-- Organization completion-review queue UI exists, but browser UAT with authenticated organization users is still pending.
-- No Super Admin governed resolution endpoint or UI yet.
 - No scheduler/worker is installed for the deadline processor yet.
 - No expanded dispute model beyond blocking ordinary closure and preserving rework/dispute state.
 - No repository-wide ESLint cleanup was attempted because strict unsafe-typing debt is pre-existing and out of scope.
-- Super Admin compliance hold and report policy override actions are still future work.
+- Platform category policy administration stores governed settings and provider-completion policy resolution now consumes those persisted platform category settings before organization defaults and environment fallback.
+- Browser UAT with real authenticated Super Admin and organization accounts is still pending.
 
 ## Browser UAT Checklist
 
@@ -333,3 +449,8 @@ Frontend validation added admin navigation coverage for the organization `Comple
 9. Confirm provider completion evidence galleries remain available and previous evidence is not deleted by revised completion.
 10. Open organization `Completion Review`; verify loading, empty, error, verify, and rework reason flows.
 11. Call the protected deadline processor with a past review-window report and confirm fallback closure records authority without adding citizen or organization approval.
+12. Open Super Admin `Completion Governance`; verify organization users cannot see it.
+13. Resolve and close a governance report with a mandatory reason.
+14. Place and remove a governance hold; confirm ordinary closure is blocked while held.
+15. Reopen a closed report and verify evidence/decision history remains visible.
+16. Override a report policy and verify activity/audit records the previous and new policy.
