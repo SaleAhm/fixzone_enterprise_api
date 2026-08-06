@@ -273,6 +273,18 @@ type ResponsibilityResolution = {
   diagnostics: ResponsibilityResolutionDiagnostics;
 };
 
+type ResponsibilityEligibilityReason =
+  | 'MATCHED_PROPOSED_ORGANIZATION'
+  | 'STATUS_NOT_ORG_REVIEW'
+  | 'NO_PROPOSED_ORGANIZATION'
+  | 'ACCEPTED_ALREADY'
+  | 'REJECTED_ALREADY'
+  | 'MANUALLY_OVERRIDDEN'
+  | 'CLOSED_REPORT'
+  | 'ORGANIZATION_SCOPE_MISMATCH'
+  | 'STALE_ASSIGNMENT'
+  | 'INVALID_ROUTING_STATE';
+
 type ReportWithEvidence = {
   id: string;
   description?: string | null;
@@ -339,6 +351,8 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   } | null;
   organization?: { id: string; name?: string | null } | null;
   assignedOrganization?: { id: string; name?: string | null } | null;
+  organizationAssignmentSource?: string | null;
+  organizationAssignedAt?: Date | string | null;
 };
 
 const COMPLETION_REVIEW_WINDOW_FALLBACK_RULE =
@@ -700,24 +714,86 @@ export class ReportService {
     return reports.map((report) => this.withProtectedEvidenceUrls(report));
   }
 
-  async getResponsibilityReviewReports(user: JwtUser) {
+  async getResponsibilityReviewReports(
+    user: JwtUser,
+    query?: { limit?: string; offset?: string },
+  ) {
     const organizationId = this.requireUserOrganizationId(user);
     if (!this.isAdmin(user) && !this.isDispatch(user)) {
       throw new ForbiddenException('Organization review access required');
     }
+    const take = this.safePageLimit(query?.limit, 50);
+    const skip = this.safePageOffset(query?.offset);
 
     const reports = await this.prisma.report.findMany({
       where: {
         assignedOrganizationId: organizationId,
         status: ReportStatus.ORG_REVIEW,
       },
-      orderBy: [{ organizationAssignedAt: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [
+        { organizationAssignedAt: 'desc' },
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ],
+      take,
+      skip,
       include: this.includeRelations(),
     });
 
     return Promise.all(
       reports.map((report) => this.withEnterpriseReportDetails(report)),
     );
+  }
+
+  async getResponsibilityDiagnostics(reportId: string, user: JwtUser) {
+    if (!this.isSuperAdmin(user)) {
+      throw new ForbiddenException('Super Admin access required');
+    }
+    const report = await this.prisma.report.findUnique({
+      where: { id: reportId },
+      include: this.includeRelations(),
+    });
+    if (!report) throw new NotFoundException('Report not found');
+
+    const timeline = await this.reportActivityTimeline(reportId);
+    const responsibilityResolution =
+      this.responsibilityResolutionFromActivity(timeline);
+    const latestResponsibilityActivity =
+      this.latestResponsibilityActivity(timeline);
+    const queueState = this.responsibilityQueueState(report);
+    const normalizedCategory = report.category?.trim()
+      ? this.normalizeResponsibilityCategory(report.category)
+      : null;
+
+    return {
+      reportId: report.id,
+      status: report.status,
+      organizationId: report.organizationId,
+      assignedOrganizationId: report.assignedOrganizationId,
+      category: report.category,
+      normalizedCategory,
+      locationName: report.locationName ?? report.location ?? null,
+      latitude: report.latitude ?? null,
+      longitude: report.longitude ?? null,
+      locationSource: report.locationSource ?? null,
+      resolverOutcome: responsibilityResolution?.outcome ?? null,
+      resolverReasonCode: responsibilityResolution?.reasonCode ?? null,
+      candidateCount: responsibilityResolution?.candidateCount ?? null,
+      eligibleCandidateCount:
+        responsibilityResolution?.eligibleCandidateCount ?? null,
+      proposedOrganizationId:
+        responsibilityResolution?.proposedOrganizationId ??
+        report.assignedOrganizationId,
+      evaluatedAt: responsibilityResolution?.evaluatedAt ?? null,
+      latestResponsibilityActivity,
+      eligibleForResponsibilityReview:
+        queueState.eligibleForResponsibilityReview,
+      eligibilityReason: queueState.eligibilityReason,
+      queueOrganizationId: queueState.queueOrganizationId,
+      dispatchAllowed: queueState.dispatchAllowed,
+      manualOverrideOccurred: queueState.manualOverrideOccurred,
+      diagnosticsAvailable: responsibilityResolution !== null,
+    };
   }
 
   // ===================== SINGLE REPORT =====================
@@ -1055,12 +1131,10 @@ export class ReportService {
     dto: AssignOrganizationDto,
     user: JwtUser,
   ) {
-    if (
-      !this.isAdmin(user) &&
-      !this.isDispatch(user) &&
-      !this.isSuperAdmin(user)
-    ) {
-      throw new ForbiddenException('Not allowed');
+    if (!this.isSuperAdmin(user)) {
+      throw new ForbiddenException(
+        'Only Super Admin can manually route organization responsibility',
+      );
     }
     const actorId = user.id ?? user.userId ?? user.sub;
     if (!actorId) throw new ForbiddenException('Actor missing');
@@ -1069,12 +1143,6 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (
-      !this.isSuperAdmin(user) &&
-      report.organizationId !== user.organizationId
-    ) {
-      throw new ForbiddenException('Cross-org not allowed');
-    }
     const currentStatus = normalizeReportStatus(report.status);
     const routableStatuses: ReportStatus[] = [
       ReportStatus.PENDING,
@@ -1087,12 +1155,6 @@ export class ReportService {
     }
     if (report.assignedProviderId) {
       throw new ForbiddenException('Report already has an assigned provider');
-    }
-    if (
-      !this.isSuperAdmin(user) &&
-      dto.organizationId !== user.organizationId
-    ) {
-      throw new ForbiddenException('Organization assignment scope denied');
     }
 
     const organization = await this.prisma.organization.findUnique({
@@ -5520,10 +5582,6 @@ export class ReportService {
   private async withEnterpriseReportDetails<
     T extends EnterpriseReportWithEvidence,
   >(report: T) {
-    const activity =
-      this.prismaDelegate<PrismaFindManyDelegate<OptionalReportActivityRecord>>(
-        'reportActivity',
-      );
     const notification =
       this.prismaDelegate<PrismaFindManyDelegate<OptionalNotificationRecord>>(
         'notification',
@@ -5533,12 +5591,7 @@ export class ReportService {
         'evidenceRecord',
       );
     const [timeline, notifications, evidenceRecords] = await Promise.all([
-      activity
-        ? activity.findMany({
-            where: { reportId: report.id },
-            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-          })
-        : Promise.resolve([]),
+      this.reportActivityTimeline(report.id),
       notification
         ? notification.findMany({
             where: { reportId: report.id },
@@ -5563,8 +5616,28 @@ export class ReportService {
       report,
       evidenceRecords,
     );
+    const responsibilityResolution =
+      this.responsibilityResolutionFromActivity(timeline);
+    const routingReason = this.responsibilityRoutingReason(
+      protectedReport,
+      responsibilityResolution,
+    );
+    const queueState = this.responsibilityQueueState(protectedReport);
     return {
       ...protectedReport,
+      responsibilityReason: routingReason,
+      resolverConfidence: this.responsibilityResolverConfidence(
+        responsibilityResolution,
+      ),
+      responsibilityResolution,
+      diagnosticsAvailable: responsibilityResolution !== null,
+      eligibleForResponsibilityReview:
+        queueState.eligibleForResponsibilityReview,
+      eligibilityReason: queueState.eligibilityReason,
+      queueOrganizationId: queueState.queueOrganizationId,
+      dispatchAllowed: queueState.dispatchAllowed,
+      manualOverrideOccurred: queueState.manualOverrideOccurred,
+      evidenceCount: evidenceItems.length,
       evidenceItems,
       enterpriseDetails: {
         evidenceItems,
@@ -5596,6 +5669,221 @@ export class ReportService {
         notifications,
       },
     };
+  }
+
+  private async reportActivityTimeline(reportId: string) {
+    const activity =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalReportActivityRecord>>(
+        'reportActivity',
+      );
+    return activity
+      ? activity.findMany({
+          where: { reportId },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        })
+      : Promise.resolve([]);
+  }
+
+  private responsibilityResolutionFromActivity(
+    timeline: OptionalReportActivityRecord[],
+  ): ResponsibilityResolutionDiagnostics | null {
+    const newestFirst = [...timeline].reverse();
+    for (const item of newestFirst) {
+      const metadata = this.recordObject(item.metadata);
+      const resolution = metadata?.responsibilityResolution;
+      if (resolution && typeof resolution === 'object') {
+        return resolution as ResponsibilityResolutionDiagnostics;
+      }
+    }
+    return null;
+  }
+
+  private responsibilityRoutingReason(
+    report: { organizationAssignmentSource?: string | null },
+    resolution: ResponsibilityResolutionDiagnostics | null,
+  ) {
+    if (resolution?.reasonCode) return resolution.reasonCode;
+    return report.organizationAssignmentSource ?? null;
+  }
+
+  private responsibilityResolverConfidence(
+    resolution: ResponsibilityResolutionDiagnostics | null,
+  ) {
+    if (!resolution) return null;
+    const proposedId =
+      resolution.proposedOrganizationId ?? resolution.selectedCandidateId;
+    const candidate = resolution.candidates.find(
+      (item) => item.organizationId === proposedId,
+    );
+    return candidate?.confidence ?? null;
+  }
+
+  private responsibilityQueueState(report: {
+    status?: ReportStatus | null;
+    assignedOrganizationId?: string | null;
+    organizationId?: string | null;
+    organizationAssignedAt?: Date | string | null;
+    organizationAssignmentSource?: string | null;
+    lastAssignmentOutcome?: AssignmentOutcome | null;
+    assignedProviderId?: string | null;
+  }): {
+    eligibleForResponsibilityReview: boolean;
+    eligibilityReason: ResponsibilityEligibilityReason;
+    queueOrganizationId: string | null;
+    dispatchAllowed: boolean;
+    manualOverrideOccurred: boolean;
+  } {
+    const status = normalizeReportStatus(report.status ?? '');
+    const source = report.organizationAssignmentSource ?? '';
+    const manualOverrideOccurred =
+      source.toLowerCase().includes('super admin override') ||
+      source.toLowerCase().includes('manual');
+    const dispatchAllowed =
+      status === ReportStatus.PENDING && !report.assignedProviderId;
+
+    if (status === ReportStatus.CLOSED) {
+      return this.queueState(
+        false,
+        'CLOSED_REPORT',
+        null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (
+      status === ReportStatus.PENDING &&
+      report.organizationId &&
+      report.assignedOrganizationId === report.organizationId
+    ) {
+      return this.queueState(
+        false,
+        'ACCEPTED_ALREADY',
+        null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (manualOverrideOccurred && status !== ReportStatus.ORG_REVIEW) {
+      return this.queueState(
+        false,
+        'MANUALLY_OVERRIDDEN',
+        null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (
+      report.lastAssignmentOutcome === AssignmentOutcome.REJECTED ||
+      source === ORGANIZATION_REJECTED_SOURCE
+    ) {
+      return this.queueState(
+        false,
+        'REJECTED_ALREADY',
+        null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (status !== ReportStatus.ORG_REVIEW) {
+      return this.queueState(
+        false,
+        'STATUS_NOT_ORG_REVIEW',
+        null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (!report.assignedOrganizationId) {
+      return this.queueState(
+        false,
+        'NO_PROPOSED_ORGANIZATION',
+        null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (!report.organizationAssignedAt) {
+      return this.queueState(
+        false,
+        'STALE_ASSIGNMENT',
+        report.assignedOrganizationId,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    if (report.organizationId === report.assignedOrganizationId) {
+      return this.queueState(
+        false,
+        'INVALID_ROUTING_STATE',
+        report.assignedOrganizationId,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
+    return this.queueState(
+      true,
+      'MATCHED_PROPOSED_ORGANIZATION',
+      report.assignedOrganizationId,
+      dispatchAllowed,
+      manualOverrideOccurred,
+    );
+  }
+
+  private queueState(
+    eligibleForResponsibilityReview: boolean,
+    eligibilityReason: ResponsibilityEligibilityReason,
+    queueOrganizationId: string | null,
+    dispatchAllowed: boolean,
+    manualOverrideOccurred: boolean,
+  ) {
+    return {
+      eligibleForResponsibilityReview,
+      eligibilityReason,
+      queueOrganizationId,
+      dispatchAllowed,
+      manualOverrideOccurred,
+    };
+  }
+
+  private latestResponsibilityActivity(
+    timeline: OptionalReportActivityRecord[],
+  ) {
+    const activity = [...timeline].reverse().find((item) => {
+      const action = item.action ?? '';
+      return (
+        action.includes('RESPONSIBILITY') ||
+        action.includes('ORGANIZATION_ACCEPTED') ||
+        action.includes('ORGANIZATION_REJECTED') ||
+        action.includes('ORGANIZATION_ASSIGNED')
+      );
+    });
+    if (!activity) return null;
+    return {
+      id: activity.id,
+      action: activity.action ?? null,
+      fromStatus: activity.fromStatus ?? null,
+      toStatus: activity.toStatus ?? null,
+      reason: activity.reason ?? null,
+      createdAt: activity.createdAt ?? null,
+    };
+  }
+
+  private safePageLimit(raw: string | undefined, fallback: number) {
+    const parsed = Number.parseInt(raw ?? '', 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(parsed, 100);
+  }
+
+  private safePageOffset(raw: string | undefined) {
+    const parsed = Number.parseInt(raw ?? '', 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return parsed;
+  }
+
+  private recordObject(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
   }
 
   private reportEvidencePayloads(dto: UploadReportEvidenceDto) {

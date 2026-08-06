@@ -287,6 +287,7 @@ describe('Report Workflow (e2e)', () => {
     citizenId: string;
     assignedProviderId?: string | null;
     assignedOrganizationId?: string | null;
+    organizationAssignedAt?: Date | null;
     category?: string;
     location?: string;
   }) {
@@ -301,6 +302,7 @@ describe('Report Workflow (e2e)', () => {
         citizenId: data.citizenId,
         assignedProviderId: data.assignedProviderId ?? null,
         assignedOrganizationId: data.assignedOrganizationId ?? null,
+        organizationAssignedAt: data.organizationAssignedAt ?? null,
       },
     });
 
@@ -2726,6 +2728,15 @@ describe('Report Workflow (e2e)', () => {
         .set('Authorization', `Bearer ${hunslowAdminToken}`),
     ).toHaveProperty('status', 403);
 
+    const sourceAdminManualRouteAttempt = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/assign-organization`)
+      .set('Authorization', `Bearer ${sourceAdminToken}`)
+      .send({
+        organizationId: sourceOrg.id,
+        reason: 'Organization self-routing attempt',
+      });
+    expect(sourceAdminManualRouteAttempt.status).toBe(403);
+
     const routeRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/assign-organization`)
       .set('Authorization', `Bearer ${superAdminToken}`)
@@ -3162,9 +3173,15 @@ describe('Report Workflow (e2e)', () => {
         ],
       },
     });
+    const superAdmin = await createUser({
+      email: `wf-real-super-admin-${unique}@test.com`,
+      fullName: 'Workflow Real Super Admin',
+      role: UserRole.SUPER_ADMIN,
+    });
 
     const citizenToken = await signToken(citizen);
     const routedAdminToken = await signToken(routedAdmin);
+    const superAdminToken = await signToken(superAdmin);
     const createRes = await request(app.getHttpServer())
       .post('/api/report')
       .set('Authorization', `Bearer ${citizenToken}`)
@@ -3270,6 +3287,54 @@ describe('Report Workflow (e2e)', () => {
     expect(json(queueRes).map((item: { id: string }) => item.id)).toContain(
       json(createRes).id,
     );
+    const queuedReports = json(queueRes) as unknown as Array<
+      Record<string, unknown>
+    >;
+    const queuedReport = queuedReports.find(
+      (item) => item.id === json(createRes).id,
+    );
+    expect(queuedReport).toMatchObject({
+      evidenceCount: 3,
+      resolverConfidence: 'HIGH',
+      responsibilityReason: 'MATCHED_DETERMINISTIC',
+      diagnosticsAvailable: true,
+      eligibleForResponsibilityReview: true,
+      eligibilityReason: 'MATCHED_PROPOSED_ORGANIZATION',
+      queueOrganizationId: routedOrg.id,
+      dispatchAllowed: false,
+      responsibilityResolution: {
+        outcome: 'MATCHED',
+        proposedOrganizationId: routedOrg.id,
+        reasonCode: 'MATCHED_DETERMINISTIC',
+        report: {
+          coordinates: { latitude: 12.9891, longitude: 7.6006 },
+          location: { source: 'DEVICE_GPS' },
+        },
+      },
+    });
+
+    const diagnosticsRes = await request(app.getHttpServer())
+      .get(`/api/report/admin/responsibility-diagnostics/${json(createRes).id}`)
+      .set('Authorization', `Bearer ${superAdminToken}`);
+    expect(diagnosticsRes.status).toBe(200);
+    const diagnosticsBody = json(diagnosticsRes) as Record<string, unknown>;
+    expect(typeof diagnosticsBody.candidateCount).toBe('number');
+    expect(json(diagnosticsRes)).toMatchObject({
+      reportId: json(createRes).id,
+      status: ReportStatus.ORG_REVIEW,
+      organizationId: sourceOrg.id,
+      assignedOrganizationId: routedOrg.id,
+      resolverOutcome: 'MATCHED',
+      resolverReasonCode: 'MATCHED_DETERMINISTIC',
+      eligibleCandidateCount: 1,
+      proposedOrganizationId: routedOrg.id,
+      eligibleForResponsibilityReview: true,
+      eligibilityReason: 'MATCHED_PROPOSED_ORGANIZATION',
+      queueOrganizationId: routedOrg.id,
+      dispatchAllowed: false,
+      manualOverrideOccurred: false,
+      diagnosticsAvailable: true,
+    });
 
     const acceptRes = await request(app.getHttpServer())
       .patch(`/api/report/${json(createRes).id}/organization-accept`)
@@ -3279,6 +3344,17 @@ describe('Report Workflow (e2e)', () => {
     expect(json(acceptRes).status).toBe(ReportStatus.PENDING);
     expect(json(acceptRes).organizationId).toBe(routedOrg.id);
     expect(json(acceptRes).assignedOrganizationId).toBe(routedOrg.id);
+
+    const acceptedDiagnostics = await request(app.getHttpServer())
+      .get(`/api/report/admin/responsibility-diagnostics/${json(createRes).id}`)
+      .set('Authorization', `Bearer ${superAdminToken}`);
+    expect(acceptedDiagnostics.status).toBe(200);
+    expect(json(acceptedDiagnostics)).toMatchObject({
+      eligibleForResponsibilityReview: false,
+      eligibilityReason: 'ACCEPTED_ALREADY',
+      dispatchAllowed: true,
+      manualOverrideOccurred: false,
+    });
 
     const acceptedActivity = await prismaWithActivity.reportActivity.findFirst({
       where: {
@@ -3312,6 +3388,80 @@ describe('Report Workflow (e2e)', () => {
       .send({ providerId: provider.id });
     expect(assignRes.status).toBe(200);
     expect(json(assignRes).status).toBe(ReportStatus.ASSIGNED);
+  });
+
+  it('returns legacy responsibility queue items with truthful diagnostic fallback and stable pagination', async () => {
+    const unique = Date.now().toString(36);
+    const org = await createOrganization(`Workflow Legacy Review ${unique}`);
+    const otherOrg = await createOrganization(
+      `Workflow Legacy Other ${unique}`,
+    );
+    const admin = await createUser({
+      email: `wf-legacy-admin-${unique}@test.com`,
+      fullName: 'Workflow Legacy Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const otherAdmin = await createUser({
+      email: `wf-legacy-other-admin-${unique}@test.com`,
+      fullName: 'Workflow Legacy Other Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const citizen = await createUser({
+      email: `wf-legacy-citizen-${unique}@test.com`,
+      fullName: 'Workflow Legacy Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: otherOrg.id,
+    });
+
+    const older = await createReport({
+      title: `WF legacy older ${unique}`,
+      organizationId: otherOrg.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ORG_REVIEW,
+      assignedOrganizationId: org.id,
+      organizationAssignedAt: new Date(Date.now() - 60_000),
+    });
+    const newer = await createReport({
+      title: `WF legacy newer ${unique}`,
+      organizationId: otherOrg.id,
+      citizenId: citizen.id,
+      status: ReportStatus.ORG_REVIEW,
+      assignedOrganizationId: org.id,
+      organizationAssignedAt: new Date(),
+    });
+    createdReportIds.push(older.id, newer.id);
+
+    const adminToken = await signToken(admin);
+    const queueRes = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review?limit=1&offset=0')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(queueRes.status).toBe(200);
+    expect(json(queueRes)).toHaveLength(1);
+    expect(json(queueRes)[0]).toMatchObject({
+      id: newer.id,
+      diagnosticsAvailable: false,
+      eligibleForResponsibilityReview: true,
+      eligibilityReason: 'MATCHED_PROPOSED_ORGANIZATION',
+      queueOrganizationId: org.id,
+    });
+
+    const secondPage = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review?limit=1&offset=1')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(secondPage.status).toBe(200);
+    expect(json(secondPage).map((item: { id: string }) => item.id)).toContain(
+      older.id,
+    );
+
+    const otherQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${await signToken(otherAdmin)}`);
+    expect(otherQueue.status).toBe(200);
+    expect(
+      json(otherQueue).map((item: { id: string }) => item.id),
+    ).not.toContain(newer.id);
   });
 
   it('returns organization-rejected reports to platform triage', async () => {

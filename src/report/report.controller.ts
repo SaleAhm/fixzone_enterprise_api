@@ -223,8 +223,21 @@ export class ReportController {
   @Get('organization/responsibility-review')
   @Roles(UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
-  getResponsibilityReviewReports(@CurrentUser() user: CurrentAuthUser) {
-    return this.reportService.getResponsibilityReviewReports(user);
+  getResponsibilityReviewReports(
+    @CurrentUser() user: CurrentAuthUser,
+    @Query() query: { limit?: string; offset?: string },
+  ) {
+    return this.reportService.getResponsibilityReviewReports(user, query);
+  }
+
+  @Get('admin/responsibility-diagnostics/:id')
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getResponsibilityDiagnostics(
+    @Param('id') id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.reportService.getResponsibilityDiagnostics(id, user);
   }
 
   @Get('organization/completion-review')
@@ -450,7 +463,7 @@ export class ReportController {
   }
 
   @Patch(':id/assign-organization')
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @Roles(UserRole.SUPER_ADMIN)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   assignOrganization(
     @Param('id') id: string,
