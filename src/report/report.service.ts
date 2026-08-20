@@ -152,6 +152,16 @@ type ResponsibilityOrganizationProfile = {
   identityVerificationStatus?: string | null;
   verificationStatus?: string | null;
   profileData?: Prisma.JsonValue | null;
+  jurisdictionZones?: Array<{
+    name?: string | null;
+    zoneType?: string | null;
+    country?: string | null;
+    state?: string | null;
+    lga?: string | null;
+    boundaryRef?: string | null;
+    metadata?: Prisma.JsonValue | null;
+    active?: boolean | null;
+  }>;
   providerLinks?: Array<{
     provider?: ResponsibilityProviderProfile | null;
   }>;
@@ -196,6 +206,7 @@ type OrganizationCandidate = {
     state?: string | null;
     lga?: string | null;
     address?: string | null;
+    configuredZones: string[];
     coverageAreas: string[];
   };
 };
@@ -4801,6 +4812,21 @@ export class ReportService {
         this.jsonStringList(provider.coverageAreas),
       ),
     );
+    const configuredZones = this.collectStringList(
+      (organization.jurisdictionZones ?? [])
+        .filter((zone) => zone.active !== false)
+        .flatMap((zone) => [
+          zone.name,
+          zone.lga,
+          zone.state,
+          zone.country,
+          zone.boundaryRef,
+        ])
+        .filter(
+          (item): item is string =>
+            typeof item === 'string' && item.trim().length > 0,
+        ),
+    );
     const serviceModuleReady = this.maintenanceModuleEnabled(
       organization.enabledModules,
     );
@@ -4835,10 +4861,10 @@ export class ReportService {
       .join(' ')
       .toLowerCase();
     const jurisdiction = [
+      ...configuredZones,
       organization.lga,
       organization.state,
       organization.address,
-      ...coverageAreas,
     ]
       .filter(
         (item): item is string =>
@@ -4846,9 +4872,11 @@ export class ReportService {
       )
       .map((item) => item.toLowerCase());
     const jurisdictionMatch =
-      jurisdiction.length === 0 ||
-      !locationText ||
-      jurisdiction.some((item) => locationText.includes(item));
+      jurisdiction.length > 0 &&
+      (!locationText ||
+        jurisdiction.some((item) => locationText.includes(item)));
+    const responsibilityCategoryConfigured =
+      mandateCategoryMatch || inheritedCategoryMatch || capabilityCategoryMatch;
     const reasons: string[] = [];
     if (organization.status !== OrganizationStatus.ACTIVE) {
       reasons.push('Organization is not active.');
@@ -4867,11 +4895,8 @@ export class ReportService {
     if (!organization.contactEmail && !organization.contactPhone) {
       reasons.push('Organization contact channel is missing.');
     }
-    if (!organization.state && !organization.lga && !organization.address) {
+    if (jurisdiction.length === 0) {
       reasons.push('Organization jurisdiction or address is missing.');
-    }
-    if (activeProviders.length === 0) {
-      reasons.push('No accepted active provider membership is linked.');
     }
     if (
       !inheritedCategories.length &&
@@ -4886,7 +4911,9 @@ export class ReportService {
       !mandateCategoryMatch &&
       !capabilityCategoryMatch
     ) {
-      reasons.push(`No active provider profile covers ${category}.`);
+      reasons.push(
+        `No organization mandate or provider profile covers ${category}.`,
+      );
     }
     if (explicitlyExcludedCategory) {
       reasons.push(
@@ -4895,7 +4922,7 @@ export class ReportService {
     }
     if (!jurisdictionMatch) {
       reasons.push(
-        'Organization jurisdiction or provider coverage does not match the report location.',
+        'Organization jurisdiction does not match the report location.',
       );
     }
     const eligible = reasons.length === 0;
@@ -4942,11 +4969,17 @@ export class ReportService {
       coverageComparison: {
         reportLocation: report?.location ?? null,
         organizationCoverage: coverageAreas,
-        matched: jurisdictionMatch,
+        matched:
+          coverageAreas.length === 0 ||
+          !locationText ||
+          coverageAreas.some((item) =>
+            locationText.includes(item.toLowerCase()),
+          ),
       },
       jurisdictionComparison: {
         reportText: locationText,
         organizationJurisdiction: jurisdiction,
+        configuredZones,
         matched: jurisdictionMatch,
       },
       confidence,
@@ -5031,6 +5064,8 @@ export class ReportService {
           inheritedProfileProviders.length,
         verifiedCapabilities: explicitCapabilities,
         maintenanceServicesEnabled: serviceModuleReady,
+        responsibilityCategoryConfigured,
+        providerDispatchCapacityAvailable: activeProviders.length > 0,
         mandateCategories,
       },
       diagnostics,
@@ -5039,6 +5074,7 @@ export class ReportService {
         state: organization.state,
         lga: organization.lga,
         address: organization.address,
+        configuredZones,
         coverageAreas,
       },
     };
@@ -5200,38 +5236,39 @@ export class ReportService {
         },
       },
     });
+    const jurisdictionZones = await this.prisma.jurisdictionZone.findMany({
+      where: {
+        active: true,
+        organizationId: {
+          in: organizations.map((organization) => organization.id),
+        },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const zonesByOrganization = new Map<string, typeof jurisdictionZones>();
+    for (const zone of jurisdictionZones) {
+      if (!zone.organizationId) continue;
+      zonesByOrganization.set(zone.organizationId, [
+        ...(zonesByOrganization.get(zone.organizationId) ?? []),
+        zone,
+      ]);
+    }
     const assetOrganizationIds =
       await this.assetResponsibilityOrganizationIds(dto);
-    const location = [dto.location, dto.description, dto.title]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
     const allCandidates = organizations.map((organization) => ({
       organization,
       candidate: this.serializeOrganizationCandidate(
-        organization,
+        {
+          ...organization,
+          jurisdictionZones: zonesByOrganization.get(organization.id) ?? [],
+        },
         dto.category,
         dto,
       ),
     }));
-    const evaluated = allCandidates.filter(({ organization, candidate }) => {
-      if (!candidate.eligible) return false;
-      const jurisdiction = [
-        organization.lga,
-        organization.state,
-        organization.address,
-        ...candidate.jurisdictionSummary.coverageAreas,
-      ]
-        .filter(
-          (item): item is string =>
-            typeof item === 'string' && item.trim().length > 0,
-        )
-        .map((item) => item.toLowerCase());
-      return (
-        jurisdiction.length === 0 ||
-        jurisdiction.some((item) => location.includes(item))
-      );
-    });
+    const evaluated = allCandidates.filter(
+      ({ candidate }) => candidate.eligible,
+    );
 
     const restricted = allCandidates
       .map(({ candidate }) => candidate)
@@ -5261,7 +5298,7 @@ export class ReportService {
       ...(assetBacked.length > 0 ? ['asset_or_ownership_responsibility'] : []),
       'organization_active_status',
       'operational_availability',
-      'jurisdiction_or_coverage',
+      'organization_jurisdiction',
       'mandate_or_supported_category',
     ];
 

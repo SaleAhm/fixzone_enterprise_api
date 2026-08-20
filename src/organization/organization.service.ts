@@ -95,7 +95,7 @@ export class OrganizationService {
   }
 
   async getById(id: string, user: JwtUser) {
-    await this.assertCanAccessOrganization(id, user);
+    this.assertCanAccessOrganization(id, user);
     const organization = await this.prisma.organization.findUnique({
       where: { id },
     });
@@ -104,7 +104,7 @@ export class OrganizationService {
   }
 
   async update(id: string, dto: UpdateOrganizationDto, user: JwtUser) {
-    await this.assertCanManageOrganization(id, user, dto);
+    this.assertCanManageOrganization(id, user, dto);
     const organization = await this.prisma.organization.findUnique({
       where: { id },
     });
@@ -157,7 +157,7 @@ export class OrganizationService {
   }
 
   async getUsers(id: string, user: JwtUser) {
-    await this.assertCanAccessOrganization(id, user);
+    this.assertCanAccessOrganization(id, user);
     return this.prisma.user.findMany({
       where: { organizationId: id },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -175,7 +175,7 @@ export class OrganizationService {
   }
 
   async getProviders(id: string, user: JwtUser) {
-    await this.assertCanAccessOrganization(id, user);
+    this.assertCanAccessOrganization(id, user);
     return this.prisma.user.findMany({
       where: {
         role: UserRole.PROVIDER,
@@ -205,7 +205,7 @@ export class OrganizationService {
   }
 
   async getReports(id: string, user: JwtUser) {
-    await this.assertCanAccessOrganization(id, user);
+    this.assertCanAccessOrganization(id, user);
     return this.prisma.report.findMany({
       where: { organizationId: id },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -236,37 +236,42 @@ export class OrganizationService {
 
   async getReadiness(id: string, user: JwtUser) {
     const organization = await this.getById(id, user);
-    const [adminCount, dispatchCount, providers] = await Promise.all([
-      this.prisma.user.count({
-        where: {
-          organizationId: id,
-          role: UserRole.ORG_ADMIN,
-          accountStatus: 'ACTIVE',
-        },
-      }),
-      this.prisma.user.count({
-        where: {
-          organizationId: id,
-          role: UserRole.DISPATCH_OFFICER,
-          accountStatus: 'ACTIVE',
-        },
-      }),
-      this.prisma.user.findMany({
-        where: {
-          role: UserRole.PROVIDER,
-          accountStatus: 'ACTIVE',
-          OR: [
-            { organizationId: id },
-            {
-              providerOrganizations: {
-                some: { organizationId: id, active: true },
+    const [adminCount, dispatchCount, providers, jurisdictionZones] =
+      await Promise.all([
+        this.prisma.user.count({
+          where: {
+            organizationId: id,
+            role: UserRole.ORG_ADMIN,
+            accountStatus: 'ACTIVE',
+          },
+        }),
+        this.prisma.user.count({
+          where: {
+            organizationId: id,
+            role: UserRole.DISPATCH_OFFICER,
+            accountStatus: 'ACTIVE',
+          },
+        }),
+        this.prisma.user.findMany({
+          where: {
+            role: UserRole.PROVIDER,
+            accountStatus: 'ACTIVE',
+            OR: [
+              { organizationId: id },
+              {
+                providerOrganizations: {
+                  some: { organizationId: id, active: true },
+                },
               },
-            },
-          ],
-        },
-        select: { serviceCategories: true, coverageAreas: true },
-      }),
-    ]);
+            ],
+          },
+          select: { serviceCategories: true, coverageAreas: true },
+        }),
+        this.prisma.jurisdictionZone.findMany({
+          where: { organizationId: id, active: true },
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        }),
+      ]);
     const providerCount = providers.length;
     const coveredCategories = this.collectStringList(
       providers.flatMap((provider) =>
@@ -280,6 +285,72 @@ export class OrganizationService {
     );
     const moduleSummary = this.platformModules.organizationModuleSummary(
       organization.enabledModules,
+    );
+    const routingMandateCategories = this.organizationMandateCategories(
+      organization.profileData,
+    );
+    const organizationJurisdictionAreas = this.collectStringList([
+      ...jurisdictionZones.flatMap((zone) => [
+        zone.name,
+        zone.lga,
+        zone.state,
+        zone.country,
+      ]),
+      organization.lga,
+      organization.state,
+      organization.address,
+    ]);
+    const routingChecks = [
+      this.readinessCheck(
+        'routing_contact',
+        'Routing contact',
+        Boolean(organization.contactEmail || organization.contactPhone),
+        'Organization contact channel is present.',
+        'Add a contact email or phone for responsibility review.',
+      ),
+      this.readinessCheck(
+        'routing_jurisdiction',
+        'Routing jurisdiction',
+        organizationJurisdictionAreas.length > 0,
+        'Organization jurisdiction is configured.',
+        'Configure a jurisdiction zone, state, LGA or service address.',
+      ),
+      this.readinessCheck(
+        'routing_mandate',
+        'Responsibility mandate',
+        routingMandateCategories.length > 0 || coveredCategories.length > 0,
+        'Responsibility categories are configured.',
+        'Configure organization mandate categories or provider service categories.',
+      ),
+      this.readinessCheck(
+        'routing_module',
+        'Maintenance module',
+        moduleSummary.maintenanceActive,
+        'FixZone Maintenance is enabled.',
+        'Enable the maintenance module before responsibility review.',
+      ),
+      this.readinessCheck(
+        'routing_billing',
+        'Billing status',
+        organization.billingStatus !== BillingStatus.SUSPENDED &&
+          organization.billingStatus !== BillingStatus.CANCELLED,
+        'Billing state allows responsibility review.',
+        'Resolve suspended or cancelled billing state.',
+      ),
+      this.readinessCheck(
+        'routing_provider_capacity',
+        'Dispatch provider capacity',
+        providerCount > 0,
+        'At least one active provider is available for dispatch.',
+        'Add provider capacity before assignment; responsibility review can still use organization mandates.',
+        'warning',
+      ),
+    ];
+    const routingBlockers = routingChecks.filter(
+      (check) => check.status === 'blocker',
+    );
+    const routingWarnings = routingChecks.filter(
+      (check) => check.status === 'warning',
     );
     const checks = [
       this.readinessCheck(
@@ -374,7 +445,39 @@ export class OrganizationService {
         state: organization.state,
         lga: organization.lga,
         address: organization.address,
+        configuredZones: jurisdictionZones.map((zone) => ({
+          id: zone.id,
+          name: zone.name,
+          zoneType: zone.zoneType,
+          country: zone.country,
+          state: zone.state,
+          lga: zone.lga,
+        })),
+        organizationJurisdictionAreas,
         providerCoverageAreas,
+      },
+      routingReadiness: {
+        ready: routingBlockers.length === 0,
+        state:
+          routingBlockers.length === 0
+            ? routingWarnings.length === 0
+              ? 'READY'
+              : 'READY_WITH_WARNINGS'
+            : 'NOT_READY',
+        blockingReasons: routingBlockers.map((check) => check.message),
+        warnings: routingWarnings.map((check) => check.message),
+        mandateCategories: routingMandateCategories,
+        inheritedProviderCategories: coveredCategories,
+        jurisdictionAreas: organizationJurisdictionAreas,
+        configuredZones: jurisdictionZones.map((zone) => ({
+          id: zone.id,
+          name: zone.name,
+          zoneType: zone.zoneType,
+          country: zone.country,
+          state: zone.state,
+          lga: zone.lga,
+        })),
+        checks: routingChecks,
       },
       subscriptionStatus: organization.billingStatus,
       plan: organization.subscriptionPlan,
@@ -409,7 +512,7 @@ export class OrganizationService {
     dto: Record<string, unknown>,
     user: JwtUser,
   ) {
-    await this.assertCanAccessOrganization(id, user);
+    this.assertCanAccessOrganization(id, user);
     if (user.role !== 'SUPER_ADMIN' && user.role !== 'ORG_ADMIN') {
       throw new ForbiddenException('Upgrade requests require admin access');
     }
@@ -487,9 +590,8 @@ export class OrganizationService {
     user: JwtUser,
   ) {
     this.assertSuperAdmin(user);
-    const action = String(dto.action ?? '')
-      .trim()
-      .toUpperCase();
+    const action =
+      typeof dto.action === 'string' ? dto.action.trim().toUpperCase() : '';
     if (action !== 'APPROVE' && action !== 'REJECT') {
       throw new BadRequestException('Review action must be APPROVE or REJECT');
     }
@@ -737,14 +839,14 @@ export class OrganizationService {
     return { id: user.organizationId, status: { not: 'ARCHIVED' } };
   }
 
-  private async assertCanAccessOrganization(id: string, user: JwtUser) {
+  private assertCanAccessOrganization(id: string, user: JwtUser) {
     if (user.role === 'SUPER_ADMIN') return;
     if (!user.organizationId || user.organizationId !== id) {
       throw new ForbiddenException('Organization access denied');
     }
   }
 
-  private async assertCanManageOrganization(
+  private assertCanManageOrganization(
     id: string,
     user: JwtUser,
     dto: UpdateOrganizationDto,
@@ -802,14 +904,36 @@ export class OrganizationService {
       .filter((item) => item.length > 0);
   }
 
-  private collectStringList(values: string[]) {
-    return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b));
+  private organizationMandateCategories(profileData: unknown): string[] {
+    const profile =
+      profileData && typeof profileData === 'object'
+        ? (profileData as Record<string, unknown>)
+        : {};
+    const routing =
+      profile.responsibilityRouting &&
+      typeof profile.responsibilityRouting === 'object'
+        ? (profile.responsibilityRouting as Record<string, unknown>)
+        : {};
+    return this.collectStringList([
+      ...this.jsonStringList(profile.mandates),
+      ...this.jsonStringList(profile.supportedCategories),
+      ...this.jsonStringList(routing.mandateCategories),
+      ...this.jsonStringList(routing.supportedCategories),
+    ]);
+  }
+
+  private collectStringList(values: unknown[]) {
+    return Array.from(
+      new Set(
+        values
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item) => item.length > 0),
+      ),
+    ).sort((a, b) => a.localeCompare(b));
   }
 
   private parsePlan(value: unknown) {
-    const plan = String(value ?? '')
-      .trim()
-      .toUpperCase();
+    const plan = typeof value === 'string' ? value.trim().toUpperCase() : '';
     if (!Object.values(SubscriptionPlan).includes(plan as SubscriptionPlan)) {
       throw new BadRequestException('Invalid subscription plan');
     }

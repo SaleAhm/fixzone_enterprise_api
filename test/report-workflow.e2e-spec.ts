@@ -3296,6 +3296,56 @@ describe('Report Workflow (e2e)', () => {
       json(unrelatedQueue).map((item: { id: string }) => item.id),
     ).not.toContain(json(createRes).id);
 
+    const mandateOnlyCategory = `Mandate Intake ${unique}`;
+    const mandateOnlyOrg = await prisma.organization.create({
+      data: {
+        name: `Workflow Mandate Routed ${unique}`,
+        contactEmail: `wf-mandate-routed-${unique}@test.com`,
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        profileData: {
+          responsibilityRouting: {
+            mandateCategories: [mandateOnlyCategory],
+          },
+        },
+      },
+    });
+    createdOrgIds.push(mandateOnlyOrg.id);
+    const mandateAdmin = await createUser({
+      email: `wf-mandate-admin-${unique}@test.com`,
+      fullName: 'Workflow Mandate Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: mandateOnlyOrg.id,
+    });
+    const mandateRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF mandate-only organization intake',
+        description: 'Road issue around Gwagwalada',
+        category: mandateOnlyCategory,
+        location: 'Gwagwalada, FCT',
+      });
+    expect(mandateRes.status).toBe(201);
+    createdReportIds.push(json(mandateRes).id);
+    expect(json(mandateRes).status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(mandateRes).organizationId).toBe(sourceOrg.id);
+    expect(json(mandateRes).assignedOrganizationId).toBe(mandateOnlyOrg.id);
+    expect(json(mandateRes).responsibilityResolution).toMatchObject({
+      outcome: 'MATCHED',
+      proposedOrganizationId: mandateOnlyOrg.id,
+      reasonCode: 'MATCHED_DETERMINISTIC',
+    });
+
+    const mandateAdminToken = await signToken(mandateAdmin);
+    const mandateQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${mandateAdminToken}`);
+    expect(mandateQueue.status).toBe(200);
+    expect(json(mandateQueue).map((item: { id: string }) => item.id)).toContain(
+      json(mandateRes).id,
+    );
+
     const ambiguousOrgA = await prisma.organization.create({
       data: {
         name: `Workflow Auto Ambiguous A ${unique}`,

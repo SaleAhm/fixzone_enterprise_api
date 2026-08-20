@@ -525,6 +525,82 @@ describe('ReportService organization candidates', () => {
     );
   });
 
+  it('allows organization mandate categories to drive responsibility review without provider capacity', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-mandate',
+        name: 'Road Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@road-agency.test',
+        contactPhone: null,
+        country: 'Nigeria',
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        address: null,
+        profileData: {
+          responsibilityRouting: {
+            mandateCategories: ['Road & Infrastructure'],
+          },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road & Infrastructure',
+      { location: 'Gwagwalada, FCT', title: 'Road damage' },
+    );
+
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.activeProviderCount).toBe(0);
+    expect(candidate.categoryMatch.source).toBe('ORGANIZATION_MANDATE');
+    expect(candidate.jurisdictionMatch).toBe(true);
+    expect(candidate.readiness).toMatchObject({
+      responsibilityCategoryConfigured: true,
+      providerDispatchCapacityAvailable: false,
+    });
+  });
+
+  it('does not use provider coverage as organization jurisdiction', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-provider-coverage-only',
+        name: 'Coverage Only Org',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@coverage.test',
+        contactPhone: null,
+        country: 'Nigeria',
+        state: null,
+        lga: null,
+        address: null,
+        users: [],
+        providerLinks: [
+          {
+            active: true,
+            provider: {
+              id: 'provider-coverage',
+              accountStatus: 'ACTIVE',
+              serviceCategories: ['Road'],
+              coverageAreas: ['Gwagwalada'],
+            },
+          },
+        ],
+      },
+      'Road',
+      { location: 'Gwagwalada, FCT', title: 'Road damage' },
+    );
+
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.jurisdictionMatch).toBe(false);
+    expect(candidate.reasons).toContain(
+      'Organization jurisdiction or address is missing.',
+    );
+    const jurisdictionSummary = candidate.jurisdictionSummary as {
+      coverageAreas: string[];
+    };
+    expect(jurisdictionSummary.coverageAreas).toContain('Gwagwalada');
+  });
+
   it('maps Telecom category to ICT capability diagnostics', () => {
     const candidate = service.serializeOrganizationCandidate(
       {
@@ -593,7 +669,7 @@ describe('ReportService organization candidates', () => {
 
     expect(candidate.eligible).toBe(false);
     expect(candidate.reasons).toContain(
-      'No accepted active provider membership is linked.',
+      'No mandate or inherited provider profile categories are configured.',
     );
     expect(candidate.reasons).toContain(
       'Organization contact channel is missing.',
@@ -615,6 +691,7 @@ describe('ReportService responsibility resolver', () => {
       },
       assetCandidateOwner: { findMany: jest.fn().mockResolvedValue([]) },
       assetClaim: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: { findMany: jest.fn().mockResolvedValue([]) },
       organization: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -708,6 +785,7 @@ describe('ReportService responsibility resolver', () => {
   it('blocks automatic routing when an explicit responsibility exclusion matches', async () => {
     const service = reportService({
       potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: { findMany: jest.fn().mockResolvedValue([]) },
       organization: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -765,6 +843,7 @@ describe('ReportService responsibility resolver', () => {
   it('returns explicit diagnostics when category or location is missing', async () => {
     const service = reportService({
       potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: { findMany: jest.fn().mockResolvedValue([]) },
       organization: { findMany: jest.fn().mockResolvedValue([]) },
     });
 
