@@ -10,20 +10,10 @@ export class NotificationPipelineService {
   async emit(event: WorkflowEvent) {
     if (!event.reportId) return { sent: 0 };
     if (event.type === 'provider_completed_report') {
-      return this.notifyCitizen(event, {
-        type: 'completion_review',
-        title: 'Ready for review',
-        message:
-          'Your provider marked this report complete. Please confirm or request review.',
-      });
+      return { sent: 0 };
     }
     if (event.type === 'citizen_confirmed_completion') {
-      const sent = await this.notifyProvider(event, {
-        type: 'completion_confirmed',
-        title: 'Completion confirmed',
-        message: 'The citizen confirmed your completed work.',
-      });
-      return { sent };
+      return { sent: 0 };
     }
     if (event.type === 'citizen_rejected_completion') {
       const providerSent = await this.notifyProvider(event, {
@@ -48,21 +38,6 @@ export class NotificationPipelineService {
       return { sent };
     }
     return { sent: 0 };
-  }
-
-  private async notifyCitizen(
-    event: WorkflowEvent,
-    notification: { type: string; title: string; message: string },
-  ) {
-    if (!event.citizenId || !event.reportId) return { sent: 0 };
-    await this.prisma.notification.create({
-      data: {
-        userId: event.citizenId,
-        reportId: event.reportId,
-        ...notification,
-      },
-    });
-    return { sent: 1 };
   }
 
   private async notifyProvider(

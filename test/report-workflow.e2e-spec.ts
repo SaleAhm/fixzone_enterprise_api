@@ -84,9 +84,17 @@ type JsonResponseBody = Record<string, unknown> & {
   total: number;
   user: { id: string };
 };
+type NotificationJson = {
+  reportId: string | null;
+  type: string;
+};
 
 function json(response: request.Response): JsonResponseBody {
   return (response as unknown as { body: JsonResponseBody }).body;
+}
+
+function notifications(response: request.Response): NotificationJson[] {
+  return (response as unknown as { body: NotificationJson[] }).body;
 }
 
 describe('Report Workflow (e2e)', () => {
@@ -675,6 +683,13 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`);
 
     expect(citizenNotifications.status).toBe(200);
+    const citizenReviewNotifications = notifications(
+      citizenNotifications,
+    ).filter(
+      (item) =>
+        item.reportId === report.id && item.type === 'completion_review',
+    );
+    expect(citizenReviewNotifications).toHaveLength(1);
     expect(json(citizenNotifications)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -702,6 +717,13 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${providerToken}`);
 
     expect(providerNotifications.status).toBe(200);
+    const providerCompletionNotifications = notifications(
+      providerNotifications,
+    ).filter(
+      (item) =>
+        item.reportId === report.id && item.type === 'completion_confirmed',
+    );
+    expect(providerCompletionNotifications).toHaveLength(1);
     expect(json(providerNotifications)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -971,7 +993,26 @@ describe('Report Workflow (e2e)', () => {
       .post(`/api/report/citizen/${report.id}/confirm-completion`)
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({ rating: 5, feedback: 'Duplicate citizen approval.' });
-    expect(duplicateCitizenConfirmRes.status).toBe(403);
+    expect(duplicateCitizenConfirmRes.status).toBe(201);
+    expect(json(duplicateCitizenConfirmRes).status).toBe(
+      ReportStatus.COMPLETED_BY_PROVIDER,
+    );
+    expect(json(duplicateCitizenConfirmRes).citizenFeedback).toBe(
+      'Looks complete from my side.',
+    );
+
+    const providerBeforeClosureNotifications = await request(
+      app.getHttpServer(),
+    )
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${providerToken}`);
+    expect(providerBeforeClosureNotifications.status).toBe(200);
+    expect(
+      notifications(providerBeforeClosureNotifications).filter(
+        (item) =>
+          item.reportId === report.id && item.type === 'completion_confirmed',
+      ),
+    ).toHaveLength(0);
 
     const verifyRes = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/organization-completion/verify`)
@@ -980,6 +1021,17 @@ describe('Report Workflow (e2e)', () => {
     expect(verifyRes.status).toBe(201);
     expect(json(verifyRes).status).toBe(ReportStatus.CLOSED);
     expect(json(verifyRes).organizationCompletionDecision).toBe('VERIFIED');
+
+    const providerAfterClosureNotifications = await request(app.getHttpServer())
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${providerToken}`);
+    expect(providerAfterClosureNotifications.status).toBe(200);
+    expect(
+      notifications(providerAfterClosureNotifications).filter(
+        (item) =>
+          item.reportId === report.id && item.type === 'completion_confirmed',
+      ),
+    ).toHaveLength(1);
   });
 
   it('enforces rework, dispute, override reason, tenant isolation and immutable completion evidence', async () => {
@@ -1748,7 +1800,13 @@ describe('Report Workflow (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({ rating: 5, feedback: 'Duplicate approval.' });
 
-    expect(duplicateRes.status).toBe(403);
+    expect(duplicateRes.status).toBe(201);
+    expect(json(duplicateRes)).toMatchObject({
+      status: ReportStatus.CLOSED,
+      citizenRating: 5,
+      citizenFeedback: 'Verified by citizen.',
+      citizenCompletionDecision: CompletionDecision.CONFIRMED,
+    });
   });
 
   it('orchestrates citizen rejection of provider-completed work', async () => {

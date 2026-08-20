@@ -2255,7 +2255,7 @@ export class ReportService {
   ) {
     const report = await this.getCitizenReviewReport(reportId, user);
     if (report.citizenCompletionDecision === CompletionDecision.CONFIRMED) {
-      throw new ForbiddenException('Completion has already been confirmed.');
+      return this.getReportById(reportId, user);
     }
     this.assertNoActiveCompletionBlockers(report);
     const policy = this.policyForReport(report);
@@ -2296,7 +2296,7 @@ export class ReportService {
     });
 
     if (closes) {
-      await this.notifyStatusChange(updated);
+      await this.notifyAuthoritativeCompletionClosure(updated);
     } else {
       await this.notifyOrganizationOperators(updated.organizationId, {
         reportId,
@@ -2464,7 +2464,7 @@ export class ReportService {
     });
 
     if (closes) {
-      await this.notifyStatusChange(updated);
+      await this.notifyAuthoritativeCompletionClosure(updated);
     } else {
       await this.createNotification({
         userId: updated.citizenId,
@@ -6774,6 +6774,24 @@ export class ReportService {
       userId: report.citizenId,
       reportId: report.id,
       ...notification,
+    });
+  }
+
+  private async notifyAuthoritativeCompletionClosure(report: {
+    id: string;
+    title: string;
+    citizenId: string;
+    assignedProviderId?: string | null;
+    status: ReportStatus;
+  }) {
+    await this.notifyStatusChange(report);
+    if (!report.assignedProviderId) return;
+    await this.createNotification({
+      userId: report.assignedProviderId,
+      reportId: report.id,
+      type: 'completion_confirmed',
+      title: 'Completion confirmed',
+      message: `Completion for "${report.title}" has been confirmed and the report is closed.`,
     });
   }
 
