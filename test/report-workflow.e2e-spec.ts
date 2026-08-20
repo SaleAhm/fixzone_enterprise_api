@@ -1304,6 +1304,167 @@ describe('Report Workflow (e2e)', () => {
     expect(json(providerEleventh).code).toBe('EVIDENCE_LIMIT_EXCEEDED');
   });
 
+  it('serves every protected citizen evidence file recorded for a five-image report', async () => {
+    const org = await createOrganization(
+      'Workflow Five Citizen Evidence Serve Org',
+    );
+    const citizen = await createUser({
+      email: 'wf-citizen-five-evidence@test.com',
+      fullName: 'Workflow Five Evidence Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherCitizen = await createUser({
+      email: 'wf-other-citizen-five-evidence@test.com',
+      fullName: 'Workflow Other Five Evidence Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF five citizen evidence protected retrieval',
+      status: ReportStatus.TRIAGE,
+      organizationId: org.id,
+      citizenId: citizen.id,
+    });
+    const citizenToken = await signToken(citizen);
+    const otherCitizenToken = await signToken(otherCitizen);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/evidence`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        images: [0, 1, 2, 3, 4].map((index) => ({
+          fileName: `citizen-five-${index}.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          order: index,
+        })),
+      });
+    expect(uploadRes.status).toBe(201);
+    expect(json(uploadRes).evidenceItems).toHaveLength(5);
+
+    const detailRes = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(detailRes.status).toBe(200);
+    expect(json(detailRes).evidenceItems).toHaveLength(5);
+
+    const items = json(detailRes).evidenceItems;
+    const urls = items.map((item) => item.imageUrl?.toString() ?? '');
+    const paths = items.map((item) => item.imagePath?.toString() ?? '');
+    expect(new Set(urls).size).toBe(5);
+    expect(new Set(paths).size).toBe(5);
+    expect(urls).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          new RegExp(`^/api/report/${report.id}/evidence/.+\\.png$`),
+        ),
+      ]),
+    );
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          new RegExp(`^report-evidence/${report.id}/.+\\.png$`),
+        ),
+      ]),
+    );
+
+    for (const url of urls) {
+      const imageRes = await request(app.getHttpServer())
+        .get(url)
+        .set('Authorization', `Bearer ${citizenToken}`);
+      expect(imageRes.status).toBe(200);
+      expect(imageRes.headers['content-type']).toContain('image/png');
+      expect(imageRes.body).toEqual(Buffer.from(onePixelPngBase64, 'base64'));
+    }
+
+    const unauthenticatedRes = await request(app.getHttpServer()).get(urls[1]);
+    expect(unauthenticatedRes.status).toBe(401);
+
+    const forbiddenRes = await request(app.getHttpServer())
+      .get(urls[1])
+      .set('Authorization', `Bearer ${otherCitizenToken}`);
+    expect(forbiddenRes.status).toBe(403);
+  });
+
+  it('serves every protected provider completion evidence file recorded for a multi-image completion upload', async () => {
+    const org = await createOrganization(
+      'Workflow Multi Completion Evidence Serve Org',
+    );
+    const provider = await createUser({
+      email: 'wf-provider-multi-completion-serve@test.com',
+      fullName: 'Workflow Multi Completion Serve Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-multi-completion-serve@test.com',
+      fullName: 'Workflow Multi Completion Serve Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const otherCitizen = await createUser({
+      email: 'wf-other-multi-completion-serve@test.com',
+      fullName: 'Workflow Other Multi Completion Serve Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: 'WF multi completion evidence protected retrieval',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const providerToken = await signToken(provider);
+    const citizenToken = await signToken(citizen);
+    const otherCitizenToken = await signToken(otherCitizen);
+
+    const uploadRes = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        images: [0, 1, 2].map((index) => ({
+          fileName: `completion-multi-${index}.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          classification: index === 0 ? 'before' : 'after',
+          order: index,
+        })),
+      });
+    expect(uploadRes.status).toBe(201);
+    expect(json(uploadRes).evidenceItems).toHaveLength(3);
+
+    const detailRes = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(detailRes.status).toBe(200);
+
+    const completionItems = json(detailRes).evidenceItems.filter(
+      (item) => item.kind === 'report-completion',
+    );
+    expect(completionItems).toHaveLength(3);
+    const urls = completionItems.map((item) => item.imageUrl?.toString() ?? '');
+    expect(new Set(urls).size).toBe(3);
+
+    for (const url of urls) {
+      const imageRes = await request(app.getHttpServer())
+        .get(url)
+        .set('Authorization', `Bearer ${citizenToken}`);
+      expect(imageRes.status).toBe(200);
+      expect(imageRes.headers['content-type']).toContain('image/png');
+      expect(imageRes.body).toEqual(Buffer.from(onePixelPngBase64, 'base64'));
+    }
+
+    const unauthenticatedRes = await request(app.getHttpServer()).get(urls[1]);
+    expect(unauthenticatedRes.status).toBe(401);
+
+    const forbiddenRes = await request(app.getHttpServer())
+      .get(urls[1])
+      .set('Authorization', `Bearer ${otherCitizenToken}`);
+    expect(forbiddenRes.status).toBe(403);
+  });
+
   it('persists completion evidence with refresh-safe upload URL and path fields', async () => {
     const org = await createOrganization('Workflow Evidence Persistence Org');
     const provider = await createUser({

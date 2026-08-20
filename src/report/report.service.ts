@@ -957,14 +957,14 @@ export class ReportService {
     if (!report) throw new NotFoundException('Evidence not found');
     await this.assertCanAccessEvidence(report, kind, user);
 
-    const storedPath =
-      kind === 'report-evidence'
-        ? (report.evidenceImagePath ?? report.evidenceImageUrl)
-        : (report.completionImagePath ?? report.completionImageUrl);
-    const normalizedStoredPath = this.extractLocalUploadPath(storedPath);
     const expectedPath = posix.join(kind, reportId, fileName);
 
-    if (normalizedStoredPath !== expectedPath) {
+    const evidencePathAllowed = await this.reportHasEvidencePath(
+      report,
+      kind,
+      expectedPath,
+    );
+    if (!evidencePathAllowed) {
       throw new NotFoundException('Evidence not found');
     }
 
@@ -983,6 +983,66 @@ export class ReportService {
       fileName,
       contentType: this.contentTypeForEvidenceFile(fileName),
     };
+  }
+
+  private async reportHasEvidencePath(
+    report: Pick<
+      ReportWithEvidence,
+      | 'id'
+      | 'evidenceImageUrl'
+      | 'evidenceImagePath'
+      | 'completionImageUrl'
+      | 'completionImagePath'
+    >,
+    kind: EvidenceKind,
+    expectedPath: string,
+  ) {
+    const scalarPath =
+      kind === 'report-evidence'
+        ? (this.extractLocalUploadPath(report.evidenceImagePath) ??
+          this.extractLocalUploadPath(report.evidenceImageUrl))
+        : (this.extractLocalUploadPath(report.completionImagePath) ??
+          this.extractLocalUploadPath(report.completionImageUrl));
+    if (scalarPath === expectedPath) return true;
+
+    const evidenceRecord =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalEvidenceRecord>>(
+        'evidenceRecord',
+      );
+    if (!evidenceRecord) return false;
+
+    const records = await evidenceRecord.findMany({
+      where: {
+        relatedEntityType: EvidenceRelatedEntityType.REPORT,
+        relatedEntityId: report.id,
+      },
+      select: {
+        id: true,
+        fileUrl: true,
+        metadata: true,
+      },
+    });
+
+    return records.some((record) => {
+      const metadata =
+        record.metadata &&
+        typeof record.metadata === 'object' &&
+        !Array.isArray(record.metadata)
+          ? (record.metadata as Record<string, unknown>)
+          : {};
+      const recordKind =
+        metadata.kind === 'report-completion'
+          ? 'report-completion'
+          : 'report-evidence';
+      if (recordKind !== kind) return false;
+
+      const metadataPath =
+        typeof metadata.imagePath === 'string' ? metadata.imagePath : null;
+      const recordPath =
+        this.extractLocalUploadPath(metadataPath) ??
+        this.extractLocalUploadPath(record.fileUrl);
+      return recordPath === expectedPath;
+    });
   }
 
   async getAssignmentCandidates(reportId: string, user: JwtUser) {
