@@ -284,7 +284,8 @@ type ResponsibilityEligibilityReason =
   | 'CLOSED_REPORT'
   | 'ORGANIZATION_SCOPE_MISMATCH'
   | 'STALE_ASSIGNMENT'
-  | 'INVALID_ROUTING_STATE';
+  | 'INVALID_ROUTING_STATE'
+  | 'LEGACY_MATCHED_ROUTING_STATE';
 
 type ReportWithEvidence = {
   id: string;
@@ -728,22 +729,55 @@ export class ReportService {
 
     const reports = await this.prisma.report.findMany({
       where: {
-        assignedOrganizationId: organizationId,
-        status: ReportStatus.ORG_REVIEW,
+        OR: [
+          {
+            assignedOrganizationId: organizationId,
+            status: ReportStatus.ORG_REVIEW,
+          },
+          {
+            organizationId,
+            assignedOrganizationId: null,
+            assignedProviderId: null,
+            status: ReportStatus.TRIAGE,
+            AND: [
+              {
+                OR: [
+                  { lastAssignmentOutcome: null },
+                  {
+                    lastAssignmentOutcome: { not: AssignmentOutcome.REJECTED },
+                  },
+                ],
+              },
+              {
+                OR: [
+                  { organizationAssignmentSource: null },
+                  {
+                    organizationAssignmentSource: {
+                      not: ORGANIZATION_REJECTED_SOURCE,
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
       },
       orderBy: [
         { organizationAssignedAt: 'desc' },
         { createdAt: 'desc' },
         { id: 'desc' },
       ],
-      take,
-      skip,
+      take: Math.min(skip + take + 50, 200),
       include: this.includeRelations(),
     });
 
-    return Promise.all(
+    const detailed = await Promise.all(
       reports.map((report) => this.withEnterpriseReportDetails(report)),
     );
+    return detailed
+      .filter((report) => report.queueOrganizationId === organizationId)
+      .filter((report) => report.eligibleForResponsibilityReview)
+      .slice(skip, skip + take);
   }
 
   async getResponsibilityDiagnostics(reportId: string, user: JwtUser) {
@@ -761,7 +795,10 @@ export class ReportService {
       this.responsibilityResolutionFromActivity(timeline);
     const latestResponsibilityActivity =
       this.latestResponsibilityActivity(timeline);
-    const queueState = this.responsibilityQueueState(report);
+    const queueState = this.responsibilityQueueState(
+      report,
+      responsibilityResolution,
+    );
     const normalizedCategory = report.category?.trim()
       ? this.normalizeResponsibilityCategory(report.category)
       : null;
@@ -1405,7 +1442,18 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (report.assignedOrganizationId !== organizationId) {
+    const timeline = await this.reportActivityTimeline(reportId);
+    const responsibilityResolution =
+      this.responsibilityResolutionFromActivity(timeline);
+    const legacyMatchedReview = this.isLegacyMatchedResponsibilityReview(
+      report,
+      organizationId,
+      responsibilityResolution,
+    );
+    if (
+      report.assignedOrganizationId !== organizationId &&
+      !legacyMatchedReview
+    ) {
       throw new ForbiddenException('Report is not routed to your organization');
     }
     if (
@@ -1414,7 +1462,7 @@ export class ReportService {
     ) {
       return this.withProtectedEvidenceUrls(report);
     }
-    if (report.status !== ReportStatus.ORG_REVIEW) {
+    if (report.status !== ReportStatus.ORG_REVIEW && !legacyMatchedReview) {
       throw new ConflictException(
         'Report is not awaiting organization decision',
       );
@@ -1426,6 +1474,8 @@ export class ReportService {
       data: {
         status: ReportStatus.PENDING,
         organizationId,
+        assignedOrganizationId: report.assignedOrganizationId ?? organizationId,
+        organizationAssignedAt: report.organizationAssignedAt ?? new Date(),
         organizationAssignmentSource: ORGANIZATION_ACCEPTED_SOURCE,
         lastAssignmentOutcome: null,
         lastAssignmentReason: null,
@@ -1493,13 +1543,24 @@ export class ReportService {
       include: this.includeRelations(),
     });
     if (!report) throw new NotFoundException('Report not found');
-    if (report.assignedOrganizationId !== organizationId) {
+    const timeline = await this.reportActivityTimeline(reportId);
+    const responsibilityResolution =
+      this.responsibilityResolutionFromActivity(timeline);
+    const legacyMatchedReview = this.isLegacyMatchedResponsibilityReview(
+      report,
+      organizationId,
+      responsibilityResolution,
+    );
+    if (
+      report.assignedOrganizationId !== organizationId &&
+      !legacyMatchedReview
+    ) {
       throw new ForbiddenException('Report is not routed to your organization');
     }
-    if (report.status === ReportStatus.TRIAGE) {
+    if (report.status === ReportStatus.TRIAGE && !legacyMatchedReview) {
       return this.withProtectedEvidenceUrls(report);
     }
-    if (report.status !== ReportStatus.ORG_REVIEW) {
+    if (report.status !== ReportStatus.ORG_REVIEW && !legacyMatchedReview) {
       throw new ConflictException(
         'Report is not awaiting organization decision',
       );
@@ -5683,7 +5744,10 @@ export class ReportService {
       protectedReport,
       responsibilityResolution,
     );
-    const queueState = this.responsibilityQueueState(protectedReport);
+    const queueState = this.responsibilityQueueState(
+      protectedReport,
+      responsibilityResolution,
+    );
     return {
       ...protectedReport,
       responsibilityReason: routingReason,
@@ -5779,15 +5843,18 @@ export class ReportService {
     return candidate?.confidence ?? null;
   }
 
-  private responsibilityQueueState(report: {
-    status?: ReportStatus | null;
-    assignedOrganizationId?: string | null;
-    organizationId?: string | null;
-    organizationAssignedAt?: Date | string | null;
-    organizationAssignmentSource?: string | null;
-    lastAssignmentOutcome?: AssignmentOutcome | null;
-    assignedProviderId?: string | null;
-  }): {
+  private responsibilityQueueState(
+    report: {
+      status?: ReportStatus | null;
+      assignedOrganizationId?: string | null;
+      organizationId?: string | null;
+      organizationAssignedAt?: Date | string | null;
+      organizationAssignmentSource?: string | null;
+      lastAssignmentOutcome?: AssignmentOutcome | null;
+      assignedProviderId?: string | null;
+    },
+    responsibilityResolution?: ResponsibilityResolutionDiagnostics | null,
+  ): {
     eligibleForResponsibilityReview: boolean;
     eligibilityReason: ResponsibilityEligibilityReason;
     queueOrganizationId: string | null;
@@ -5845,6 +5912,21 @@ export class ReportService {
         manualOverrideOccurred,
       );
     }
+    if (
+      this.isLegacyMatchedResponsibilityReview(
+        report,
+        report.organizationId ?? '',
+        responsibilityResolution ?? null,
+      )
+    ) {
+      return this.queueState(
+        true,
+        'LEGACY_MATCHED_ROUTING_STATE',
+        report.organizationId ?? null,
+        dispatchAllowed,
+        manualOverrideOccurred,
+      );
+    }
     if (status !== ReportStatus.ORG_REVIEW) {
       return this.queueState(
         false,
@@ -5867,15 +5949,6 @@ export class ReportService {
       return this.queueState(
         false,
         'STALE_ASSIGNMENT',
-        report.assignedOrganizationId,
-        dispatchAllowed,
-        manualOverrideOccurred,
-      );
-    }
-    if (report.organizationId === report.assignedOrganizationId) {
-      return this.queueState(
-        false,
-        'INVALID_ROUTING_STATE',
         report.assignedOrganizationId,
         dispatchAllowed,
         manualOverrideOccurred,
@@ -5904,6 +5977,39 @@ export class ReportService {
       dispatchAllowed,
       manualOverrideOccurred,
     };
+  }
+
+  private isLegacyMatchedResponsibilityReview(
+    report: {
+      status?: ReportStatus | null;
+      assignedOrganizationId?: string | null;
+      organizationId?: string | null;
+      organizationAssignmentSource?: string | null;
+      lastAssignmentOutcome?: AssignmentOutcome | null;
+      assignedProviderId?: string | null;
+    },
+    organizationId: string,
+    responsibilityResolution?: ResponsibilityResolutionDiagnostics | null,
+  ) {
+    if (!organizationId) return false;
+    if (normalizeReportStatus(report.status ?? '') !== ReportStatus.TRIAGE) {
+      return false;
+    }
+    if (report.organizationId !== organizationId) return false;
+    if (report.assignedOrganizationId) return false;
+    if (report.assignedProviderId) return false;
+    if (report.lastAssignmentOutcome === AssignmentOutcome.REJECTED)
+      return false;
+    if (report.organizationAssignmentSource === ORGANIZATION_REJECTED_SOURCE) {
+      return false;
+    }
+    const proposedOrganizationId =
+      responsibilityResolution?.proposedOrganizationId ??
+      responsibilityResolution?.selectedCandidateId;
+    return (
+      responsibilityResolution?.outcome === 'MATCHED' &&
+      proposedOrganizationId === organizationId
+    );
   }
 
   private latestResponsibilityActivity(

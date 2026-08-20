@@ -3762,6 +3762,141 @@ describe('Report Workflow (e2e)', () => {
     ).not.toContain(newer.id);
   });
 
+  it('surfaces matched TRIAGE responsibility drift only to the matched organization and promotes on acceptance', async () => {
+    const unique = Date.now().toString(36);
+    const org = await createOrganization(`Workflow Drift Matched ${unique}`);
+    const otherOrg = await createOrganization(`Workflow Drift Other ${unique}`);
+    const admin = await createUser({
+      email: `wf-drift-admin-${unique}@test.com`,
+      fullName: 'Workflow Drift Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const otherAdmin = await createUser({
+      email: `wf-drift-other-admin-${unique}@test.com`,
+      fullName: 'Workflow Drift Other Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: otherOrg.id,
+    });
+    const citizen = await createUser({
+      email: `wf-drift-citizen-${unique}@test.com`,
+      fullName: 'Workflow Drift Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const report = await createReport({
+      title: `WF drift matched triage ${unique}`,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      status: ReportStatus.TRIAGE,
+      assignedOrganizationId: null,
+      category: 'Road & Infrastructure',
+      location: 'Controlled UAT route',
+    });
+    await prisma.reportActivity.create({
+      data: {
+        reportId: report.id,
+        organizationId: org.id,
+        actorRole: UserRole.SUPER_ADMIN,
+        actorName: 'SecureZone Responsibility Resolver',
+        action: 'RESPONSIBILITY_RESOLUTION_ATTEMPTED',
+        toStatus: ReportStatus.TRIAGE,
+        metadata: {
+          responsibilityResolution: {
+            outcome: 'MATCHED',
+            candidateCount: 1,
+            eligibleCandidateCount: 1,
+            proposedOrganizationId: org.id,
+            selectedCandidateId: org.id,
+            reasonCode: 'MATCHED_DETERMINISTIC',
+            evaluatedAt: new Date().toISOString(),
+            report: {
+              category: 'Road & Infrastructure',
+              normalizedCategory: 'road_and_infrastructure',
+              normalizedCategoryAliases: ['road_and_infrastructure', 'road'],
+              coordinates: { latitude: null, longitude: null },
+              location: {
+                text: 'Controlled UAT route',
+                name: null,
+                address: null,
+                landmark: null,
+                source: 'MANUAL_ENTRY',
+              },
+            },
+            candidates: [
+              {
+                organizationId: org.id,
+                organizationName: org.name,
+                organizationStatus: 'ACTIVE',
+                organizationVerificationState: null,
+                mandateCategories: ['Road & Infrastructure'],
+                providerCategories: ['Roads'],
+                coverageAreas: [],
+                eligible: true,
+                confidence: 'HIGH',
+                reasons: ['Matched deterministic responsibility route'],
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const adminToken = await signToken(admin);
+    const otherAdminToken = await signToken(otherAdmin);
+
+    const queueRes = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(queueRes.status).toBe(200);
+    const queued = (
+      json(queueRes) as unknown as Array<Record<string, unknown>>
+    ).find((item) => item.id === report.id);
+    expect(queued).toMatchObject({
+      id: report.id,
+      status: ReportStatus.TRIAGE,
+      organizationId: org.id,
+      assignedOrganizationId: null,
+      eligibleForResponsibilityReview: true,
+      eligibilityReason: 'LEGACY_MATCHED_ROUTING_STATE',
+      queueOrganizationId: org.id,
+    });
+
+    const otherQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${otherAdminToken}`);
+    expect(otherQueue.status).toBe(200);
+    expect(
+      json(otherQueue).map((item: { id: string }) => item.id),
+    ).not.toContain(report.id);
+
+    const acceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${report.id}/organization-accept`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ note: 'Accepted matched responsibility drift.' });
+    expect(acceptRes.status).toBe(200);
+    expect(json(acceptRes)).toMatchObject({
+      status: ReportStatus.PENDING,
+      organizationId: org.id,
+      assignedOrganizationId: org.id,
+    });
+
+    const afterAcceptQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(afterAcceptQueue.status).toBe(200);
+    expect(
+      json(afterAcceptQueue).map((item: { id: string }) => item.id),
+    ).not.toContain(report.id);
+
+    const stored = await prisma.report.findUniqueOrThrow({
+      where: { id: report.id },
+    });
+    expect(stored.status).toBe(ReportStatus.PENDING);
+    expect(stored.organizationId).toBe(org.id);
+    expect(stored.assignedOrganizationId).toBe(org.id);
+  });
+
   it('returns organization-rejected reports to platform triage', async () => {
     const org = await createOrganization('Workflow Org Intake Reject');
     const admin = await createUser({
