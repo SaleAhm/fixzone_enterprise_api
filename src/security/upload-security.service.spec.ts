@@ -7,6 +7,7 @@ import { UploadSecurityService } from './upload-security.service';
 describe('UploadSecurityService', () => {
   const service = new UploadSecurityService();
   const tempRoots: string[] = [];
+  const originalUploadRoot = process.env.UPLOAD_ROOT;
   let cwdSpy: jest.SpiedFunction<typeof process.cwd>;
 
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
@@ -25,6 +26,11 @@ describe('UploadSecurityService', () => {
 
   afterEach(() => {
     cwdSpy?.mockRestore();
+    if (originalUploadRoot === undefined) {
+      delete process.env.UPLOAD_ROOT;
+    } else {
+      process.env.UPLOAD_ROOT = originalUploadRoot;
+    }
   });
 
   afterAll(async () => {
@@ -122,5 +128,26 @@ describe('UploadSecurityService', () => {
         invalidSizeMessage: 'Invalid report image size',
       }),
     ).rejects.toThrow(new ForbiddenException('Invalid upload path'));
+  });
+
+  it('stores uploads under configured UPLOAD_ROOT when provided', async () => {
+    await useTempCwd();
+    const configuredRoot = await mkdtemp(
+      join(tmpdir(), 'fixzone-upload-root-'),
+    );
+    tempRoots.push(configuredRoot);
+    process.env.UPLOAD_ROOT = configuredRoot;
+
+    const saved = await service.saveBase64Image({
+      imageBase64: png.toString('base64'),
+      contentType: 'image/png',
+      folder: 'report-completion',
+      reportId: 'report_456',
+      invalidSizeMessage: 'Invalid completion image size',
+    });
+
+    await expect(
+      readFile(join(configuredRoot, saved.imagePath)),
+    ).resolves.toEqual(png);
   });
 });

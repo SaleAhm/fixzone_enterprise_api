@@ -1,8 +1,8 @@
 import { NestFactory } from '@nestjs/core';
 import * as express from 'express';
-import { join } from 'path';
 import { AppModule } from './app.module';
 import { configureApp } from './configure-app';
+import { uploadPath } from './storage/upload-root';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
@@ -10,7 +10,7 @@ async function bootstrap() {
   configureApp(app);
   app.use(
     '/uploads/demo',
-    express.static(join(process.cwd(), 'uploads', 'demo'), {
+    express.static(uploadPath('demo'), {
       dotfiles: 'deny',
       index: false,
       setHeaders: (res) => {

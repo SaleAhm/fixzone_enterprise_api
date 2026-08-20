@@ -11,6 +11,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'fs/promises';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'os';
 import { join, resolve } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
+import { uploadRoot } from '../storage/upload-root';
 import { MaintenanceModeDto } from './dto/maintenance-mode.dto';
 
 type JwtUser = {
@@ -32,7 +33,7 @@ type MaintenanceState = {
 @Injectable()
 export class PlatformToolsService {
   private readonly backupRoot = join(process.cwd(), 'backups');
-  private readonly uploadRoot = join(process.cwd(), 'uploads');
+  private readonly uploadRoot = uploadRoot();
   private readonly tempRoot = join(process.cwd(), '.temp');
   private readonly maintenanceKey = 'maintenance_mode';
   private readonly cacheKey = 'cache_status';

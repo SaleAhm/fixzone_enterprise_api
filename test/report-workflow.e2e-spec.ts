@@ -10,12 +10,21 @@ import {
   ReportStatus,
   UserRole,
 } from '@prisma/client';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { uploadPath } from '../src/storage/upload-root';
 
 type SupertestServer = Parameters<typeof request>[0];
 type TestApplication = Omit<INestApplication, 'getHttpServer'> & {
@@ -245,12 +254,7 @@ describe('Report Workflow (e2e)', () => {
   function cleanupUploadArtifacts(reportIds: string[]) {
     for (const reportId of reportIds) {
       for (const folder of ['report-completion', 'report-evidence']) {
-        const uploadDirectory = join(
-          process.cwd(),
-          'uploads',
-          folder,
-          reportId,
-        );
+        const uploadDirectory = join(uploadPath(), folder, reportId);
         if (existsSync(uploadDirectory)) {
           rmSync(uploadDirectory, { recursive: true, force: true });
         }
@@ -340,12 +344,7 @@ describe('Report Workflow (e2e)', () => {
     folder: 'report-evidence' | 'report-completion';
     fileName: string;
   }) {
-    const directory = join(
-      process.cwd(),
-      'uploads',
-      params.folder,
-      params.reportId,
-    );
+    const directory = uploadPath(params.folder, params.reportId);
     mkdirSync(directory, { recursive: true });
     writeFileSync(
       join(directory, params.fileName),
@@ -1453,6 +1452,86 @@ describe('Report Workflow (e2e)', () => {
       mimeType: 'image/png',
       uploadedByRole: UserRole.CITIZEN,
     });
+  });
+
+  it('uses configured UPLOAD_ROOT for citizen and provider evidence storage and protected retrieval', async () => {
+    const previousUploadRoot = process.env.UPLOAD_ROOT;
+    const configuredRoot = mkdtempSync(join(tmpdir(), 'fixzone-e2e-uploads-'));
+    process.env.UPLOAD_ROOT = configuredRoot;
+
+    try {
+      const org = await createOrganization('Workflow Configured Upload Org');
+      const provider = await createUser({
+        email: 'wf-provider-configured-upload@test.com',
+        fullName: 'Workflow Configured Upload Provider',
+        role: UserRole.PROVIDER,
+        organizationId: org.id,
+      });
+      const citizen = await createUser({
+        email: 'wf-citizen-configured-upload@test.com',
+        fullName: 'Workflow Configured Upload Citizen',
+        role: UserRole.CITIZEN,
+        organizationId: org.id,
+      });
+      const report = await createReport({
+        title: 'WF configured upload root evidence',
+        status: ReportStatus.IN_PROGRESS,
+        organizationId: org.id,
+        citizenId: citizen.id,
+        assignedProviderId: provider.id,
+      });
+      const citizenToken = await signToken(citizen);
+      const providerToken = await signToken(provider);
+
+      const citizenUpload = await request(app.getHttpServer())
+        .post(`/api/report/${report.id}/evidence`)
+        .set('Authorization', `Bearer ${citizenToken}`)
+        .send({
+          fileName: 'report.png',
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        });
+      expect(citizenUpload.status).toBe(201);
+
+      const providerUpload = await request(app.getHttpServer())
+        .post(`/api/report/${report.id}/completion-evidence`)
+        .set('Authorization', `Bearer ${providerToken}`)
+        .send({
+          fileName: 'completion.png',
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        });
+      expect(providerUpload.status).toBe(201);
+
+      expect(
+        readFileSync(
+          join(configuredRoot, json(citizenUpload).evidenceImagePath),
+        ),
+      ).toEqual(Buffer.from(onePixelPngBase64, 'base64'));
+      expect(
+        readFileSync(
+          join(configuredRoot, json(providerUpload).completionImagePath),
+        ),
+      ).toEqual(Buffer.from(onePixelPngBase64, 'base64'));
+
+      await expect(
+        request(app.getHttpServer())
+          .get(json(citizenUpload).evidenceImageUrl)
+          .set('Authorization', `Bearer ${citizenToken}`),
+      ).resolves.toHaveProperty('status', 200);
+      await expect(
+        request(app.getHttpServer())
+          .get(json(providerUpload).completionImageUrl)
+          .set('Authorization', `Bearer ${providerToken}`),
+      ).resolves.toHaveProperty('status', 200);
+    } finally {
+      if (previousUploadRoot === undefined) {
+        delete process.env.UPLOAD_ROOT;
+      } else {
+        process.env.UPLOAD_ROOT = previousUploadRoot;
+      }
+      rmSync(configuredRoot, { recursive: true, force: true });
+    }
   });
 
   it('protects report evidence retrieval by role, tenant, pairing, path, and auth', async () => {

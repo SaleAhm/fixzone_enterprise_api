@@ -25,6 +25,7 @@ import { access } from 'fs/promises';
 import { basename, extname, posix, resolve, relative, sep } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadSecurityService } from '../security/upload-security.service';
+import { uploadRoot } from '../storage/upload-root';
 import { TrustService } from '../trust/trust.service';
 import { WorkflowOrchestratorService } from '../business-logic/workflow-orchestrator.service';
 import { AssignProviderDto } from './dto/assign-provider.dto';
@@ -967,9 +968,9 @@ export class ReportService {
       throw new NotFoundException('Evidence not found');
     }
 
-    const uploadRoot = resolve(process.cwd(), 'uploads');
-    const absolutePath = resolve(uploadRoot, kind, reportId, fileName);
-    this.assertInsideUploadRoot(uploadRoot, absolutePath);
+    const root = uploadRoot();
+    const absolutePath = resolve(root, kind, reportId, fileName);
+    this.assertInsideUploadRoot(root, absolutePath);
 
     try {
       await access(absolutePath);

@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { mkdir, writeFile } from 'fs/promises';
 import { posix, relative, resolve, sep } from 'path';
+import { uploadRoot } from '../storage/upload-root';
 
 type SupportedImageMime = 'image/jpeg' | 'image/png' | 'image/webp';
 
@@ -30,12 +31,12 @@ export class UploadSecurityService {
     const folder = this.assertSafePathSegment(params.folder);
     const reportId = this.assertSafePathSegment(params.reportId);
     const fileName = `${Date.now()}-${randomUUID()}.${supportedTypes[image.mime].extension}`;
-    const uploadRoot = resolve(process.cwd(), 'uploads');
-    const targetDir = resolve(uploadRoot, folder, reportId);
+    const root = uploadRoot();
+    const targetDir = resolve(root, folder, reportId);
     const targetPath = resolve(targetDir, fileName);
 
-    this.assertInsideUploadRoot(uploadRoot, targetDir);
-    this.assertInsideUploadRoot(uploadRoot, targetPath);
+    this.assertInsideUploadRoot(root, targetDir);
+    this.assertInsideUploadRoot(root, targetPath);
 
     await mkdir(targetDir, { recursive: true });
     await writeFile(targetPath, image.buffer);
