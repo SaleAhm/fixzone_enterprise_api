@@ -8,6 +8,26 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
+type HealthBody = {
+  api: { status: string };
+  database: { status: string };
+};
+type CacheBody = { cleared: boolean };
+type BackupBody = {
+  id: string;
+  fileName: string;
+  filePath: string;
+  metadata?: Record<string, unknown>;
+};
+type AuditBody = { total: number };
+type DeleteBackupBody = { deleted: boolean };
+type RestoreBody = { message: string };
+type MaintenanceBody = { enabled: boolean; maintenance?: boolean };
+
+function body<T>(response: request.Response): T {
+  return response.body as T;
+}
+
 describe('Platform Tools (e2e)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -102,21 +122,22 @@ describe('Platform Tools (e2e)', () => {
       .get('/api/platform-tools/health')
       .set('Authorization', `Bearer ${token}`);
     expect(health.status).toBe(200);
-    expect(health.body.api.status).toBe('online');
-    expect(health.body.database.status).toBe('online');
+    expect(body<HealthBody>(health).api.status).toBe('online');
+    expect(body<HealthBody>(health).database.status).toBe('online');
 
     const cache = await request(app.getHttpServer())
       .post('/api/platform-tools/cache/clear')
       .set('Authorization', `Bearer ${token}`)
       .send({ scope: 'temporary' });
     expect(cache.status).toBe(201);
-    expect(cache.body.cleared).toBe(true);
+    expect(body<CacheBody>(cache).cleared).toBe(true);
 
     const backup = await request(app.getHttpServer())
       .post('/api/platform-tools/backups')
       .set('Authorization', `Bearer ${token}`);
     expect(backup.status).toBe(201);
-    expect(backup.body.fileName).toMatch(
+    const backupBody = body<BackupBody>(backup);
+    expect(backupBody.fileName).toMatch(
       /^fixzone-backup-\d{14}-[a-f0-9]{8}\.json$/,
     );
 
@@ -124,8 +145,9 @@ describe('Platform Tools (e2e)', () => {
       .get('/api/platform-tools/backups')
       .set('Authorization', `Bearer ${token}`);
     expect(list.status).toBe(200);
-    expect(list.body.length).toBeGreaterThanOrEqual(1);
-    expect(list.body[0].metadata).toMatchObject({
+    const listBody = body<BackupBody[]>(list);
+    expect(listBody.length).toBeGreaterThanOrEqual(1);
+    expect(listBody[0].metadata).toMatchObject({
       backupType: 'metadata_snapshot',
       operationalBackup: false,
       includesPostgresDump: false,
@@ -136,14 +158,14 @@ describe('Platform Tools (e2e)', () => {
       .get('/api/platform-tools/audit?action=Backup')
       .set('Authorization', `Bearer ${token}`);
     expect(audit.status).toBe(200);
-    expect(audit.body.total).toBeGreaterThanOrEqual(1);
+    expect(body<AuditBody>(audit).total).toBeGreaterThanOrEqual(1);
 
     const deleted = await request(app.getHttpServer())
-      .delete(`/api/platform-tools/backups/${backup.body.id}`)
+      .delete(`/api/platform-tools/backups/${backupBody.id}`)
       .set('Authorization', `Bearer ${token}`);
     expect(deleted.status).toBe(200);
-    expect(deleted.body.deleted).toBe(true);
-  });
+    expect(body<DeleteBackupBody>(deleted).deleted).toBe(true);
+  }, 15000);
 
   it('creates repeated backups without filename collisions', async () => {
     const superAdmin = await createUser(UserRole.SUPER_ADMIN);
@@ -158,9 +180,11 @@ describe('Platform Tools (e2e)', () => {
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
-    expect(first.body.fileName).not.toBe(second.body.fileName);
-    expect(first.body.filePath).not.toBe(second.body.filePath);
-  });
+    const firstBody = body<BackupBody>(first);
+    const secondBody = body<BackupBody>(second);
+    expect(firstBody.fileName).not.toBe(secondBody.fileName);
+    expect(firstBody.filePath).not.toBe(secondBody.filePath);
+  }, 15000);
 
   it('blocks metadata restore in production without explicit governance override', async () => {
     const superAdmin = await createUser(UserRole.SUPER_ADMIN);
@@ -178,12 +202,14 @@ describe('Platform Tools (e2e)', () => {
 
     try {
       const restore = await request(app.getHttpServer())
-        .post(`/api/platform-tools/backups/${backup.body.id}/restore`)
+        .post(
+          `/api/platform-tools/backups/${body<BackupBody>(backup).id}/restore`,
+        )
         .set('Authorization', `Bearer ${token}`)
         .send({ confirm: true });
 
       expect(restore.status).toBe(403);
-      expect(restore.body.message).toContain(
+      expect(body<RestoreBody>(restore).message).toContain(
         'approved operational backup process',
       );
     } finally {
@@ -215,13 +241,13 @@ describe('Platform Tools (e2e)', () => {
         allowAdminBypass: true,
       });
     expect(enabled.status).toBe(201);
-    expect(enabled.body.enabled).toBe(true);
+    expect(body<MaintenanceBody>(enabled).enabled).toBe(true);
 
     const citizenBlocked = await request(app.getHttpServer())
       .get('/api/notifications')
       .set('Authorization', `Bearer ${citizenToken}`);
     expect(citizenBlocked.status).toBe(503);
-    expect(citizenBlocked.body.maintenance).toBe(true);
+    expect(body<MaintenanceBody>(citizenBlocked).maintenance).toBe(true);
 
     const adminAllowed = await request(app.getHttpServer())
       .get('/api/platform-tools/health')

@@ -841,6 +841,107 @@ describe('Report Workflow (e2e)', () => {
     expect(json(verifyRes).completionFinalizedByRole).toBe(UserRole.ORG_ADMIN);
   });
 
+  it('returns provider completion note consistently in organization queue and detail', async () => {
+    const org = await createOrganization('Workflow Completion Note Queue Org');
+    await prisma.organization.update({
+      where: { id: org.id },
+      data: {
+        profileData: { completionPolicy: CompletionPolicy.BOTH_REQUIRED },
+      },
+    });
+    const admin = await createUser({
+      email: 'wf-admin-note-queue@test.com',
+      fullName: 'Workflow Note Queue Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: org.id,
+    });
+    const provider = await createUser({
+      email: 'wf-provider-note-queue@test.com',
+      fullName: 'Workflow Note Queue Provider',
+      role: UserRole.PROVIDER,
+      organizationId: org.id,
+    });
+    const citizen = await createUser({
+      email: 'wf-citizen-note-queue@test.com',
+      fullName: 'Workflow Note Queue Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: org.id,
+    });
+    const notedReport = await createReport({
+      title: 'WF completion queue with note',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const noNoteReport = await createReport({
+      title: 'WF completion queue without note',
+      status: ReportStatus.IN_PROGRESS,
+      organizationId: org.id,
+      citizenId: citizen.id,
+      assignedProviderId: provider.id,
+    });
+    const providerToken = await signToken(provider);
+    const adminToken = await signToken(admin);
+    const completionNote = 'Drainage cleared and road shoulder restored.';
+
+    for (const report of [notedReport, noNoteReport]) {
+      const upload = await request(app.getHttpServer())
+        .post(`/api/report/${report.id}/completion-evidence`)
+        .set('Authorization', `Bearer ${providerToken}`)
+        .send({
+          fileName: `${report.id}-completion.png`,
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        });
+      expect(upload.status).toBe(201);
+    }
+
+    const notedSubmit = await request(app.getHttpServer())
+      .patch(`/api/report/${notedReport.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionNote,
+      });
+    expect(notedSubmit.status).toBe(200);
+
+    const noNoteSubmit = await request(app.getHttpServer())
+      .patch(`/api/report/${noNoteReport.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(noNoteSubmit.status).toBe(200);
+
+    const queue = await request(app.getHttpServer())
+      .get('/api/report/organization/completion-review')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(queue.status).toBe(200);
+    const queueItems = (json(queue).items ?? []) as Array<
+      Record<string, unknown>
+    >;
+    const notedQueueItem = queueItems.find(
+      (item) => item.id === notedReport.id,
+    );
+    const noNoteQueueItem = queueItems.find(
+      (item) => item.id === noNoteReport.id,
+    );
+    expect(notedQueueItem?.completionNote).toBe(completionNote);
+    expect(noNoteQueueItem?.completionNote).toBeNull();
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/report/organization/completion-review/${notedReport.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(detail.status).toBe(200);
+    expect(json(detail).completionNote).toBe(completionNote);
+    expect(
+      (
+        json(detail).enterpriseDetails as {
+          completionEvidence?: { note?: string | null };
+        }
+      ).completionEvidence?.note,
+    ).toBe(completionNote);
+  });
+
   it('requires both citizen and organization approvals when policy is BOTH_REQUIRED', async () => {
     const org = await createOrganization('Workflow Completion Both Org');
     await prisma.organization.update({
@@ -913,6 +1014,12 @@ describe('Report Workflow (e2e)', () => {
     expect(json(duplicateVerifyRes).status).toBe(
       ReportStatus.COMPLETED_BY_PROVIDER,
     );
+
+    const organizationReworkAfterVerify = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/rework`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Trying to reverse verified decision.' });
+    expect(organizationReworkAfterVerify.status).toBe(409);
 
     const citizenConfirmRes = await request(app.getHttpServer())
       .post(`/api/report/citizen/${report.id}/confirm-completion`)
@@ -1000,6 +1107,12 @@ describe('Report Workflow (e2e)', () => {
     );
     expect(json(citizenConfirmRes).completionFinalizedAt).toBeNull();
 
+    const citizenReworkAfterConfirm = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/reject-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ reason: 'Trying to reverse confirmed decision.' });
+    expect(citizenReworkAfterConfirm.status).toBe(409);
+
     const duplicateCitizenConfirmRes = await request(app.getHttpServer())
       .post(`/api/report/citizen/${report.id}/confirm-completion`)
       .set('Authorization', `Bearer ${citizenToken}`)
@@ -1032,6 +1145,18 @@ describe('Report Workflow (e2e)', () => {
     expect(verifyRes.status).toBe(201);
     expect(json(verifyRes).status).toBe(ReportStatus.CLOSED);
     expect(json(verifyRes).organizationCompletionDecision).toBe('VERIFIED');
+
+    const closedCitizenRework = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${report.id}/reject-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ reason: 'Trying to rework after closure.' });
+    expect(closedCitizenRework.status).toBe(409);
+
+    const closedOrganizationRework = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/rework`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Trying to rework after closure.' });
+    expect(closedOrganizationRework.status).toBe(409);
 
     const providerAfterClosureNotifications = await request(app.getHttpServer())
       .get('/api/notifications')
@@ -1166,6 +1291,15 @@ describe('Report Workflow (e2e)', () => {
       CompletionDecision.PENDING,
     );
 
+    const verifyAfterOrgReworkAttempt = await request(app.getHttpServer())
+      .post(`/api/report/${report.id}/organization-completion/verify`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ reason: 'Second attempt verified after rework.' });
+    expect(verifyAfterOrgReworkAttempt.status).toBe(201);
+    expect(
+      json(verifyAfterOrgReworkAttempt).organizationCompletionDecision,
+    ).toBe(CompletionDecision.VERIFIED);
+
     const evidenceRecords = await prisma.evidenceRecord.findMany({
       where: {
         relatedEntityId: report.id,
@@ -1180,6 +1314,7 @@ describe('Report Workflow (e2e)', () => {
       data: {
         completionReviewState: 'DISPUTED',
         citizenCompletionDecision: CompletionDecision.DISPUTED,
+        organizationCompletionDecision: CompletionDecision.PENDING,
         completionDisputeReason: 'Citizen opened active dispute.',
       },
     });
@@ -1236,6 +1371,41 @@ describe('Report Workflow (e2e)', () => {
     expect(json(citizenRework).status).toBe(ReportStatus.ASSIGNED);
     expect(json(citizenRework).citizenCompletionDecision).toBe(
       CompletionDecision.REWORK_REQUESTED,
+    );
+
+    const citizenResumeWork = await request(app.getHttpServer())
+      .patch(`/api/report/${citizenReworkReport.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.IN_PROGRESS });
+    expect(citizenResumeWork.status).toBe(200);
+
+    const citizenSecondUpload = await request(app.getHttpServer())
+      .post(`/api/report/${citizenReworkReport.id}/completion-evidence`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({
+        fileName: 'citizen-second-attempt.png',
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+        classification: 'after',
+      });
+    expect(citizenSecondUpload.status).toBe(201);
+
+    const citizenSecondSubmit = await request(app.getHttpServer())
+      .patch(`/api/report/${citizenReworkReport.id}/status`)
+      .set('Authorization', `Bearer ${providerToken}`)
+      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+    expect(citizenSecondSubmit.status).toBe(200);
+    expect(json(citizenSecondSubmit).citizenCompletionDecision).toBe(
+      CompletionDecision.PENDING,
+    );
+
+    const citizenConfirmSecondAttempt = await request(app.getHttpServer())
+      .post(`/api/report/citizen/${citizenReworkReport.id}/confirm-completion`)
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({ rating: 4, feedback: 'Second attempt is acceptable.' });
+    expect(citizenConfirmSecondAttempt.status).toBe(201);
+    expect(json(citizenConfirmSecondAttempt).citizenCompletionDecision).toBe(
+      CompletionDecision.CONFIRMED,
     );
   });
 

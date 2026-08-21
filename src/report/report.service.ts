@@ -2511,6 +2511,7 @@ export class ReportService {
     user: JwtUser,
   ) {
     const report = await this.getCitizenReviewReport(reportId, user);
+    this.assertCitizenCanRequestCompletionRework(report);
     const reason = this.requiredGovernanceReason(dto.reason);
     const updated = await this.prisma.report.update({
       where: { id: report.id },
@@ -2665,6 +2666,7 @@ export class ReportService {
       reportId,
       user,
     );
+    this.assertOrganizationCanRequestCompletionRework(report);
     const reason = this.requiredGovernanceReason(dto.reason);
     const updated = await this.prisma.report.update({
       where: { id: report.id },
@@ -4163,6 +4165,41 @@ export class ReportService {
     }
   }
 
+  private assertCitizenCanRequestCompletionRework(report: {
+    citizenCompletionDecision?: CompletionDecision | null;
+  }) {
+    if (report.citizenCompletionDecision === CompletionDecision.CONFIRMED) {
+      throw new ConflictException(
+        'Citizen completion decision has already been submitted for this attempt',
+      );
+    }
+    if (
+      report.citizenCompletionDecision === CompletionDecision.REWORK_REQUESTED
+    ) {
+      throw new ConflictException(
+        'Citizen completion rework has already been requested for this attempt',
+      );
+    }
+  }
+
+  private assertOrganizationCanRequestCompletionRework(report: {
+    organizationCompletionDecision?: CompletionDecision | null;
+  }) {
+    if (report.organizationCompletionDecision === CompletionDecision.VERIFIED) {
+      throw new ConflictException(
+        'Organization completion decision has already been submitted for this attempt',
+      );
+    }
+    if (
+      report.organizationCompletionDecision ===
+      CompletionDecision.REWORK_REQUESTED
+    ) {
+      throw new ConflictException(
+        'Organization completion rework has already been requested for this attempt',
+      );
+    }
+  }
+
   private completionGovernanceSummary(report: {
     completionPolicy?: CompletionPolicy | null;
     completionPolicySource?: string | null;
@@ -4254,6 +4291,7 @@ export class ReportService {
           }
         : null,
       providerCompletedAt: report.completedByProviderAt ?? null,
+      completionNote: report.completionNote ?? null,
       policy: this.humanCompletionPolicy(governance.policy),
       policyCode: governance.policy,
       policySource: governance.policySource,
