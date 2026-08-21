@@ -3615,6 +3615,9 @@ describe('Report Workflow (e2e)', () => {
       },
     });
     createdOrgIds.push(routedOrg.id);
+    const unrelatedOrg = await createOrganization(
+      `Workflow Real Unrelated ${unique}`,
+    );
     const citizen = await createUser({
       email: `wf-real-citizen-${unique}@test.com`,
       fullName: 'Workflow Real Citizen',
@@ -3626,6 +3629,12 @@ describe('Report Workflow (e2e)', () => {
       fullName: 'Workflow Real Routed Admin',
       role: UserRole.ORG_ADMIN,
       organizationId: routedOrg.id,
+    });
+    const unrelatedAdmin = await createUser({
+      email: `wf-real-unrelated-admin-${unique}@test.com`,
+      fullName: 'Workflow Real Unrelated Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: unrelatedOrg.id,
     });
     const provider = await createUser({
       email: `wf-real-provider-${unique}@test.com`,
@@ -3648,6 +3657,7 @@ describe('Report Workflow (e2e)', () => {
 
     const citizenToken = await signToken(citizen);
     const routedAdminToken = await signToken(routedAdmin);
+    const unrelatedAdminToken = await signToken(unrelatedAdmin);
     const superAdminToken = await signToken(superAdmin);
     const createRes = await request(app.getHttpServer())
       .post('/api/report')
@@ -3779,6 +3789,29 @@ describe('Report Workflow (e2e)', () => {
         },
       },
     });
+    const queuedEvidenceItems = queuedReport?.evidenceItems as Array<
+      Record<string, unknown>
+    >;
+    expect(queuedEvidenceItems).toHaveLength(3);
+    const firstQueuedEvidenceUrl = queuedEvidenceItems[0].imageUrl;
+    expect(firstQueuedEvidenceUrl).toEqual(
+      expect.stringMatching(
+        new RegExp(`^/api/report/${json(createRes).id}/evidence/.+\\.png$`),
+      ),
+    );
+
+    const invitedOrgEvidenceRes = await request(app.getHttpServer())
+      .get(firstQueuedEvidenceUrl as string)
+      .set('Authorization', `Bearer ${routedAdminToken}`);
+    expect(invitedOrgEvidenceRes.status).toBe(200);
+    expect(invitedOrgEvidenceRes.headers['content-type']).toContain(
+      'image/png',
+    );
+
+    const unrelatedOrgEvidenceRes = await request(app.getHttpServer())
+      .get(firstQueuedEvidenceUrl as string)
+      .set('Authorization', `Bearer ${unrelatedAdminToken}`);
+    expect(unrelatedOrgEvidenceRes.status).toBe(403);
 
     const diagnosticsRes = await request(app.getHttpServer())
       .get(`/api/report/admin/responsibility-diagnostics/${json(createRes).id}`)

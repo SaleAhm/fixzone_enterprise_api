@@ -316,6 +316,7 @@ type ReportWithEvidence = {
   description?: string | null;
   createdAt?: Date | string | null;
   organizationId: string;
+  assignedOrganizationId?: string | null;
   citizenId: string;
   assignedProviderId: string | null;
   lastAssignmentProviderId?: string | null;
@@ -1004,6 +1005,7 @@ export class ReportService {
       select: {
         id: true,
         organizationId: true,
+        assignedOrganizationId: true,
         citizenId: true,
         assignedProviderId: true,
         lastAssignmentProviderId: true,
@@ -6361,7 +6363,15 @@ export class ReportService {
     const sameOrg =
       activeUser.organizationId &&
       activeUser.organizationId === report.organizationId;
-    if ((this.isAdmin(user) || this.isDispatch(user)) && sameOrg) return;
+    const assignedReviewOrg =
+      activeUser.organizationId &&
+      activeUser.organizationId === report.assignedOrganizationId;
+    if (
+      (this.isAdmin(user) || this.isDispatch(user)) &&
+      (sameOrg || assignedReviewOrg)
+    ) {
+      return;
+    }
 
     throw new ForbiddenException('Evidence not available');
   }
