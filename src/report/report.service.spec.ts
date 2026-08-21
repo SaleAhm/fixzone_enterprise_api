@@ -612,7 +612,7 @@ describe('ReportService organization candidates', () => {
         providerLinks: [],
       },
       'Road',
-      { locationName: 'Gwagwalada', locationAddress: 'Gwagwalada, FCT' },
+      { locationName: 'Gwagwalada' },
     );
 
     expect(candidate.eligible).toBe(true);

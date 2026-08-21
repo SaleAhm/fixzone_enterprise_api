@@ -186,7 +186,6 @@ function matchZone(zone: RoutingJurisdictionZone, locationText: string) {
 
   if (lga) {
     if (!containsPlace(locationText, lga)) return null;
-    if (state && !containsPlace(locationText, state)) return null;
     return { level: 'LGA' as const, reason: 'MATCHED_LGA' as const };
   }
 

@@ -120,6 +120,7 @@ describe('Report Workflow (e2e)', () => {
   const createdReportIds: string[] = [];
   const createdUserIds: string[] = [];
   const createdOrgIds: string[] = [];
+  const createdJurisdictionZoneIds: string[] = [];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -173,6 +174,13 @@ describe('Report Workflow (e2e)', () => {
         where: { id: { in: [...createdUserIds] } },
       });
       createdUserIds.length = 0;
+    }
+
+    if (createdJurisdictionZoneIds.length > 0) {
+      await prisma.jurisdictionZone.deleteMany({
+        where: { id: { in: [...createdJurisdictionZoneIds] } },
+      });
+      createdJurisdictionZoneIds.length = 0;
     }
 
     if (createdOrgIds.length > 0) {
@@ -234,6 +242,9 @@ describe('Report Workflow (e2e)', () => {
     await prisma.report.deleteMany({
       where: { id: { in: reportIds } },
     });
+    await prisma.jurisdictionZone.deleteMany({
+      where: { organizationId: { in: organizationIds } },
+    });
     await prisma.user.deleteMany({
       where: { id: { in: userIds } },
     });
@@ -244,6 +255,7 @@ describe('Report Workflow (e2e)', () => {
     createdReportIds.length = 0;
     createdUserIds.length = 0;
     createdOrgIds.length = 0;
+    createdJurisdictionZoneIds.length = 0;
   }
 
   async function cleanupTrackedUploadArtifacts() {
@@ -3344,6 +3356,113 @@ describe('Report Workflow (e2e)', () => {
     expect(mandateQueue.status).toBe(200);
     expect(json(mandateQueue).map((item: { id: string }) => item.id)).toContain(
       json(mandateRes).id,
+    );
+
+    const governedZoneOrg = await prisma.organization.create({
+      data: {
+        name: `Workflow Governed Zone ${unique}`,
+        contactEmail: `wf-governed-zone-${unique}@test.com`,
+        state: 'Kaduna',
+        lga: 'Legacy Conflict',
+        profileData: {
+          responsibilityRouting: {
+            mandateCategories: ['Roads'],
+          },
+        },
+      },
+    });
+    createdOrgIds.push(governedZoneOrg.id);
+    const governedZone = await prisma.jurisdictionZone.create({
+      data: {
+        organizationId: governedZoneOrg.id,
+        name: 'Gwagwalada',
+        zoneType: 'LGA',
+        country: 'Nigeria',
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        active: true,
+      },
+    });
+    createdJurisdictionZoneIds.push(governedZone.id);
+    const governedZoneAdmin = await createUser({
+      email: `wf-governed-zone-admin-${unique}@test.com`,
+      fullName: 'Workflow Governed Zone Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: governedZoneOrg.id,
+    });
+    const governedZoneAdminToken = await signToken(governedZoneAdmin);
+
+    const governedZoneRes = await request(app.getHttpServer())
+      .post('/api/report')
+      .set('Authorization', `Bearer ${citizenToken}`)
+      .send({
+        title: 'WF Gwagwalada Jurisdiction Routing UAT',
+        description: 'Road issue submitted with device GPS.',
+        category: 'Road & Infrastructure',
+        location: 'Gwagwalada',
+        locationName: 'Gwagwalada',
+        latitude: 8.939,
+        longitude: 7.081,
+      });
+    expect(governedZoneRes.status).toBe(201);
+    createdReportIds.push(json(governedZoneRes).id);
+    expect(json(governedZoneRes).status).toBe(ReportStatus.ORG_REVIEW);
+    expect(json(governedZoneRes).organizationId).toBe(sourceOrg.id);
+    expect(json(governedZoneRes).assignedOrganizationId).toBe(
+      governedZoneOrg.id,
+    );
+    expect(json(governedZoneRes).responsibilityResolution).toMatchObject({
+      outcome: 'MATCHED',
+      proposedOrganizationId: governedZoneOrg.id,
+      reasonCode: 'MATCHED_DETERMINISTIC',
+      eligibleCandidateCount: 1,
+      report: {
+        category: 'Road & Infrastructure',
+        normalizedCategory: 'road_and_infrastructure',
+      },
+    });
+    expect(
+      json(governedZoneRes).responsibilityResolution.report
+        .normalizedCategoryAliases,
+    ).toContain('road');
+    const governedZoneCandidate = json(
+      governedZoneRes,
+    ).responsibilityResolution.candidates.find(
+      (candidate: { organizationId: string }) =>
+        candidate.organizationId === governedZoneOrg.id,
+    );
+    expect(governedZoneCandidate).toMatchObject({
+      eligible: true,
+      jurisdictionSource: 'JURISDICTION_ZONE',
+      jurisdictionLevel: 'LGA',
+      mandateCategories: ['Roads'],
+    });
+
+    const governedZoneQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${governedZoneAdminToken}`);
+    expect(governedZoneQueue.status).toBe(200);
+    expect(
+      json(governedZoneQueue).map((item: { id: string }) => item.id),
+    ).toContain(json(governedZoneRes).id);
+
+    const unrelatedGovernedZoneQueue = await request(app.getHttpServer())
+      .get('/api/report/organization/responsibility-review')
+      .set('Authorization', `Bearer ${otherAdminToken}`);
+    expect(unrelatedGovernedZoneQueue.status).toBe(200);
+    expect(
+      json(unrelatedGovernedZoneQueue).map((item: { id: string }) => item.id),
+    ).not.toContain(json(governedZoneRes).id);
+
+    const governedZoneAcceptRes = await request(app.getHttpServer())
+      .patch(`/api/report/${json(governedZoneRes).id}/organization-accept`)
+      .set('Authorization', `Bearer ${governedZoneAdminToken}`)
+      .send({ note: 'Accepted by governed Gwagwalada authority.' });
+    expect(governedZoneAcceptRes.status).toBe(200);
+    expect(json(governedZoneAcceptRes).status).toBe(ReportStatus.PENDING);
+    expect(json(governedZoneAcceptRes).organizationId).toBe(governedZoneOrg.id);
+    expect(json(governedZoneAcceptRes).assignedOrganizationId).toBe(
+      governedZoneOrg.id,
     );
 
     const ambiguousOrgA = await prisma.organization.create({
