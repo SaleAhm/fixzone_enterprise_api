@@ -7,8 +7,56 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 
+type SupertestServer = Parameters<typeof request>[0];
+type TestApplication = Omit<INestApplication, 'getHttpServer'> & {
+  getHttpServer(): SupertestServer;
+};
+type DemoGenerateBody = {
+  demoBatchId: string;
+  scenario: string;
+  intelligenceSummary: {
+    title: string;
+    highlights: string[];
+  };
+  created: {
+    organizations: number;
+    citizens: number;
+    providers: number;
+    reports: number;
+    notifications: number;
+  };
+};
+type DemoStatsBody = {
+  demoExists: boolean;
+  currentDemoUsers: number;
+  currentDemoReports: number;
+  currentDemoOrganizations: number;
+  scenario: string;
+  intelligenceSummary: {
+    title: string;
+  };
+};
+type DemoPreviewBody = {
+  deleteCounts: {
+    organizations: number;
+    reports: number;
+    providers: number;
+  };
+};
+type DemoPurgeBody = {
+  deleted: {
+    organizations: number;
+    reports: number;
+    users: number;
+  };
+};
+
+function body<T>(response: request.Response): T {
+  return response.body as T;
+}
+
 describe('Demo Environment Platform Tools (e2e)', () => {
-  let app: INestApplication;
+  let app: TestApplication;
   let prisma: PrismaService;
   let jwtService: JwtService;
 
@@ -30,7 +78,7 @@ describe('Demo Environment Platform Tools (e2e)', () => {
 
   beforeEach(async () => {
     await cleanupDemoData();
-  });
+  }, 15000);
 
   afterEach(async () => {
     await cleanupDemoData();
@@ -48,13 +96,13 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       });
       createdProductionOrgIds.length = 0;
     }
-  });
+  }, 15000);
 
   afterAll(async () => {
     await cleanupDemoData();
     await prisma.$disconnect();
     await app.close();
-  });
+  }, 15000);
 
   async function cleanupDemoData() {
     await prisma.notification.deleteMany({ where: { isDemo: true } });
@@ -120,15 +168,16 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       });
 
     expect(generateRes.status).toBe(201);
-    expect(generateRes.body.demoBatchId).toMatch(/^demo-/);
-    expect(generateRes.body.scenario).toBe('Rainy Season');
-    expect(generateRes.body.intelligenceSummary.title).toBe(
+    const generateBody = body<DemoGenerateBody>(generateRes);
+    expect(generateBody.demoBatchId).toMatch(/^demo-/);
+    expect(generateBody.scenario).toBe('Rainy Season');
+    expect(generateBody.intelligenceSummary.title).toBe(
       'Rainy Season Demo Generated',
     );
-    expect(generateRes.body.intelligenceSummary.highlights).toContain(
+    expect(generateBody.intelligenceSummary.highlights).toContain(
       '5 reports created',
     );
-    expect(generateRes.body.created).toMatchObject({
+    expect(generateBody.created).toMatchObject({
       organizations: 1,
       citizens: 3,
       providers: 2,
@@ -137,7 +186,7 @@ describe('Demo Environment Platform Tools (e2e)', () => {
     });
 
     const demoReport = await prisma.report.findFirstOrThrow({
-      where: { demoBatchId: generateRes.body.demoBatchId },
+      where: { demoBatchId: generateBody.demoBatchId },
     });
     expect(demoReport.isDemo).toBe(true);
     expect(demoReport.demoScenario).toBe('Rainy Season');
@@ -149,12 +198,13 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(statsRes.status).toBe(200);
-    expect(statsRes.body.demoExists).toBe(true);
-    expect(statsRes.body.currentDemoUsers).toBe(7);
-    expect(statsRes.body.currentDemoReports).toBe(5);
-    expect(statsRes.body.currentDemoOrganizations).toBe(1);
-    expect(statsRes.body.scenario).toBe('Rainy Season');
-    expect(statsRes.body.intelligenceSummary.title).toBe(
+    const statsBody = body<DemoStatsBody>(statsRes);
+    expect(statsBody.demoExists).toBe(true);
+    expect(statsBody.currentDemoUsers).toBe(7);
+    expect(statsBody.currentDemoReports).toBe(5);
+    expect(statsBody.currentDemoOrganizations).toBe(1);
+    expect(statsBody.scenario).toBe('Rainy Season');
+    expect(statsBody.intelligenceSummary.title).toBe(
       'Rainy Season Demo Generated',
     );
 
@@ -169,7 +219,7 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(previewRes.status).toBe(200);
-    expect(previewRes.body.deleteCounts).toMatchObject({
+    expect(body<DemoPreviewBody>(previewRes).deleteCounts).toMatchObject({
       organizations: 1,
       reports: 5,
       providers: 2,
@@ -187,7 +237,7 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       });
 
     expect([200, 201]).toContain(purgeRes.status);
-    expect(purgeRes.body.deleted).toMatchObject({
+    expect(body<DemoPurgeBody>(purgeRes).deleted).toMatchObject({
       organizations: 1,
       reports: 5,
       users: 7,
@@ -231,7 +281,9 @@ describe('Demo Environment Platform Tools (e2e)', () => {
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
-    expect(first.body.demoBatchId).not.toBe(second.body.demoBatchId);
+    expect(body<DemoGenerateBody>(first).demoBatchId).not.toBe(
+      body<DemoGenerateBody>(second).demoBatchId,
+    );
 
     const phones = await prisma.user.findMany({
       where: { isDemo: true },

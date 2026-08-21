@@ -2780,12 +2780,12 @@ export class ReportService {
     }
     const limit = query.limit ?? 25;
     const offset = query.offset ?? 0;
-    const where: Prisma.ReportWhereInput = {
-      organizationId,
+    const stateFilter = query.state?.trim().toUpperCase();
+    const actionableWhere: Prisma.ReportWhereInput = {
       status: ReportStatus.COMPLETED_BY_PROVIDER,
-      completionReviewState: { not: 'CLOSED' },
-      ...(query.category ? { category: query.category } : {}),
-      ...(query.state ? { completionReviewState: query.state } : {}),
+      ...(stateFilter && stateFilter !== 'CLOSED'
+        ? { completionReviewState: stateFilter }
+        : { completionReviewState: { not: 'CLOSED' } }),
       OR: [
         {
           completionPolicy: {
@@ -2800,6 +2800,21 @@ export class ReportService {
         },
         { completionReviewState: { in: ['DISPUTED', 'REWORK_REQUESTED'] } },
       ],
+    };
+    const closedHistoryWhere: Prisma.ReportWhereInput = {
+      status: ReportStatus.CLOSED,
+      completionReviewState: 'CLOSED',
+      organizationCompletionDecision: CompletionDecision.VERIFIED,
+    };
+    const where: Prisma.ReportWhereInput = {
+      organizationId,
+      ...(query.category ? { category: query.category } : {}),
+      OR:
+        stateFilter === 'CLOSED'
+          ? [closedHistoryWhere]
+          : stateFilter
+            ? [actionableWhere]
+            : [actionableWhere, closedHistoryWhere],
     };
     const [total, reports] = await Promise.all([
       this.prisma.report.count({ where }),
@@ -4282,6 +4297,7 @@ export class ReportService {
       trackingId: report.id,
       title: report.title,
       category: report.category,
+      status: report.status,
       location: this.humanReportLocation(report),
       provider: report.assignedProvider
         ? {
@@ -5883,6 +5899,7 @@ export class ReportService {
         assignment: {
           assignedAt: protectedReport.assignedAt ?? null,
           deadlineAt: protectedReport.assignmentDeadlineAt ?? null,
+          status: this.assignmentPresentationStatus(protectedReport),
           lastOutcome: protectedReport.lastAssignmentOutcome ?? null,
           lastReason: protectedReport.lastAssignmentReason ?? null,
           lastProviderId: protectedReport.lastAssignmentProviderId ?? null,
@@ -5904,6 +5921,39 @@ export class ReportService {
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         })
       : Promise.resolve([]);
+  }
+
+  private assignmentPresentationStatus(report: {
+    status?: ReportStatus | null;
+    assignmentDeadlineAt?: Date | string | null;
+    assignedProviderId?: string | null;
+  }) {
+    if (report.status === ReportStatus.CLOSED) return 'Closed';
+    if (
+      report.status === ReportStatus.COMPLETED_BY_PROVIDER ||
+      report.status === ReportStatus.IN_PROGRESS
+    ) {
+      return 'Assignment completed';
+    }
+    const deadline = report.assignmentDeadlineAt
+      ? new Date(report.assignmentDeadlineAt)
+      : null;
+    if (!deadline || Number.isNaN(deadline.getTime())) {
+      return report.assignedProviderId ? 'Assigned' : null;
+    }
+    const diff = deadline.getTime() - Date.now();
+    if (diff < 0) {
+      const minutes = Math.max(1, Math.floor(Math.abs(diff) / 60_000));
+      if (minutes >= 60) {
+        return `Assignment overdue by ${Math.floor(minutes / 60)}h`;
+      }
+      return `Assignment overdue by ${minutes}m`;
+    }
+    const minutes = Math.max(1, Math.floor(diff / 60_000));
+    if (minutes >= 60) {
+      return `Assignment expires in ${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    }
+    return `Assignment expires in ${minutes}m`;
   }
 
   private responsibilityResolutionFromActivity(

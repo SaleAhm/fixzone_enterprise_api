@@ -1054,17 +1054,30 @@ describe('Report Workflow (e2e)', () => {
       role: UserRole.CITIZEN,
       organizationId: org.id,
     });
+    const unrelatedOrg = await createOrganization(
+      'Workflow Road Default Unrelated Org',
+    );
+    const unrelatedAdmin = await createUser({
+      email: 'wf-admin-road-default-unrelated@test.com',
+      fullName: 'Workflow Road Default Unrelated Admin',
+      role: UserRole.ORG_ADMIN,
+      organizationId: unrelatedOrg.id,
+    });
     const report = await createReport({
       title: 'WF road default dual confirmation',
       status: ReportStatus.IN_PROGRESS,
       organizationId: org.id,
       citizenId: citizen.id,
       assignedProviderId: provider.id,
+      assignmentDeadlineAt: new Date(Date.now() - 7 * 60 * 60 * 1000),
       category: 'Road & Infrastructure',
     });
     const providerToken = await signToken(provider);
     const citizenToken = await signToken(citizen);
     const adminToken = await signToken(admin);
+    const unrelatedAdminToken = await signToken(unrelatedAdmin);
+    const completionNote =
+      'Road surface repaired and area cleared for final review.';
 
     const uploadRes = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/completion-evidence`)
@@ -1084,7 +1097,10 @@ describe('Report Workflow (e2e)', () => {
     const completedRes = await request(app.getHttpServer())
       .patch(`/api/report/${report.id}/status`)
       .set('Authorization', `Bearer ${providerToken}`)
-      .send({ status: ReportStatus.COMPLETED_BY_PROVIDER });
+      .send({
+        status: ReportStatus.COMPLETED_BY_PROVIDER,
+        completionNote,
+      });
     expect(completedRes.status).toBe(200);
     expect(json(completedRes).completionPolicy).toBe(
       CompletionPolicy.BOTH_REQUIRED,
@@ -1145,6 +1161,63 @@ describe('Report Workflow (e2e)', () => {
     expect(verifyRes.status).toBe(201);
     expect(json(verifyRes).status).toBe(ReportStatus.CLOSED);
     expect(json(verifyRes).organizationCompletionDecision).toBe('VERIFIED');
+    expect(json(verifyRes).completionReviewState).toBe('CLOSED');
+
+    const closedGovernance = await request(app.getHttpServer())
+      .get('/api/report/organization/completion-review?state=CLOSED')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(closedGovernance.status).toBe(200);
+    const closedItems = (json(closedGovernance).items ?? []) as Array<
+      Record<string, unknown>
+    >;
+    const closedItem = closedItems.find((item) => item.id === report.id);
+    expect(closedItem).toBeDefined();
+    expect(closedItem?.status).toBe(ReportStatus.CLOSED);
+    expect(closedItem?.reviewStateCode).toBe('CLOSED');
+    expect(closedItem?.completionNote).toBe(completionNote);
+    expect(closedItem?.evidenceCount).toBe(3);
+
+    const awaitingGovernance = await request(app.getHttpServer())
+      .get(
+        '/api/report/organization/completion-review?state=AWAITING_ORGANIZATION_VERIFICATION',
+      )
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(awaitingGovernance.status).toBe(200);
+    expect(
+      (
+        (json(awaitingGovernance).items ?? []) as Array<Record<string, unknown>>
+      ).some((item) => item.id === report.id),
+    ).toBe(false);
+
+    const unrelatedClosedGovernance = await request(app.getHttpServer())
+      .get('/api/report/organization/completion-review?state=CLOSED')
+      .set('Authorization', `Bearer ${unrelatedAdminToken}`);
+    expect(unrelatedClosedGovernance.status).toBe(200);
+    expect(
+      (
+        (json(unrelatedClosedGovernance).items ?? []) as Array<
+          Record<string, unknown>
+        >
+      ).some((item) => item.id === report.id),
+    ).toBe(false);
+
+    const closedDetail = await request(app.getHttpServer())
+      .get(`/api/report/organization/completion-review/${report.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(closedDetail.status).toBe(200);
+    expect(json(closedDetail).status).toBe(ReportStatus.CLOSED);
+    expect(json(closedDetail).completionNote).toBe(completionNote);
+    expect(json(closedDetail).citizenRating).toBe(5);
+    expect(json(closedDetail).citizenFeedback).toBe(
+      'Looks complete from my side.',
+    );
+    expect(
+      (
+        json(closedDetail).enterpriseDetails as {
+          assignment?: { status?: string | null };
+        }
+      ).assignment?.status,
+    ).toBe('Closed');
 
     const closedCitizenRework = await request(app.getHttpServer())
       .post(`/api/report/citizen/${report.id}/reject-completion`)
