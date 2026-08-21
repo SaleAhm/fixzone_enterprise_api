@@ -59,6 +59,11 @@ import {
   canTransitionReportStatus,
   normalizeReportStatus,
 } from './report-workflow';
+import {
+  evaluateRoutingJurisdiction,
+  routingLocationText,
+  type RoutingJurisdictionMatch,
+} from '../organization/routing-jurisdiction';
 
 type JwtUser = {
   id?: string;
@@ -123,6 +128,8 @@ type ResponsibilityResolutionDiagnostics = {
     mandateCategories: string[];
     providerCategories: string[];
     coverageAreas: string[];
+    jurisdictionSource?: string;
+    jurisdictionLevel?: string;
     eligible: boolean;
     confidence: string | null;
     reasons: string[];
@@ -207,6 +214,12 @@ type OrganizationCandidate = {
     lga?: string | null;
     address?: string | null;
     configuredZones: string[];
+    configuredZoneDetails: RoutingJurisdictionMatch['configuredZones'];
+    source: RoutingJurisdictionMatch['source'];
+    level: RoutingJurisdictionMatch['level'];
+    reason: RoutingJurisdictionMatch['reason'];
+    comparableLocationAvailable: boolean;
+    legacyFallback: RoutingJurisdictionMatch['legacyFallback'];
     coverageAreas: string[];
   };
 };
@@ -1296,8 +1309,15 @@ export class ReportService {
       },
     });
     if (!organization) throw new NotFoundException('Organization not found');
+    const jurisdictionZones = await this.prisma.jurisdictionZone.findMany({
+      where: { organizationId: organization.id, active: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
     const candidate = this.serializeOrganizationCandidate(
-      organization,
+      {
+        ...organization,
+        jurisdictionZones,
+      },
       report.category,
       report,
     );
@@ -4759,8 +4779,13 @@ export class ReportService {
     category: string,
     report?: {
       location?: string | null;
+      locationName?: string | null;
+      locationAddress?: string | null;
+      locationLandmark?: string | null;
       description?: string | null;
       title?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
     },
   ): OrganizationCandidate {
     const profileData =
@@ -4812,20 +4837,9 @@ export class ReportService {
         this.jsonStringList(provider.coverageAreas),
       ),
     );
-    const configuredZones = this.collectStringList(
-      (organization.jurisdictionZones ?? [])
-        .filter((zone) => zone.active !== false)
-        .flatMap((zone) => [
-          zone.name,
-          zone.lga,
-          zone.state,
-          zone.country,
-          zone.boundaryRef,
-        ])
-        .filter(
-          (item): item is string =>
-            typeof item === 'string' && item.trim().length > 0,
-        ),
+    const jurisdictionMatchResult = evaluateRoutingJurisdiction(
+      organization,
+      report,
     );
     const serviceModuleReady = this.maintenanceModuleEnabled(
       organization.enabledModules,
@@ -4856,25 +4870,10 @@ export class ReportService {
       (item) => this.categoriesCompatible(item, normalizedCategory),
     );
     const explicitCapabilityBacked = explicitCapabilityProviders.length > 0;
-    const locationText = [report?.location, report?.description, report?.title]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    const jurisdiction = [
-      ...configuredZones,
-      organization.lga,
-      organization.state,
-      organization.address,
-    ]
-      .filter(
-        (item): item is string =>
-          typeof item === 'string' && item.trim().length > 0,
-      )
-      .map((item) => item.toLowerCase());
-    const jurisdictionMatch =
-      jurisdiction.length > 0 &&
-      (!locationText ||
-        jurisdiction.some((item) => locationText.includes(item)));
+    const jurisdiction = jurisdictionMatchResult.jurisdictionAreas.map((item) =>
+      item.toLowerCase(),
+    );
+    const jurisdictionMatch = jurisdictionMatchResult.matched;
     const responsibilityCategoryConfigured =
       mandateCategoryMatch || inheritedCategoryMatch || capabilityCategoryMatch;
     const reasons: string[] = [];
@@ -4895,8 +4894,13 @@ export class ReportService {
     if (!organization.contactEmail && !organization.contactPhone) {
       reasons.push('Organization contact channel is missing.');
     }
-    if (jurisdiction.length === 0) {
+    if (!jurisdictionMatchResult.configured) {
       reasons.push('Organization jurisdiction or address is missing.');
+    }
+    if (!jurisdictionMatchResult.comparableLocationAvailable) {
+      reasons.push(
+        'Report has no comparable textual locality for jurisdiction matching.',
+      );
     }
     if (
       !inheritedCategories.length &&
@@ -4971,15 +4975,22 @@ export class ReportService {
         organizationCoverage: coverageAreas,
         matched:
           coverageAreas.length === 0 ||
-          !locationText ||
+          !jurisdictionMatchResult.diagnosticText ||
           coverageAreas.some((item) =>
-            locationText.includes(item.toLowerCase()),
+            jurisdictionMatchResult.diagnosticText.includes(item.toLowerCase()),
           ),
       },
       jurisdictionComparison: {
-        reportText: locationText,
+        reportText: jurisdictionMatchResult.locationText,
+        diagnosticText: jurisdictionMatchResult.diagnosticText,
         organizationJurisdiction: jurisdiction,
-        configuredZones,
+        configuredZones: jurisdictionMatchResult.configuredZones,
+        source: jurisdictionMatchResult.source,
+        level: jurisdictionMatchResult.level,
+        reason: jurisdictionMatchResult.reason,
+        comparableLocationAvailable:
+          jurisdictionMatchResult.comparableLocationAvailable,
+        legacyFallback: jurisdictionMatchResult.legacyFallback,
         matched: jurisdictionMatch,
       },
       confidence,
@@ -5066,6 +5077,12 @@ export class ReportService {
         maintenanceServicesEnabled: serviceModuleReady,
         responsibilityCategoryConfigured,
         providerDispatchCapacityAvailable: activeProviders.length > 0,
+        jurisdictionConfigured: jurisdictionMatchResult.configured,
+        jurisdictionSource: jurisdictionMatchResult.source,
+        jurisdictionLevel: jurisdictionMatchResult.level,
+        comparableLocationAvailable:
+          jurisdictionMatchResult.comparableLocationAvailable,
+        legacyJurisdictionFallback: jurisdictionMatchResult.legacyFallback,
         mandateCategories,
       },
       diagnostics,
@@ -5074,7 +5091,14 @@ export class ReportService {
         state: organization.state,
         lga: organization.lga,
         address: organization.address,
-        configuredZones,
+        configuredZones: jurisdictionMatchResult.jurisdictionAreas,
+        configuredZoneDetails: jurisdictionMatchResult.configuredZones,
+        source: jurisdictionMatchResult.source,
+        level: jurisdictionMatchResult.level,
+        reason: jurisdictionMatchResult.reason,
+        comparableLocationAvailable:
+          jurisdictionMatchResult.comparableLocationAvailable,
+        legacyFallback: jurisdictionMatchResult.legacyFallback,
         coverageAreas,
       },
     };
@@ -5356,13 +5380,7 @@ export class ReportService {
   }
 
   private hasResponsibilityLocation(dto: CreateReportDto) {
-    return Boolean(
-      dto.location?.trim() ||
-      dto.locationName?.trim() ||
-      dto.locationAddress?.trim() ||
-      dto.locationLandmark?.trim() ||
-      (dto.latitude != null && dto.longitude != null),
-    );
+    return routingLocationText(dto).length > 0;
   }
 
   private responsibilityResolutionDiagnostics(
@@ -5424,6 +5442,8 @@ export class ReportService {
         mandateCategories: candidate.mandateCategories ?? [],
         providerCategories: candidate.inheritedProfileCategories ?? [],
         coverageAreas: candidate.jurisdictionSummary?.coverageAreas ?? [],
+        jurisdictionSource: candidate.jurisdictionSummary?.source,
+        jurisdictionLevel: candidate.jurisdictionSummary?.level,
         eligible: Boolean(candidate.eligible),
         confidence: candidate.confidence ?? null,
         reasons: candidate.reasons ?? [],

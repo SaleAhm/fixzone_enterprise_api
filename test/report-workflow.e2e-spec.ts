@@ -3011,7 +3011,7 @@ describe('Report Workflow (e2e)', () => {
       organizationId: sourceOrg.id,
       citizenId: citizen.id,
       status: ReportStatus.PENDING,
-      location: 'Kubwa Township',
+      location: 'Kubwa Township, Bwari, FCT',
     });
 
     const sourceAdminToken = await signToken(sourceAdmin);
@@ -3260,7 +3260,7 @@ describe('Report Workflow (e2e)', () => {
         title: 'WF automatic organization intake',
         description: 'Road issue around Kubwa',
         category,
-        location: 'Kubwa Township',
+        location: 'Kubwa Township, Bwari, FCT',
       });
     expect(createRes.status).toBe(201);
     createdReportIds.push(json(createRes).id);
@@ -3401,7 +3401,7 @@ describe('Report Workflow (e2e)', () => {
         title: 'WF ambiguous organization intake',
         description: 'Issue around Jabi',
         category: ambiguousCategory,
-        location: 'Jabi District',
+        location: 'Jabi District, FCT',
       });
     expect(ambiguousRes.status).toBe(201);
     createdReportIds.push(json(ambiguousRes).id);

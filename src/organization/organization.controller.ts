@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -19,6 +20,10 @@ import {
   RateLimitTier,
 } from '../security/rate-limit.constants';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
+import {
+  CreateJurisdictionZoneDto,
+  UpdateJurisdictionZoneDto,
+} from './dto/jurisdiction-zone.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { OrganizationService } from './organization.service';
 
@@ -176,6 +181,52 @@ export class OrganizationController {
   getReadiness(@Param('id') id: string, @Req() req: Request) {
     const user = req.user as RequestUser;
     return this.organizationService.getReadiness(id, user);
+  }
+
+  @Get(':id/jurisdiction-zones')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.DISPATCH_OFFICER)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  getJurisdictionZones(
+    @Param('id') id: string,
+    @Query() query: { includeInactive?: string },
+    @Req() req: Request,
+  ) {
+    const user = req.user as RequestUser;
+    return this.organizationService.listJurisdictionZones(
+      id,
+      user,
+      query.includeInactive === 'true',
+    );
+  }
+
+  @Post(':id/jurisdiction-zones')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  createJurisdictionZone(
+    @Param('id') id: string,
+    @Body() dto: CreateJurisdictionZoneDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as RequestUser;
+    return this.organizationService.createJurisdictionZone(id, dto, user);
+  }
+
+  @Patch(':id/jurisdiction-zones/:zoneId')
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminMutation)
+  updateJurisdictionZone(
+    @Param('id') id: string,
+    @Param('zoneId') zoneId: string,
+    @Body() dto: UpdateJurisdictionZoneDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as RequestUser;
+    return this.organizationService.updateJurisdictionZone(
+      id,
+      zoneId,
+      dto,
+      user,
+    );
   }
 
   @Post(':id/upgrade-requests')

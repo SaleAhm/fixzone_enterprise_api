@@ -16,7 +16,12 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { PlatformModulesService } from '../platform-modules/platform-modules.service';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
+import {
+  CreateJurisdictionZoneDto,
+  UpdateJurisdictionZoneDto,
+} from './dto/jurisdiction-zone.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
+import { evaluateRoutingJurisdiction } from './routing-jurisdiction';
 
 type JwtUser = {
   sub: string;
@@ -289,17 +294,14 @@ export class OrganizationService {
     const routingMandateCategories = this.organizationMandateCategories(
       organization.profileData,
     );
-    const organizationJurisdictionAreas = this.collectStringList([
-      ...jurisdictionZones.flatMap((zone) => [
-        zone.name,
-        zone.lga,
-        zone.state,
-        zone.country,
-      ]),
-      organization.lga,
-      organization.state,
-      organization.address,
-    ]);
+    const jurisdiction = evaluateRoutingJurisdiction({
+      country: organization.country,
+      state: organization.state,
+      lga: organization.lga,
+      address: organization.address,
+      jurisdictionZones,
+    });
+    const organizationJurisdictionAreas = jurisdiction.jurisdictionAreas;
     const routingChecks = [
       this.readinessCheck(
         'routing_contact',
@@ -311,7 +313,7 @@ export class OrganizationService {
       this.readinessCheck(
         'routing_jurisdiction',
         'Routing jurisdiction',
-        organizationJurisdictionAreas.length > 0,
+        jurisdiction.configured,
         'Organization jurisdiction is configured.',
         'Configure a jurisdiction zone, state, LGA or service address.',
       ),
@@ -452,8 +454,12 @@ export class OrganizationService {
           country: zone.country,
           state: zone.state,
           lga: zone.lga,
+          active: zone.active,
         })),
         organizationJurisdictionAreas,
+        jurisdictionSource: jurisdiction.source,
+        jurisdictionLevel: jurisdiction.level,
+        legacyFallback: jurisdiction.legacyFallback,
         providerCoverageAreas,
       },
       routingReadiness: {
@@ -469,14 +475,10 @@ export class OrganizationService {
         mandateCategories: routingMandateCategories,
         inheritedProviderCategories: coveredCategories,
         jurisdictionAreas: organizationJurisdictionAreas,
-        configuredZones: jurisdictionZones.map((zone) => ({
-          id: zone.id,
-          name: zone.name,
-          zoneType: zone.zoneType,
-          country: zone.country,
-          state: zone.state,
-          lga: zone.lga,
-        })),
+        jurisdictionSource: jurisdiction.source,
+        jurisdictionLevel: jurisdiction.level,
+        legacyFallback: jurisdiction.legacyFallback,
+        configuredZones: jurisdiction.configuredZones,
         checks: routingChecks,
       },
       subscriptionStatus: organization.billingStatus,
@@ -501,6 +503,69 @@ export class OrganizationService {
         passed: checks.filter((check) => check.status === 'pass').length,
       },
     };
+  }
+
+  async listJurisdictionZones(
+    id: string,
+    user: JwtUser,
+    includeInactive = false,
+  ) {
+    this.assertCanAccessOrganization(id, user);
+    return this.prisma.jurisdictionZone.findMany({
+      where: {
+        organizationId: id,
+        ...(includeInactive ? {} : { active: true }),
+      },
+      orderBy: [{ active: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  async createJurisdictionZone(
+    id: string,
+    dto: CreateJurisdictionZoneDto,
+    user: JwtUser,
+  ) {
+    this.assertCanManageJurisdictionZones(id, user);
+    const data = this.buildJurisdictionZoneData(dto, true);
+    const zone = await this.prisma.jurisdictionZone.create({
+      data: {
+        ...data,
+        organizationId: id,
+        createdById: user.sub || null,
+      },
+    });
+    await this.audit('Organization Jurisdiction Zone Created', user, {
+      organizationId: id,
+      jurisdictionZoneId: zone.id,
+    });
+    return zone;
+  }
+
+  async updateJurisdictionZone(
+    id: string,
+    zoneId: string,
+    dto: UpdateJurisdictionZoneDto,
+    user: JwtUser,
+  ) {
+    this.assertCanManageJurisdictionZones(id, user);
+    const existing = await this.prisma.jurisdictionZone.findUnique({
+      where: { id: zoneId },
+    });
+    if (!existing || existing.organizationId !== id) {
+      throw new NotFoundException('Jurisdiction zone not found');
+    }
+    const data = this.buildJurisdictionZoneData(dto, false);
+    if (Object.keys(data).length === 0) return existing;
+    const zone = await this.prisma.jurisdictionZone.update({
+      where: { id: zoneId },
+      data,
+    });
+    await this.audit('Organization Jurisdiction Zone Updated', user, {
+      organizationId: id,
+      jurisdictionZoneId: zone.id,
+      active: zone.active,
+    });
+    return zone;
   }
 
   getPlanCatalog() {
@@ -875,6 +940,13 @@ export class OrganizationService {
     }
   }
 
+  private assertCanManageJurisdictionZones(id: string, user: JwtUser) {
+    if (user.role === 'SUPER_ADMIN') return;
+    if (user.role !== 'ORG_ADMIN' || user.organizationId !== id) {
+      throw new ForbiddenException('Jurisdiction management denied');
+    }
+  }
+
   private assertSuperAdmin(user: JwtUser) {
     if (user.role !== 'SUPER_ADMIN') {
       throw new ForbiddenException('Super Admin access required');
@@ -895,6 +967,85 @@ export class OrganizationService {
       status: passed ? 'pass' : failureStatus,
       message: passed ? passMessage : failMessage,
     };
+  }
+
+  private buildJurisdictionZoneData(
+    dto: Partial<CreateJurisdictionZoneDto | UpdateJurisdictionZoneDto>,
+    creating: boolean,
+  ): Prisma.JurisdictionZoneUncheckedCreateInput &
+    Prisma.JurisdictionZoneUncheckedUpdateInput {
+    const zoneType =
+      typeof dto.zoneType === 'string' ? dto.zoneType.trim().toUpperCase() : '';
+    const country =
+      typeof dto.country === 'string' && dto.country.trim()
+        ? dto.country.trim()
+        : null;
+    const state =
+      typeof dto.state === 'string' && dto.state.trim()
+        ? dto.state.trim()
+        : null;
+    const lga =
+      typeof dto.lga === 'string' && dto.lga.trim() ? dto.lga.trim() : null;
+
+    if (creating && !zoneType) {
+      throw new BadRequestException('Jurisdiction zone type is required');
+    }
+    if (zoneType && !['COUNTRY', 'STATE', 'LGA'].includes(zoneType)) {
+      throw new BadRequestException(
+        'Jurisdiction zone type must be COUNTRY, STATE or LGA',
+      );
+    }
+    if (zoneType === 'COUNTRY' && !country) {
+      throw new BadRequestException('Country jurisdiction requires country');
+    }
+    if (zoneType === 'STATE' && !state) {
+      throw new BadRequestException('State jurisdiction requires state');
+    }
+    if (zoneType === 'LGA' && !lga) {
+      throw new BadRequestException('LGA jurisdiction requires LGA');
+    }
+
+    const data: Record<string, unknown> = {};
+    if (typeof dto.name === 'string') {
+      data.name =
+        dto.name.trim() ||
+        this.defaultJurisdictionZoneName({
+          zoneType,
+          country,
+          state,
+          lga,
+        });
+    } else if (creating) {
+      data.name = this.defaultJurisdictionZoneName({
+        zoneType,
+        country,
+        state,
+        lga,
+      });
+    }
+    if (zoneType) data.zoneType = zoneType;
+    if (dto.country !== undefined || creating)
+      data.country = country ?? 'Nigeria';
+    if (dto.state !== undefined || creating) data.state = state;
+    if (dto.lga !== undefined || creating) data.lga = lga;
+    if (typeof dto.active === 'boolean') data.active = dto.active;
+    if (dto.metadata !== undefined) {
+      data.metadata = dto.metadata as Prisma.InputJsonValue;
+    }
+    return data as Prisma.JurisdictionZoneUncheckedCreateInput &
+      Prisma.JurisdictionZoneUncheckedUpdateInput;
+  }
+
+  private defaultJurisdictionZoneName(input: {
+    zoneType: string;
+    country: string | null;
+    state: string | null;
+    lga: string | null;
+  }) {
+    if (input.zoneType === 'LGA' && input.lga) return input.lga;
+    if (input.zoneType === 'STATE' && input.state) return input.state;
+    if (input.zoneType === 'COUNTRY' && input.country) return input.country;
+    return 'Jurisdiction';
   }
 
   private jsonStringList(value: unknown): string[] {

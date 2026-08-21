@@ -39,6 +39,13 @@ type OrganizationCandidate = {
     providerCapabilitySource: string;
     finalEligibilityDecision: boolean;
   };
+  jurisdictionSummary: {
+    source: string;
+    reason: string;
+    level?: string;
+    comparableLocationAvailable?: boolean;
+    legacyFallback?: { active: boolean };
+  };
 };
 
 type ResponsibilityResult = {
@@ -98,13 +105,26 @@ type ReportServiceInternals = {
   serializeOrganizationCandidate(
     organization: unknown,
     category: string,
-    report?: { location?: string; title?: string },
+    report?: {
+      location?: string;
+      locationName?: string;
+      locationAddress?: string;
+      locationLandmark?: string;
+      title?: string;
+      latitude?: number;
+      longitude?: number;
+    },
   ): OrganizationCandidate;
   resolveReportResponsibility(input: {
     title: string;
     description: string;
     category: string;
     location: string;
+    locationName?: string;
+    locationAddress?: string;
+    locationLandmark?: string;
+    latitude?: number;
+    longitude?: number;
   }): Promise<ResponsibilityResult>;
   calculateProviderAverageResponse(
     reports: ProviderResponseReport[],
@@ -479,6 +499,7 @@ describe('ReportService organization candidates', () => {
         ],
       },
       'Road',
+      { location: 'Hunslow, Kaduna' },
     );
 
     expect(candidate.eligible).toBe(true);
@@ -514,6 +535,7 @@ describe('ReportService organization candidates', () => {
         ],
       },
       'Waste Management',
+      { location: 'Hunslow, Kaduna' },
     );
 
     expect(candidate.eligible).toBe(true);
@@ -557,7 +579,245 @@ describe('ReportService organization candidates', () => {
     expect(candidate.readiness).toMatchObject({
       responsibilityCategoryConfigured: true,
       providerDispatchCapacityAvailable: false,
+      jurisdictionSource: 'LEGACY_ORGANIZATION_LOCALITY',
     });
+  });
+
+  it('matches active LGA JurisdictionZone and reports governed source diagnostics', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-zone',
+        name: 'Road Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@road-agency.test',
+        country: 'Nigeria',
+        state: 'Kaduna',
+        lga: 'Legacy LGA',
+        jurisdictionZones: [
+          {
+            id: 'zone-gwagwalada',
+            name: 'Gwagwalada',
+            zoneType: 'LGA',
+            country: 'Nigeria',
+            state: 'FCT',
+            lga: 'Gwagwalada',
+            active: true,
+          },
+        ],
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { locationName: 'Gwagwalada', locationAddress: 'Gwagwalada, FCT' },
+    );
+
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.jurisdictionSummary).toMatchObject({
+      source: 'JURISDICTION_ZONE',
+      level: 'LGA',
+      reason: 'MATCHED_LGA',
+    });
+  });
+
+  it('rejects different LGA when active JurisdictionZone is authoritative', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-zone',
+        name: 'Road Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@road-agency.test',
+        country: 'Nigeria',
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        jurisdictionZones: [
+          {
+            id: 'zone-jabi',
+            name: 'Jabi',
+            zoneType: 'LGA',
+            country: 'Nigeria',
+            state: 'FCT',
+            lga: 'Jabi',
+            active: true,
+          },
+        ],
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { location: 'Gwagwalada, FCT' },
+    );
+
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.jurisdictionSummary).toMatchObject({
+      source: 'JURISDICTION_ZONE',
+      reason: 'JURISDICTION_MISMATCH',
+    });
+  });
+
+  it('matches state-level JurisdictionZone for reports in that state', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-state-zone',
+        name: 'State Road Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@state-road.test',
+        jurisdictionZones: [
+          {
+            name: 'FCT',
+            zoneType: 'STATE',
+            country: 'Nigeria',
+            state: 'FCT',
+            active: true,
+          },
+        ],
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { locationAddress: 'Gwagwalada, FCT' },
+    );
+
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.jurisdictionSummary.reason).toBe('MATCHED_STATE');
+  });
+
+  it('ignores inactive JurisdictionZone and uses legacy fallback only when no active zone exists', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-inactive-zone',
+        name: 'Legacy Road Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@legacy-road.test',
+        country: 'Nigeria',
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        jurisdictionZones: [
+          {
+            name: 'Jabi',
+            zoneType: 'LGA',
+            country: 'Nigeria',
+            state: 'FCT',
+            lga: 'Jabi',
+            active: false,
+          },
+        ],
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { location: 'Gwagwalada, FCT' },
+    );
+
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.jurisdictionSummary.source).toBe(
+      'LEGACY_ORGANIZATION_LOCALITY',
+    );
+  });
+
+  it('does not let country-only organization data qualify every Nigerian report', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-country-only',
+        name: 'Country Only Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@country-only.test',
+        country: 'Nigeria',
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { location: 'Gwagwalada, FCT' },
+    );
+
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.jurisdictionSummary.source).toBe('NONE');
+  });
+
+  it('does not pass GPS-only reports without comparable locality text', () => {
+    const candidate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-gps',
+        name: 'GPS Agency',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@gps.test',
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { latitude: 9.086529, longitude: 7.422313 },
+    );
+
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.reasons).toContain(
+      'Report has no comparable textual locality for jurisdiction matching.',
+    );
+  });
+
+  it('keeps mandate and contactability as hard routing requirements', () => {
+    const missingMandate = service.serializeOrganizationCandidate(
+      {
+        id: 'org-no-mandate',
+        name: 'No Mandate',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        contactEmail: 'ops@no-mandate.test',
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { location: 'Gwagwalada, FCT' },
+    );
+    const missingContact = service.serializeOrganizationCandidate(
+      {
+        id: 'org-no-contact',
+        name: 'No Contact',
+        status: OrganizationStatus.ACTIVE,
+        billingStatus: BillingStatus.ACTIVE,
+        state: 'FCT',
+        lga: 'Gwagwalada',
+        profileData: {
+          responsibilityRouting: { mandateCategories: ['Road'] },
+        },
+        users: [],
+        providerLinks: [],
+      },
+      'Road',
+      { location: 'Gwagwalada, FCT' },
+    );
+
+    expect(missingMandate.eligible).toBe(false);
+    expect(missingContact.eligible).toBe(false);
+    expect(missingContact.reasons).toContain(
+      'Organization contact channel is missing.',
+    );
   });
 
   it('does not use provider coverage as organization jurisdiction', () => {
@@ -754,7 +1014,7 @@ describe('ReportService responsibility resolver', () => {
       title: 'Asset road report',
       description: 'Road issue',
       category: 'Road',
-      location: 'Kubwa',
+      location: 'Kubwa, FCT',
     });
 
     expect(result.outcome).toBe('HIGH_CONFIDENCE');
@@ -769,7 +1029,7 @@ describe('ReportService responsibility resolver', () => {
       report: { category: 'Road', normalizedCategory: 'road' },
     });
     expect(result.diagnostics.report?.location).toMatchObject({
-      text: 'Kubwa',
+      text: 'Kubwa, FCT',
     });
     expect(result.diagnostics.candidates).toEqual(
       expect.arrayContaining([
@@ -827,7 +1087,7 @@ describe('ReportService responsibility resolver', () => {
       title: 'Restricted road report',
       description: 'Road issue',
       category: 'Road',
-      location: 'Kubwa',
+      location: 'Kubwa, FCT',
     });
 
     expect(result.outcome).toBe('RESTRICTED_OR_CONFLICTED');
@@ -838,6 +1098,162 @@ describe('ReportService responsibility resolver', () => {
       reasonCode: 'EXPLICIT_EXCLUSION_OR_RESTRICTION',
     });
     expect(result.diagnostics.proposedOrganizationId).toBeUndefined();
+  });
+
+  it('returns no-location diagnostics for GPS-only reports without comparable locality text', async () => {
+    const service = reportService({
+      potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: { findMany: jest.fn().mockResolvedValue([]) },
+      organization: { findMany: jest.fn().mockResolvedValue([]) },
+    });
+
+    const result = await service.resolveReportResponsibility({
+      title: 'GPS-only road report',
+      description: 'Captured by device',
+      category: 'Road',
+      location: '',
+      latitude: 9.086529,
+      longitude: 7.422313,
+    });
+
+    expect(result.outcome).toBe('NO_LOCATION');
+    expect(result.diagnostics.reasonCode).toBe('NO_LOCATION_PROVIDED');
+  });
+
+  it('returns unmatched when no eligible organization satisfies governed jurisdiction', async () => {
+    const service = reportService({
+      potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            organizationId: 'org-jabi',
+            name: 'Jabi',
+            zoneType: 'LGA',
+            country: 'Nigeria',
+            state: 'FCT',
+            lga: 'Jabi',
+            active: true,
+          },
+        ]),
+      },
+      organization: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'org-jabi',
+            name: 'Jabi Agency',
+            status: OrganizationStatus.ACTIVE,
+            billingStatus: BillingStatus.ACTIVE,
+            contactEmail: 'jabi@test.com',
+            profileData: {
+              responsibilityRouting: { mandateCategories: ['Road'] },
+            },
+            providerLinks: [],
+            users: [],
+          },
+        ]),
+      },
+    });
+
+    const result = await service.resolveReportResponsibility({
+      title: 'Gwagwalada road report',
+      description: 'Road issue',
+      category: 'Road',
+      location: 'Gwagwalada, FCT',
+    });
+
+    expect(result.outcome).toBe('UNMATCHED');
+    expect(result.diagnostics).toMatchObject({
+      outcome: 'UNMATCHED',
+      eligibleCandidateCount: 0,
+      reasonCode: 'NO_ELIGIBLE_ORGANIZATION',
+    });
+  });
+
+  it('routes exactly one eligible JurisdictionZone organization to high confidence', async () => {
+    const service = reportService({
+      potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            organizationId: 'org-gwagwalada',
+            name: 'Gwagwalada',
+            zoneType: 'LGA',
+            country: 'Nigeria',
+            state: 'FCT',
+            lga: 'Gwagwalada',
+            active: true,
+          },
+        ]),
+      },
+      organization: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'org-gwagwalada',
+            name: 'Gwagwalada Agency',
+            status: OrganizationStatus.ACTIVE,
+            billingStatus: BillingStatus.ACTIVE,
+            contactEmail: 'gwagwalada@test.com',
+            profileData: {
+              responsibilityRouting: { mandateCategories: ['Road'] },
+            },
+            providerLinks: [],
+            users: [],
+          },
+        ]),
+      },
+    });
+
+    const result = await service.resolveReportResponsibility({
+      title: 'Gwagwalada road report',
+      description: 'Road issue',
+      category: 'Road',
+      location: 'Gwagwalada, FCT',
+    });
+
+    expect(result.outcome).toBe('HIGH_CONFIDENCE');
+    expect(result.organization).toMatchObject({ id: 'org-gwagwalada' });
+    expect(result.diagnostics).toMatchObject({
+      outcome: 'MATCHED',
+      proposedOrganizationId: 'org-gwagwalada',
+    });
+  });
+
+  it('returns ambiguous when multiple eligible organizations match governed jurisdiction', async () => {
+    const org = (id: string) => ({
+      id,
+      name: id,
+      status: OrganizationStatus.ACTIVE,
+      billingStatus: BillingStatus.ACTIVE,
+      contactEmail: `${id}@test.com`,
+      state: 'FCT',
+      lga: 'Gwagwalada',
+      profileData: {
+        responsibilityRouting: { mandateCategories: ['Road'] },
+      },
+      providerLinks: [],
+      users: [],
+    });
+    const service = reportService({
+      potentialAsset: { findMany: jest.fn().mockResolvedValue([]) },
+      jurisdictionZone: { findMany: jest.fn().mockResolvedValue([]) },
+      organization: {
+        findMany: jest.fn().mockResolvedValue([org('org-a'), org('org-b')]),
+      },
+    });
+
+    const result = await service.resolveReportResponsibility({
+      title: 'Gwagwalada road report',
+      description: 'Road issue',
+      category: 'Road',
+      location: 'Gwagwalada, FCT',
+    });
+
+    expect(result.outcome).toBe('AMBIGUOUS');
+    expect(result.diagnostics).toMatchObject({
+      outcome: 'AMBIGUOUS',
+      eligibleCandidateCount: 2,
+      reasonCode: 'MULTIPLE_ELIGIBLE_CANDIDATES',
+    });
   });
 
   it('returns explicit diagnostics when category or location is missing', async () => {
@@ -851,7 +1267,7 @@ describe('ReportService responsibility resolver', () => {
       title: 'Missing category report',
       description: 'Issue',
       category: '',
-      location: 'Kubwa',
+      location: 'Kubwa, FCT',
     });
     expect(noCategory.diagnostics).toMatchObject({
       outcome: 'NO_CATEGORY',
