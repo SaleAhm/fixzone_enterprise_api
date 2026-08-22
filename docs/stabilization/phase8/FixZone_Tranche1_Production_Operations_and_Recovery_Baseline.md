@@ -34,6 +34,20 @@ Current monitoring foundation update:
 - The application does not claim to prove Docker host bind mount identity; that remains an external host-level monitoring requirement.
 - No cron job, production backup command, restore command, service restart, evidence repair, or destructive auto-remediation was introduced.
 
+Application monitoring production verification update:
+
+- Authenticated Super Admin UI verified `GET /api/platform-tools/operational-health` with HTTP `200` and preflight `204`.
+- Observed production states: overall `UNKNOWN`, database `HEALTHY`, database latency `2 ms`, upload storage `HEALTHY`, canary `Removed`, upload files `28`, upload size `2.4 MB`, capacity `HEALTHY`, free space `48%`, backup visibility `UNKNOWN`.
+- Canary residue after checks remained `0` in the container and `0` on the host.
+- Overall `UNKNOWN` is expected because external backup freshness remains outside application runtime visibility and formal RPO/RTO thresholds are not approved.
+
+External host-monitoring design update:
+
+- A read-only script has been drafted at `scripts/operations/fixzone_operational_check.sh`.
+- It checks public API health, Docker service discovery, bind mount identity, current host/container upload count and size consistency, canary residue, disk thresholds, recovery-set artifact presence, optional checksum verification, and configurable backup freshness.
+- It is not scheduled or production-run by this document.
+- It does not perform auto-remediation, backup, restore, deletion, restart, migration, production repair, or production data mutation.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:
@@ -365,6 +379,7 @@ Open Phase 8 items:
 - Rollback rehearsal.
 - Host-level mount monitoring for actual bind source/destination identity.
 - External operational-backup freshness monitoring for the verified recovery-set path.
+- Operator approval, scheduling, and first production evidence capture for the external host-monitoring script.
 
 ## 17. Evidence-Persistence Hardening Production Verification
 

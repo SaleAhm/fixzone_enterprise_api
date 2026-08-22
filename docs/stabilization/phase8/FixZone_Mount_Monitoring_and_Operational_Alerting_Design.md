@@ -106,6 +106,18 @@ Frontend verification path:
 - It requires no manual token handling in the UI.
 - Production UI verification remains pending until the frontend build containing this path is deployed and checked by an authorized operator.
 
+Production UI verification update:
+
+- Authenticated Super Admin UI verification has now observed `GET /api/platform-tools/operational-health` returning HTTP `200` with preflight `204`.
+- Observed values: overall `UNKNOWN`, database `HEALTHY` at `2 ms`, upload storage `HEALTHY`, canary `Removed`, upload files `28`, upload size `2.4 MB`, capacity `HEALTHY`, free space `48%`, backup visibility `UNKNOWN`.
+- The overall `UNKNOWN` remains expected until an external host monitor supplies operator-managed backup freshness and verification evidence.
+
+External host-monitoring implementation path:
+
+- A read-only host script is drafted at `scripts/operations/fixzone_operational_check.sh`.
+- It verifies host-level facts the application cannot prove: Docker service discovery, bind mount source/destination/type, current host/container upload count and size consistency, canary residue, host disk capacity, recovery-set artifact presence, optional checksum verification, and configurable backup freshness.
+- It does not perform production repair, file deletion, service restart, backup creation, restore execution, migration, or auto-remediation.
+
 ## 3. Implemented Application Checks
 
 Database:
@@ -255,5 +267,6 @@ Remaining Phase 8 Tranche 1 work:
 - recurring restore cadence;
 - historical integrity governance and classification;
 - optional notification-provider integration after alert routing is approved.
+- operator approval, scheduling, and first production evidence capture for the external host-monitoring script.
 
 Open P0/P1 operational readiness items remain open until explicitly verified and closed in a later checkpoint.

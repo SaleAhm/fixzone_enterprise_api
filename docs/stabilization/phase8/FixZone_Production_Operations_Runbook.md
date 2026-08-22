@@ -179,6 +179,21 @@ Application operational-health check:
 - Host-level monitoring must separately verify that `/srv/securezone-data/fixzone/uploads` is mounted to `/app/uploads`.
 - The operational-health response avoids database hostnames, credentials, container IDs, host backup locations, detailed exception stacks, and private file contents.
 
+External host monitoring check:
+
+- A read-only host-monitoring helper is now drafted at `scripts/operations/fixzone_operational_check.sh`.
+- It complements the application endpoint by checking Docker service discovery, host bind mount identity, host/container upload count and size consistency, canary residue, host disk free space, recovery-set artifact presence, optional checksum verification, and backup freshness thresholds.
+- It does not restart services, delete files, create backups, restore backups, run migrations, modify uploads, modify the database, or perform auto-remediation.
+- It must be reviewed and operator-approved before scheduled production execution.
+- It must compare current host/container values, not the historical `28` file baseline as a permanent expected count.
+- Backup freshness remains `UNKNOWN` when no approved freshness threshold is configured.
+
+Application monitoring production verification:
+
+- Authenticated Super Admin UI request to `GET /api/platform-tools/operational-health` returned HTTP `200`.
+- Observed state: overall `UNKNOWN`, database `HEALTHY` at `2 ms`, upload storage `HEALTHY`, canary `Removed`, upload files `28`, upload size `2.4 MB`, capacity `HEALTHY`, free space `48%`, backup visibility `UNKNOWN`.
+- Overall `UNKNOWN` is expected until external backup freshness and verification metadata are operator-managed.
+
 Alert-state model:
 
 - `HEALTHY`: check passed.
@@ -266,6 +281,7 @@ TO VERIFY:
 - Alerting.
 - Recurring restore cadence.
 - Rollback rehearsal.
+- Operator-approved scheduling and first production evidence for the external host-monitoring script.
 
 BLOCKS PILOT:
 
