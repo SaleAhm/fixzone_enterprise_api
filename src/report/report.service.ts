@@ -21,7 +21,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { createReadStream } from 'fs';
-import { access } from 'fs/promises';
+import { access, unlink } from 'fs/promises';
 import { basename, extname, posix, resolve, relative, sep } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadSecurityService } from '../security/upload-security.service';
@@ -77,6 +77,7 @@ type JwtUser = {
 };
 
 type EvidenceKind = 'report-evidence' | 'report-completion';
+type SavedEvidenceFile = { imagePath: string; imageUrl: string };
 
 type CompletionPolicyResolution = {
   policy: CompletionPolicy;
@@ -2214,35 +2215,43 @@ export class ReportService {
       images.length,
     );
 
-    const savedItems: Array<{ imagePath: string; imageUrl: string }> = [];
-    for (const [index, image] of images.entries()) {
-      const saved = await this.getUploadSecurity().saveBase64Image({
-        imageBase64: image.imageBase64,
-        contentType: image.contentType,
-        folder: 'report-completion',
-        reportId,
-        invalidSizeMessage: 'Invalid completion image size',
-      });
+    const savedItems: SavedEvidenceFile[] = [];
+    const unpersistedFiles = new Set<SavedEvidenceFile>();
+    try {
+      for (const [index, image] of images.entries()) {
+        const saved = await this.getUploadSecurity().saveBase64Image({
+          imageBase64: image.imageBase64,
+          contentType: image.contentType,
+          folder: 'report-completion',
+          reportId,
+          invalidSizeMessage: 'Invalid completion image size',
+        });
+        unpersistedFiles.add(saved);
 
-      await this.createEvidenceRecord({
-        reportId,
-        organizationId: report.organizationId,
-        ownerUserId: report.citizenId,
-        uploadedById: userId,
-        fileUrl: saved.imageUrl,
-        contentType: image.contentType,
-        description: 'Provider completion evidence',
-        metadata: {
-          kind: 'report-completion',
-          evidenceType: this.providerEvidenceType(image.classification),
-          imagePath: saved.imagePath,
-          classification: image.classification ?? 'after',
-          order: image.order ?? index,
-          sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
-        },
-      });
+        await this.createEvidenceRecord({
+          reportId,
+          organizationId: report.organizationId,
+          ownerUserId: report.citizenId,
+          uploadedById: userId,
+          fileUrl: saved.imageUrl,
+          contentType: image.contentType,
+          description: 'Provider completion evidence',
+          metadata: {
+            kind: 'report-completion',
+            evidenceType: this.providerEvidenceType(image.classification),
+            imagePath: saved.imagePath,
+            classification: image.classification ?? 'after',
+            order: image.order ?? index,
+            sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
+          },
+        });
+        unpersistedFiles.delete(saved);
 
-      savedItems.push(saved);
+        savedItems.push(saved);
+      }
+    } catch (error) {
+      await this.cleanupUnpersistedEvidenceFiles(unpersistedFiles);
+      throw error;
     }
 
     const firstSaved = savedItems[0];
@@ -2327,34 +2336,42 @@ export class ReportService {
     const images = this.reportEvidencePayloads(dto);
     await this.assertEvidenceLimit(reportId, 'report-evidence', images.length);
 
-    const savedItems: Array<{ imagePath: string; imageUrl: string }> = [];
-    for (const [index, image] of images.entries()) {
-      const saved = await this.getUploadSecurity().saveBase64Image({
-        imageBase64: image.imageBase64,
-        contentType: image.contentType,
-        folder: 'report-evidence',
-        reportId,
-        invalidSizeMessage: 'Invalid report image size',
-      });
+    const savedItems: SavedEvidenceFile[] = [];
+    const unpersistedFiles = new Set<SavedEvidenceFile>();
+    try {
+      for (const [index, image] of images.entries()) {
+        const saved = await this.getUploadSecurity().saveBase64Image({
+          imageBase64: image.imageBase64,
+          contentType: image.contentType,
+          folder: 'report-evidence',
+          reportId,
+          invalidSizeMessage: 'Invalid report image size',
+        });
+        unpersistedFiles.add(saved);
 
-      await this.createEvidenceRecord({
-        reportId,
-        organizationId: report.organizationId,
-        ownerUserId: userId,
-        uploadedById: userId,
-        fileUrl: saved.imageUrl,
-        contentType: image.contentType,
-        description: 'Citizen report evidence',
-        metadata: {
-          kind: 'report-evidence',
-          evidenceType: 'CITIZEN_REPORT',
-          imagePath: saved.imagePath,
-          order: image.order ?? index,
-          sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
-        },
-      });
+        await this.createEvidenceRecord({
+          reportId,
+          organizationId: report.organizationId,
+          ownerUserId: userId,
+          uploadedById: userId,
+          fileUrl: saved.imageUrl,
+          contentType: image.contentType,
+          description: 'Citizen report evidence',
+          metadata: {
+            kind: 'report-evidence',
+            evidenceType: 'CITIZEN_REPORT',
+            imagePath: saved.imagePath,
+            order: image.order ?? index,
+            sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
+          },
+        });
+        unpersistedFiles.delete(saved);
 
-      savedItems.push(saved);
+        savedItems.push(saved);
+      }
+    } catch (error) {
+      await this.cleanupUnpersistedEvidenceFiles(unpersistedFiles);
+      throw error;
     }
 
     const firstSaved = savedItems[0];
@@ -6392,6 +6409,30 @@ export class ReportService {
         metadata: input.metadata as Prisma.InputJsonValue,
       },
     });
+  }
+
+  private async cleanupUnpersistedEvidenceFiles(files: Set<SavedEvidenceFile>) {
+    for (const file of files) {
+      await this.cleanupUnpersistedEvidenceFile(file);
+    }
+  }
+
+  private async cleanupUnpersistedEvidenceFile(file: SavedEvidenceFile) {
+    const path = this.extractLocalUploadPath(file.imagePath);
+    if (!path) return;
+
+    const root = uploadRoot();
+    const absolutePath = resolve(root, path);
+    try {
+      this.assertInsideUploadRoot(root, absolutePath);
+      await unlink(absolutePath);
+    } catch (error) {
+      this.logger.warn({
+        message: 'Failed to clean unpersisted evidence upload',
+        imagePath: path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private reportEvidenceItems(

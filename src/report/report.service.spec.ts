@@ -1,5 +1,15 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import {
   AssignmentOutcome,
   BillingStatus,
   CompletionDecision,
@@ -9,6 +19,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { UploadSecurityService } from '../security/upload-security.service';
 import { ReportService } from './report.service';
 
 type TestUser = {
@@ -1771,5 +1782,282 @@ describe('ReportService completion governance policy helpers', () => {
         status: ReportStatus.COMPLETED_BY_PROVIDER,
       }),
     ).toBeNull();
+  });
+});
+
+describe('ReportService evidence persistence hardening', () => {
+  const onePixelPngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const previousUploadRoot = process.env.UPLOAD_ROOT;
+  let uploadRoot: string;
+
+  const citizen = {
+    id: 'citizen-1',
+    userId: 'citizen-1',
+    role: UserRole.CITIZEN,
+    organizationId: 'org-1',
+  };
+  const provider = {
+    id: 'provider-1',
+    userId: 'provider-1',
+    role: UserRole.PROVIDER,
+    organizationId: 'org-1',
+  };
+  const report = {
+    id: 'report-1',
+    title: 'Evidence persistence report',
+    organizationId: 'org-1',
+    citizenId: 'citizen-1',
+    assignedProviderId: 'provider-1',
+    status: ReportStatus.IN_PROGRESS,
+    evidenceImagePath: null,
+    evidenceImageUrl: null,
+    completionImagePath: null,
+    completionImageUrl: null,
+  };
+
+  function listFiles(path: string): string[] {
+    if (!existsSync(path)) return [];
+    return readdirSync(path, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name.toString());
+  }
+
+  function createPrismaMock(
+    options: {
+      createEvidenceRecord?: jest.Mock;
+      updateReport?: jest.Mock;
+    } = {},
+  ) {
+    const updateReport =
+      options.updateReport ??
+      jest.fn(({ data }: { data: Partial<typeof report> }) =>
+        Promise.resolve({
+          ...report,
+          ...data,
+        }),
+      );
+    return {
+      report: {
+        findUnique: jest.fn().mockResolvedValue(report),
+        update: updateReport,
+      },
+      evidenceRecord: {
+        count: jest.fn().mockResolvedValue(0),
+        create: options.createEvidenceRecord ?? jest.fn().mockResolvedValue({}),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          role: UserRole.PROVIDER,
+          accountStatus: 'ACTIVE',
+        }),
+      },
+      reportActivity: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+      complianceAuditLog: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+    };
+  }
+
+  function createService(
+    prisma: ReturnType<typeof createPrismaMock>,
+    uploadSecurity: UploadSecurityService = new UploadSecurityService(),
+  ) {
+    return new ReportService(
+      prismaMock(prisma),
+      undefined,
+      undefined,
+      uploadSecurity,
+    );
+  }
+
+  beforeEach(() => {
+    uploadRoot = mkdtempSync(join(tmpdir(), 'fixzone-evidence-hardening-'));
+    process.env.UPLOAD_ROOT = uploadRoot;
+  });
+
+  afterEach(() => {
+    if (previousUploadRoot === undefined) {
+      delete process.env.UPLOAD_ROOT;
+    } else {
+      process.env.UPLOAD_ROOT = previousUploadRoot;
+    }
+    rmSync(uploadRoot, { recursive: true, force: true });
+    jest.restoreAllMocks();
+  });
+
+  it('keeps citizen evidence file when EvidenceRecord persistence succeeds', async () => {
+    const prisma = createPrismaMock();
+    const service = createService(prisma);
+
+    const result = await service.uploadReportEvidence(
+      report.id,
+      {
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      },
+      citizen,
+    );
+
+    expect(prisma.evidenceRecord.create).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(uploadRoot, result.evidenceImagePath))).toBe(true);
+  });
+
+  it('removes a newly written citizen evidence file when EvidenceRecord persistence fails', async () => {
+    const dbError = new Error('EvidenceRecord insert failed');
+    const prisma = createPrismaMock({
+      createEvidenceRecord: jest.fn().mockRejectedValue(dbError),
+    });
+    const service = createService(prisma);
+
+    await expect(
+      service.uploadReportEvidence(
+        report.id,
+        {
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        },
+        citizen,
+      ),
+    ).rejects.toBe(dbError);
+
+    expect(listFiles(join(uploadRoot, 'report-evidence', report.id))).toEqual(
+      [],
+    );
+  });
+
+  it('keeps provider completion evidence files when EvidenceRecord persistence succeeds', async () => {
+    const prisma = createPrismaMock();
+    const service = createService(prisma);
+
+    const result = await service.uploadCompletionEvidence(
+      report.id,
+      {
+        contentType: 'image/png',
+        imageBase64: onePixelPngBase64,
+      },
+      provider,
+    );
+
+    expect(prisma.evidenceRecord.create).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(uploadRoot, result.completionImagePath))).toBe(true);
+  });
+
+  it('removes only unpersisted provider completion evidence after a later EvidenceRecord failure', async () => {
+    const dbError = new Error('second EvidenceRecord insert failed');
+    const createEvidenceRecord = jest
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(dbError);
+    const prisma = createPrismaMock({ createEvidenceRecord });
+    const service = createService(prisma);
+
+    await expect(
+      service.uploadCompletionEvidence(
+        report.id,
+        {
+          images: [
+            {
+              contentType: 'image/png',
+              imageBase64: onePixelPngBase64,
+            },
+            {
+              contentType: 'image/png',
+              imageBase64: onePixelPngBase64,
+            },
+          ],
+        },
+        provider,
+      ),
+    ).rejects.toBe(dbError);
+
+    expect(createEvidenceRecord).toHaveBeenCalledTimes(2);
+    expect(
+      listFiles(join(uploadRoot, 'report-completion', report.id)),
+    ).toHaveLength(1);
+  });
+
+  it('preserves the original persistence exception when compensating cleanup fails', async () => {
+    const dbError = new Error('EvidenceRecord insert failed');
+    const uploadSecurity = {
+      saveBase64Image: jest.fn().mockResolvedValue({
+        imagePath: `report-evidence/${report.id}/missing.png`,
+        imageUrl: `/uploads/report-evidence/${report.id}/missing.png`,
+      }),
+    } as unknown as UploadSecurityService;
+    const prisma = createPrismaMock({
+      createEvidenceRecord: jest.fn().mockRejectedValue(dbError),
+    });
+    const service = createService(prisma, uploadSecurity);
+
+    await expect(
+      service.uploadReportEvidence(
+        report.id,
+        {
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        },
+        citizen,
+      ),
+    ).rejects.toBe(dbError);
+  });
+
+  it('does not remove files outside UPLOAD_ROOT during compensating cleanup', async () => {
+    const outsideFile = join(uploadRoot, '..', 'outside-evidence.png');
+    writeFileSync(outsideFile, 'outside');
+    const dbError = new Error('EvidenceRecord insert failed');
+    const uploadSecurity = {
+      saveBase64Image: jest.fn().mockResolvedValue({
+        imagePath: `report-evidence/${report.id}/../../outside-evidence.png`,
+        imageUrl: `/uploads/report-evidence/${report.id}/../../outside-evidence.png`,
+      }),
+    } as unknown as UploadSecurityService;
+    const prisma = createPrismaMock({
+      createEvidenceRecord: jest.fn().mockRejectedValue(dbError),
+    });
+    const service = createService(prisma, uploadSecurity);
+
+    await expect(
+      service.uploadReportEvidence(
+        report.id,
+        {
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        },
+        citizen,
+      ),
+    ).rejects.toBe(dbError);
+
+    expect(existsSync(outsideFile)).toBe(true);
+    rmSync(outsideFile, { force: true });
+  });
+
+  it('does not remove pre-existing evidence files when a new upload persistence fails', async () => {
+    const existingDir = join(uploadRoot, 'report-evidence', report.id);
+    const existingFile = join(existingDir, 'existing.png');
+    mkdirSync(existingDir, { recursive: true });
+    writeFileSync(existingFile, Buffer.from(onePixelPngBase64, 'base64'));
+    const dbError = new Error('EvidenceRecord insert failed');
+    const prisma = createPrismaMock({
+      createEvidenceRecord: jest.fn().mockRejectedValue(dbError),
+    });
+    const service = createService(prisma);
+
+    await expect(
+      service.uploadReportEvidence(
+        report.id,
+        {
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+        },
+        citizen,
+      ),
+    ).rejects.toBe(dbError);
+
+    expect(existsSync(existingFile)).toBe(true);
+    expect(listFiles(existingDir)).toEqual(['existing.png']);
   });
 });
