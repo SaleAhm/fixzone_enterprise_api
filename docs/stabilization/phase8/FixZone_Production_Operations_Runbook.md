@@ -197,23 +197,29 @@ DONE:
 - Backup and recovery contract created.
 - Isolated restore rehearsal procedure created.
 - Incident response runbook created.
+- Verified coordinated post-V1 recovery set.
+- Checksum verification completed.
+- PostgreSQL isolated restore rehearsal completed.
+- Uploads isolated restore rehearsal completed.
+- Exact database count reproduction verified.
+- Production/restored evidence-tree equality verified.
+- Canonical Gwagwalada UAT recovery proof documented.
 
 TO VERIFY:
 
 - Actual production backup schedule.
 - Retention policy.
 - Latest backup freshness.
-- Isolated restore rehearsal.
-- Evidence consistency verification.
+- Historical EvidenceRecord/file mismatch investigation.
 - Mount monitoring.
 - Alerting.
+- Recurring restore cadence.
 - Rollback rehearsal.
 
 BLOCKS PILOT:
 
-- No verified backup recovery pair.
-- No isolated restore rehearsal.
-- Critical evidence persistence uncertainty.
+- Historical EvidenceRecord/file mismatch investigation remains open.
+- Backup schedule, retention, alerting, mount monitoring, recurring restore cadence, and rollback rehearsal remain open.
 
 ## 9. Stop Conditions
 

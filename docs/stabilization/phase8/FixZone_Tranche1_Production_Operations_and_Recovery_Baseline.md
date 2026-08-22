@@ -287,3 +287,55 @@ Tranche 1 should not be considered complete until all of the following are true:
 - API, database, upload storage, disk, and backup health checks have owner response paths.
 - Rollback procedure has owner approval and post-rollback smoke checks.
 - No production restore, migration, deployment, or data mutation is performed without explicit release authorization.
+
+## 16. Recovery Rehearsal Evidence Update
+
+Evidence document:
+
+```text
+docs/stabilization/phase8/FixZone_V1_Recovery_Rehearsal_Evidence.md
+```
+
+Recovery Set ID:
+
+```text
+fixzone-v1-baseline-2026-08-22_15-53-38
+```
+
+Items now verified:
+
+- Coordinated post-V1 recovery set.
+- Checksum verification for PostgreSQL dump and uploads archive.
+- PostgreSQL isolated restore rehearsal.
+- Uploads isolated restore rehearsal.
+- Exact database count reproduction for Reports, EvidenceRecord, and ReportActivity.
+- Production/restored evidence-tree equality.
+- Canonical Gwagwalada Jurisdiction Routing UAT 2 recovery proof.
+
+Recovery rehearsal classification:
+
+```text
+PASS
+```
+
+Data-integrity classification:
+
+```text
+PASS WITH HISTORICAL FINDING / INVESTIGATION REQUIRED
+```
+
+Important limitation:
+
+- Database-to-file reconciliation found a pre-existing historical mismatch between some EvidenceRecord rows and physical evidence files.
+- The production physical evidence tree and restored physical evidence tree were identical, so the mismatch is not classified as backup corruption.
+- No production repair was performed.
+
+Open Phase 8 items:
+
+- Historical EvidenceRecord/file mismatch investigation.
+- Backup scheduling.
+- Retention.
+- Alerting.
+- Recurring restore cadence.
+- Rollback rehearsal.
+- Mount monitoring.
