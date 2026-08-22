@@ -261,3 +261,13 @@ P1 remains open:
 ## 9. Final Recommendation
 
 Use the host script as a read-only V1 operational monitor after review. Keep application operational health and external host monitoring distinct. Treat backup freshness as `UNKNOWN` until thresholds are approved, and treat recovery-set validity as structural unless checksum verification and restore rehearsal evidence are present.
+
+Policy proposal follow-up:
+
+- `docs/stabilization/phase8/FixZone_Monitoring_Alerting_Backup_Policy_Proposal.md` records the first supervised production monitor run and proposes backup cadence, freshness thresholds, checksum verification, restore rehearsal, alert routing, deduplication, missed-run detection, scheduler, and retention policies.
+- That proposal is not an approval to schedule the monitor, activate thresholds, send alerts, delete backups, create backups, restore data, or mutate production.
+
+Approved pilot policy follow-up:
+
+- `docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md` records the operator-approved Balanced / Option B pilot policy baseline.
+- Approval covers policy values only; it does not create a systemd timer, activate thresholds, configure alert delivery, create/delete backups, restore data, or mutate production.

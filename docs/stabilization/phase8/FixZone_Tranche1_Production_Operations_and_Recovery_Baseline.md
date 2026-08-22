@@ -48,6 +48,13 @@ External host-monitoring design update:
 - It is not scheduled or production-run by this document.
 - It does not perform auto-remediation, backup, restore, deletion, restart, migration, production repair, or production data mutation.
 
+Approved pilot policy update:
+
+- The Balanced / Option B pilot policy is now approved as the Phase 8 Tranche 1 operating policy baseline.
+- Approved operating values: daily coordinated PostgreSQL plus uploads recovery set, 30-hour freshness warning, 48-hour freshness critical, 15-minute host monitor cadence, checksum verification after every backup, monthly restore rehearsal plus change-triggered rehearsals, systemd timer scheduler, and retention target of 7 daily / 4 weekly / 3 monthly recovery points.
+- Formal RPO and formal RTO remain not approved.
+- No systemd unit, timer, backup automation, threshold activation, alert delivery, retention deletion, restore, production repair, or production mutation is authorized by this policy documentation update.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:
@@ -372,9 +379,9 @@ Important limitation:
 Open Phase 8 items:
 
 - Historical EvidenceRecord/file mismatch per-item export and classification.
-- Backup scheduling.
-- Retention.
-- Alerting.
+- Backup automation implementation and scheduling.
+- Retention dry-run and later governed enforcement.
+- Alert delivery architecture beyond structured logs and host-local status.
 - Recurring restore cadence.
 - Rollback rehearsal.
 - Host-level mount monitoring for actual bind source/destination identity.

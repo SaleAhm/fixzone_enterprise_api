@@ -1,0 +1,487 @@
+# FixZone Pilot Operational Monitoring, Backup, and Alert Policy
+
+Date: 2026-08-22
+
+Scope: Approved Phase 8 Tranche 1 pilot operating policy baseline for FixZone host monitoring, backup cadence, freshness thresholds, checksum verification, restore rehearsal cadence, scheduler design, host-local heartbeat state, alert deduplication, and retention planning.
+
+This document approves the pilot operating policy baseline only. It does not create a production schedule, activate runtime thresholds, configure alert delivery, create backups, delete backups, restore data, deploy code, migrate the database, repair historical evidence, access production, or mutate production data.
+
+## 1. Approved Pilot Policy
+
+Operator decision:
+
+```text
+APPROVED PILOT OPERATING POLICY: Balanced / Option B
+```
+
+Backend baseline:
+
+```text
+89df3a1 feat: add external host operational monitoring foundation
+```
+
+Frontend baseline:
+
+```text
+fea81ea feat: add super admin operational health ui path
+```
+
+Approved values:
+
+- Backup cadence: daily coordinated PostgreSQL plus uploads recovery set.
+- Backup freshness `WARNING`: `30 hours`.
+- Backup freshness `CRITICAL`: `48 hours`.
+- Host monitor cadence: every `15 minutes`.
+- Checksum verification: after every successful backup/recovery-set creation.
+- Restore rehearsal: monthly during pilot.
+- Change-triggered restore rehearsal: after major Prisma/schema/storage changes, backup-system changes, evidence-storage architecture changes, and before major pilot expansion.
+- Scheduler: systemd timer on the Hostinger Ubuntu VPS.
+- Retention target: 7 daily recovery points, 4 weekly recovery points, 3 monthly recovery points.
+- Initial alert architecture: structured logs plus host-local JSON status/heartbeat state.
+- Citizen/provider notification stream integration: not approved.
+- Paid email/SMS/push provider integration: not approved.
+
+Policy status:
+
+- This is an approved pilot operating policy.
+- This is not a contractual SLA.
+- Formal RPO is not yet approved.
+- Formal RTO is not yet approved.
+- Daily backup is an operating control, not a contractual recovery guarantee.
+
+## 2. Current Verified Monitoring State
+
+Backend deployment:
+
+```text
+89df3a1 deployed successfully through Dokploy.
+```
+
+Application operational health:
+
+- Protected endpoint: `GET /api/platform-tools/operational-health`.
+- Super Admin production result: HTTP `200`.
+- Operational-health preflight: `204`.
+- Database: `HEALTHY`.
+- Database latency: `2 ms`.
+- Upload storage: `HEALTHY`.
+- Upload canary: `Removed`.
+- Upload files: `28` current baseline.
+- Capacity: `HEALTHY`.
+- Free space: `48%`.
+- Backup visibility: `UNKNOWN` because external policy inputs were not configured.
+
+First supervised host-monitor execution:
+
+- Verdict: `PASS`.
+- Script copy: `/srv/securezone-ops/fixzone/89df3a1/fixzone_operational_check.sh`.
+- Exit code: `3`.
+- Classification: `UNKNOWN BY DESIGN`.
+- Reasons: freshness thresholds unset, checksum verification not executed in routine monitoring cycle, restore-rehearsal evidence not directly visible to monitor.
+
+Production remained safe:
+
+- Host/container uploads matched.
+- Current files: `28 / 28`.
+- Current size: approximately `2.6M / 2.6M`.
+- Canary residue: `0 / 0`.
+- API remained healthy after run.
+- Verified recovery set remained preserved.
+- No monitoring schedule exists yet.
+
+## 3. Backup Job Validity Contract
+
+Each future scheduled recovery set must bind these artifacts:
+
+- PostgreSQL custom-format dump.
+- Uploads archive.
+- `checksums.sha256`.
+- Recovery manifest.
+- Database TOC listing.
+- Uploads listing.
+- Backup start and end timestamps.
+- Recovery ID.
+- Backend version metadata where available.
+- Frontend version metadata where available.
+
+Required status values:
+
+- `SUCCESS`: all required artifacts are present, non-zero, coherently paired, and checksum verification succeeded.
+- `FAILED`: backup job did not complete or a required operation failed before a valid recovery set was produced.
+- `PARTIAL_INVALID`: one or more artifacts are missing, zero-size, incoherent, or checksum verification failed.
+
+The scheduled backup must prefer `FAILED` or `PARTIAL_INVALID` over falsely claiming a valid recovery set.
+
+## 4. Freshness-State Contract
+
+Age comparison uses the latest structurally valid recovery set timestamp.
+
+- `HEALTHY`: age is less than `30 hours`.
+- `WARNING`: age is greater than or equal to `30 hours` and less than `48 hours`.
+- `CRITICAL`: age is greater than or equal to `48 hours`.
+- `UNKNOWN`: threshold/config metadata is unavailable or the latest recovery set cannot be safely determined.
+
+Override rules:
+
+- Required artifact missing or zero-size: `CRITICAL` regardless of age.
+- Checksum failure: `CRITICAL` regardless of age.
+- Checksum not yet executed under an approved after-backup policy: `WARNING` after one monitor cycle grace; `UNKNOWN` before the after-backup policy is technically implemented.
+- Restore rehearsal age remains a separate signal and does not by itself redefine backup freshness.
+
+Do not activate these thresholds until implementation is separately approved.
+
+## 5. Checksum-State Contract
+
+Approved checksum policy:
+
+```text
+Verify checksums after every successful backup/recovery-set creation.
+```
+
+States:
+
+- `SUCCESS`: all required checksums pass.
+- `CRITICAL`: checksum mismatch.
+- `INVALID`: required checksum manifest or required artifact is absent.
+- `UNKNOWN`: checksum verification status is not visible to the routine monitor.
+
+No checksum verification is run by this documentation task.
+
+## 6. systemd Monitor Service Design
+
+Unit name:
+
+```text
+fixzone-host-monitor.service
+```
+
+Type:
+
+```text
+Type=oneshot
+```
+
+User/root requirement:
+
+- The monitor needs permission to run `docker ps`, `docker inspect`, and read host backup/upload paths.
+- On the current VPS this may require `root` or a dedicated `fixzone-ops` user in the Docker group with read permission to `/srv/securezone-data/fixzone/uploads` and `/srv/securezone-backups/manual`.
+
+Working directory:
+
+```text
+/srv/securezone-ops/fixzone/current
+```
+
+ExecStart design:
+
+```text
+/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh
+```
+
+Environment/config strategy:
+
+- Use a root-readable config file such as `/etc/fixzone/host-monitor.env`.
+- Store only non-secret values: health URL, expected upload paths, freshness thresholds, backup root, state directory.
+- Do not store database credentials, tokens, cookies, private keys, or SMTP credentials in the monitor config.
+
+Logging:
+
+- Write structured stdout/stderr to journald.
+- Later, write `latest-status.json` and `heartbeat.json` under `/srv/securezone-ops/fixzone/state/` after heartbeat support is implemented.
+
+Timeout:
+
+```text
+TimeoutStartSec=120
+```
+
+Failure behavior:
+
+- Non-zero exit codes should be recorded by systemd/journald.
+- Do not use `Restart=always` for this scheduled one-shot job.
+- A future watchdog should detect missed runs through heartbeat age rather than service restart loops.
+
+Compatible hardening options to evaluate:
+
+- `NoNewPrivileges=true`.
+- `PrivateTmp=true`.
+- `ProtectSystem=full` if it does not block Docker/socket or required read paths.
+- `ReadWritePaths=/srv/securezone-ops/fixzone/state` only after state output is implemented.
+
+## 7. systemd Monitor Timer Design
+
+Timer name:
+
+```text
+fixzone-host-monitor.timer
+```
+
+Cadence:
+
+```text
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+```
+
+Behavior:
+
+- Triggers the one-shot monitor service.
+- Does not overlap monitor runs; systemd will not start a second instance while the service is still active.
+- Does not activate until separately approved and created on the VPS.
+
+## 8. Future Backup Service/Timer Design
+
+Future unit names:
+
+```text
+fixzone-recovery-backup.service
+fixzone-recovery-backup.timer
+```
+
+Type:
+
+```text
+Type=oneshot
+```
+
+Cadence:
+
+- Daily after operator approval.
+- Suggested unapproved window: low-traffic overnight window.
+
+Backup service contract:
+
+- Create coordinated PostgreSQL custom-format dump and uploads archive.
+- Generate database TOC listing and uploads listing.
+- Generate `checksums.sha256`.
+- Generate recovery manifest with recovery ID, timestamps, artifact names, backend/frontend version metadata where available, and status.
+- Mark result `SUCCESS`, `FAILED`, or `PARTIAL_INVALID`.
+- Run checksum verification after artifact creation.
+- Never delete existing recovery sets as part of initial backup creation.
+
+This design is not implemented or scheduled by this document.
+
+## 9. Host-Local State / Heartbeat Design
+
+Approved pilot state architecture:
+
+```text
+/srv/securezone-ops/fixzone/state/
+```
+
+Files:
+
+```text
+latest-status.json
+heartbeat.json
+```
+
+Suggested `latest-status.json` fields:
+
+- `timestamp`.
+- `monitorVersion`.
+- `overallState`.
+- `apiState`.
+- `serviceState`.
+- `mountState`.
+- `uploadConsistencyState`.
+- `diskState`.
+- `backupPresenceState`.
+- `backupFreshnessState`.
+- `backupVerificationState`.
+- `canaryResidueState`.
+- `alertKeys`.
+- `exitCode`.
+
+Suggested `heartbeat.json` fields:
+
+- `lastStartedAt`.
+- `lastCompletedAt`.
+- `lastExitCode`.
+- `lastOverallState`.
+- `lastHealthyAt`.
+- `lastWarningAt`.
+- `lastCriticalAt`.
+- `lastUnknownAt`.
+- `lastAlertedByKey`.
+
+Do not include:
+
+- secrets;
+- `DATABASE_URL`;
+- credentials;
+- tokens;
+- cookies;
+- private keys;
+- private evidence data.
+
+No state directory or file is created by this document.
+
+## 10. Missed-Run Policy
+
+Approved monitor cadence:
+
+```text
+15 minutes
+```
+
+Proposed missed-run thresholds:
+
+- `WARNING`: no completed monitor run for more than `30 minutes`.
+- `CRITICAL`: no completed monitor run for more than `60 minutes`.
+
+Rationale:
+
+- `30 minutes` is two missed 15-minute intervals and catches drift quickly without panicking on one delayed run.
+- `60 minutes` is four missed intervals and should be treated as a monitoring outage during pilot operations.
+
+Do not activate missed-run detection until heartbeat support and scheduler ownership are approved.
+
+## 11. Alert Deduplication Policy
+
+First occurrence:
+
+- Record immediately when a check first enters `WARNING` or `CRITICAL`.
+- Record `UNKNOWN` visibly but do not emergency-escalate on first occurrence.
+
+Repeat reminder:
+
+- Identical persistent `WARNING`: remind every `6 hours`.
+- Identical persistent `CRITICAL`: remind every `30 minutes`.
+- Persistent `UNKNOWN`: remind/escalate every `2 hours` if still unresolved.
+
+Escalation:
+
+- `HEALTHY -> WARNING`: immediate event.
+- `WARNING -> CRITICAL`: immediate event.
+- `UNKNOWN -> CRITICAL`: immediate event.
+- Any new `CRITICAL` alert key: immediate event.
+
+Recovery:
+
+- Emit one recovery event when a previously non-healthy check returns to `HEALTHY`.
+- Include previous state and approximate duration when state history is available.
+
+No external delivery is activated by this document.
+
+## 12. Retention Dry-Run Design
+
+Approved target:
+
+- 7 daily recovery points.
+- 4 weekly recovery points.
+- 3 monthly recovery points.
+
+Automatic deletion is not approved.
+
+Future deterministic selector requirements:
+
+- Never delete the newest valid recovery set.
+- Never delete the last verified recovery set.
+- Preserve required weekly and monthly anchors.
+- Support dry-run mode.
+- Log candidate deletions with recovery ID, age, classification, and reason.
+- Require explicit activation before deletion.
+- Prefer preserving ambiguous recovery sets until an operator classifies them.
+
+No backup deletion is performed or implemented by this document.
+
+## 13. Restore-Rehearsal Governance
+
+Approved pilot cadence:
+
+```text
+Monthly during pilot.
+```
+
+Additional restore rehearsal triggers:
+
+- Major Prisma/schema changes.
+- Storage architecture changes.
+- Evidence-storage architecture changes.
+- Backup implementation changes.
+- Before major pilot expansion.
+
+Current baseline evidence:
+
+- Recovery set: `/srv/securezone-backups/manual/fixzone-v1-baseline-2026-08-22_15-53-38`.
+- Recovery rehearsal: PASS.
+- Database restore: PASS.
+- Uploads restore: PASS.
+- Production/restored upload tree: identical.
+- Rehearsal cleanup: PASS.
+
+No restore rehearsal is performed by this document.
+
+## 14. RPO / RTO Language
+
+Formal RPO:
+
+```text
+NOT YET APPROVED
+```
+
+Formal RTO:
+
+```text
+NOT YET APPROVED
+```
+
+The daily backup cadence is an operating control, not a contractual recovery guarantee.
+
+Same-day restore remains an aspiration until repeated rehearsal timing evidence exists and the operator formally approves RTO language.
+
+## 15. Controlled Implementation Order
+
+1. Documentation approval checkpoint.
+2. Host-local state/heartbeat support in the monitor.
+3. Threshold configuration support for the approved 30-hour and 48-hour backup freshness policy.
+4. Draft systemd host-monitor one-shot service.
+5. Draft systemd 15-minute monitor timer.
+6. First supervised timer run.
+7. Backup automation design and implementation.
+8. Checksum-after-backup implementation.
+9. Backup scheduling.
+10. Retention dry-run implementation.
+11. Alert delivery later.
+12. Monthly restore cadence governance.
+
+Approval gates:
+
+- Gate 1: commit approved policy documentation.
+- Gate 2: approve monitor state/heartbeat source changes.
+- Gate 3: approve threshold activation values in runtime config.
+- Gate 4: approve systemd unit/timer creation on VPS.
+- Gate 5: approve first supervised scheduled run.
+- Gate 6: approve backup automation source/design.
+- Gate 7: approve backup schedule.
+- Gate 8: approve retention dry-run.
+- Gate 9: approve any deletion enforcement.
+- Gate 10: approve any email/SMS/push delivery.
+- Gate 11: approve formal RPO/RTO.
+
+## 16. Remaining P0/P1 Items
+
+P0:
+
+- Commit the approved policy documentation.
+- Implement monitor state/heartbeat support after approval.
+- Approve and create systemd units after review.
+- Capture first supervised timer-run evidence.
+- Implement backup automation after design approval.
+- Preserve historical evidence mismatch as unrepaired until separately approved.
+
+P1:
+
+- Formal RPO/RTO.
+- Alert delivery integration.
+- Operational status dashboard or backend ingestion endpoint.
+- Retention dry-run and later deletion governance.
+- Monthly restore rehearsal evidence.
+- Rollback rehearsal evidence.
+
+## 17. Final Recommendation
+
+Use this policy as the Phase 8 Tranche 1 pilot operating baseline. Proceed next with a documentation checkpoint commit, then implement host-local state/heartbeat support before creating any systemd schedule or activating freshness thresholds.

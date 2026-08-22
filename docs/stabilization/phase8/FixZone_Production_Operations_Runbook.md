@@ -194,6 +194,12 @@ Application monitoring production verification:
 - Observed state: overall `UNKNOWN`, database `HEALTHY` at `2 ms`, upload storage `HEALTHY`, canary `Removed`, upload files `28`, upload size `2.4 MB`, capacity `HEALTHY`, free space `48%`, backup visibility `UNKNOWN`.
 - Overall `UNKNOWN` is expected until external backup freshness and verification metadata are operator-managed.
 
+Approved pilot policy baseline:
+
+- The Balanced / Option B policy is approved as the Phase 8 Tranche 1 pilot operating baseline in `docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md`.
+- Approved values: daily coordinated PostgreSQL plus uploads recovery set, 30-hour freshness warning, 48-hour freshness critical, 15-minute host monitor cadence, checksum verification after every backup, monthly restore rehearsal, systemd timer scheduler, and retention target of 7 daily / 4 weekly / 3 monthly recovery points.
+- This approval does not create the systemd timer, activate runtime thresholds, delete backups, create backups, restore data, or configure alert delivery.
+
 Alert-state model:
 
 - `HEALTHY`: check passed.
@@ -282,6 +288,7 @@ TO VERIFY:
 - Recurring restore cadence.
 - Rollback rehearsal.
 - Operator-approved scheduling and first production evidence for the external host-monitoring script.
+- Host-local state/heartbeat support and first supervised systemd timer run.
 
 BLOCKS PILOT:
 
