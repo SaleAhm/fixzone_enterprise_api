@@ -11,13 +11,19 @@ This document does not authorize production access, deployment, migration, backu
 Backend baseline:
 
 ```text
-d88f45d docs: record evidence hardening production verification
+caa706d feat: add operational health monitoring foundation
 ```
 
 Deployed hardening baseline:
 
 ```text
 71ac5ff fix: clean unpersisted evidence uploads on persistence failure
+```
+
+Monitoring documentation predecessor:
+
+```text
+d88f45d docs: record evidence hardening production verification
 ```
 
 Verified production storage baseline:
@@ -89,6 +95,16 @@ Purpose:
 - Provide operators with safe application-visible health signals.
 - Generate provider-neutral alert state.
 - Document what remains external/manual.
+
+Frontend verification path:
+
+- Super Admin Platform Tools now includes a read-only Operational Health section under System Health.
+- Local frontend implementation checkpoint: `fea81ea feat: add super admin operational health ui path`.
+- The section calls `GET /api/platform-tools/operational-health` through the existing authenticated API service headers.
+- It renders only allow-listed operational state, latency, upload count/size, canary cleanup status, capacity, and backup visibility fields.
+- It does not expose raw responses, secrets, host paths, credentials, container identifiers, or stack traces.
+- It requires no manual token handling in the UI.
+- Production UI verification remains pending until the frontend build containing this path is deployed and checked by an authorized operator.
 
 ## 3. Implemented Application Checks
 
@@ -239,3 +255,5 @@ Remaining Phase 8 Tranche 1 work:
 - recurring restore cadence;
 - historical integrity governance and classification;
 - optional notification-provider integration after alert routing is approved.
+
+Open P0/P1 operational readiness items remain open until explicitly verified and closed in a later checkpoint.
