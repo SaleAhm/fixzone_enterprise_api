@@ -12,6 +12,19 @@ type HealthBody = {
   api: { status: string };
   database: { status: string };
 };
+type PublicHealthBody = {
+  status: string;
+  service: string;
+  apiPrefix: string;
+};
+type OperationalHealthBody = {
+  state: string;
+  checks: {
+    api: { state: string };
+    database: { state: string };
+    uploadStorage: { state: string; details?: Record<string, unknown> };
+  };
+};
 type CacheBody = { cleared: boolean };
 type BackupBody = {
   id: string;
@@ -125,6 +138,20 @@ describe('Platform Tools (e2e)', () => {
     expect(body<HealthBody>(health).api.status).toBe('online');
     expect(body<HealthBody>(health).database.status).toBe('online');
 
+    const operationalHealth = await request(app.getHttpServer())
+      .get('/api/platform-tools/operational-health')
+      .set('Authorization', `Bearer ${token}`);
+    expect(operationalHealth.status).toBe(200);
+    expect(
+      body<OperationalHealthBody>(operationalHealth).checks.api.state,
+    ).toBe('HEALTHY');
+    expect(
+      body<OperationalHealthBody>(operationalHealth).checks.database.state,
+    ).toBe('HEALTHY');
+    expect(
+      JSON.stringify(body<OperationalHealthBody>(operationalHealth)),
+    ).not.toContain('DATABASE_URL');
+
     const cache = await request(app.getHttpServer())
       .post('/api/platform-tools/cache/clear')
       .set('Authorization', `Bearer ${token}`)
@@ -166,6 +193,34 @@ describe('Platform Tools (e2e)', () => {
     expect(deleted.status).toBe(200);
     expect(body<DeleteBackupBody>(deleted).deleted).toBe(true);
   }, 15000);
+
+  it('keeps public health minimal and protects operational health', async () => {
+    const publicHealth = await request(app.getHttpServer()).get('/api/health');
+    expect(publicHealth.status).toBe(200);
+    expect(body<PublicHealthBody>(publicHealth)).toEqual({
+      status: 'ok',
+      service: 'fixzone-enterprise-api',
+      apiPrefix: '/api',
+    });
+    expect(JSON.stringify(body<PublicHealthBody>(publicHealth))).not.toContain(
+      'upload',
+    );
+    expect(JSON.stringify(body<PublicHealthBody>(publicHealth))).not.toContain(
+      'database',
+    );
+
+    const unauthenticated = await request(app.getHttpServer()).get(
+      '/api/platform-tools/operational-health',
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const orgAdmin = await createUser(UserRole.ORG_ADMIN);
+    const orgToken = await tokenFor(orgAdmin);
+    const forbidden = await request(app.getHttpServer())
+      .get('/api/platform-tools/operational-health')
+      .set('Authorization', `Bearer ${orgToken}`);
+    expect(forbidden.status).toBe(403);
+  });
 
   it('creates repeated backups without filename collisions', async () => {
     const superAdmin = await createUser(UserRole.SUPER_ADMIN);

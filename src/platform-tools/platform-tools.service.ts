@@ -2,12 +2,24 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, ReportStatus, UserRole } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { createReadStream } from 'fs';
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'fs/promises';
+import {
+  access,
+  constants,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  statfs,
+  unlink,
+  writeFile,
+} from 'fs/promises';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'os';
 import { join, resolve } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
@@ -30,8 +42,25 @@ type MaintenanceState = {
   updatedAt?: string;
 };
 
+type OperationalHealthState = 'HEALTHY' | 'WARNING' | 'CRITICAL' | 'UNKNOWN';
+
+type OperationalCheckResult = {
+  state: OperationalHealthState;
+  checkedAt: string;
+  summary: string;
+  details?: Record<string, unknown>;
+};
+
+type DirectoryStats = {
+  exists: boolean;
+  path: string;
+  sizeBytes: number;
+  fileCount: number;
+};
+
 @Injectable()
 export class PlatformToolsService {
+  private readonly logger = new Logger(PlatformToolsService.name);
   private readonly backupRoot = join(process.cwd(), 'backups');
   private readonly uploadRoot = uploadRoot();
   private readonly tempRoot = join(process.cwd(), '.temp');
@@ -109,6 +138,61 @@ export class PlatformToolsService {
         activeUsers,
         activeProviders,
         queueSize,
+      },
+    };
+  }
+
+  async operationalHealth(user: JwtUser) {
+    this.requireSuperAdmin(user);
+    const checkedAt = new Date().toISOString();
+    const [database, uploadStorage, diskCapacity, backupFreshness] =
+      await Promise.all([
+        this.databaseOperationalCheck(),
+        this.uploadStorageOperationalCheck(),
+        this.diskCapacityOperationalCheck(),
+        this.backupFreshnessOperationalCheck(),
+      ]);
+
+    const checks = {
+      api: {
+        state: 'HEALTHY',
+        checkedAt,
+        summary: 'API process is alive',
+        details: {
+          service: 'fixzone-enterprise-api',
+          version: process.env.npm_package_version ?? '0.0.1',
+          environment: process.env.NODE_ENV ?? 'development',
+        },
+      } satisfies OperationalCheckResult,
+      database,
+      uploadStorage,
+      diskCapacity,
+      backupFreshness,
+    };
+
+    const overall = this.worstState(Object.values(checks).map((c) => c.state));
+
+    return {
+      state: overall,
+      checkedAt,
+      checks,
+      alerting: {
+        model: ['HEALTHY', 'WARNING', 'CRITICAL', 'UNKNOWN'],
+        generatedState: overall,
+        autoRemediation: false,
+      },
+      contracts: {
+        liveness: 'GET /api/health confirms public API process liveness only.',
+        readiness:
+          'Operational readiness requires API, database, and upload storage checks to be healthy.',
+        operationalHealth:
+          'This protected response is for Super Admin operational review and avoids host paths, credentials, and stack traces.',
+      },
+      limitations: {
+        mountIdentity:
+          'The API can verify configured upload-root behavior from inside the container, but cannot prove the Docker host bind source path. Host-level mount identity must be checked externally.',
+        backupFreshness:
+          'Runtime backup visibility is limited to Platform Tools metadata snapshots unless an approved external backup monitor publishes safe metadata to the application.',
       },
     };
   }
@@ -551,24 +635,301 @@ export class PlatformToolsService {
 
   private async safeDirStats(path: string) {
     try {
-      const sizeBytes = await this.directorySize(path);
-      return { exists: true, path, sizeBytes };
+      const { sizeBytes, fileCount } = await this.directoryStats(path);
+      return { exists: true, path, sizeBytes, fileCount };
     } catch {
-      return { exists: false, path, sizeBytes: 0 };
+      return { exists: false, path, sizeBytes: 0, fileCount: 0 };
     }
   }
 
-  private async directorySize(path: string): Promise<number> {
+  private async directoryStats(path: string): Promise<DirectoryStats> {
     const entries = await readdir(path, { withFileTypes: true });
-    const sizes = await Promise.all(
+    const stats = await Promise.all(
       entries.map(async (entry) => {
         const fullPath = join(path, entry.name);
-        if (entry.isDirectory()) return this.directorySize(fullPath);
+        if (entry.isDirectory()) return this.directoryStats(fullPath);
         const info = await stat(fullPath);
-        return info.size;
+        return {
+          exists: true,
+          path: fullPath,
+          sizeBytes: info.size,
+          fileCount: 1,
+        };
       }),
     );
-    return sizes.reduce((sum, size) => sum + size, 0);
+    return {
+      exists: true,
+      path,
+      sizeBytes: stats.reduce((sum, entry) => sum + entry.sizeBytes, 0),
+      fileCount: stats.reduce((sum, entry) => sum + entry.fileCount, 0),
+    };
+  }
+
+  private async databaseOperationalCheck(): Promise<OperationalCheckResult> {
+    const startedAt = Date.now();
+    const checkedAt = new Date().toISOString();
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return {
+        state: 'HEALTHY',
+        checkedAt,
+        summary: 'Database connectivity check passed',
+        details: { latencyMs: Date.now() - startedAt },
+      };
+    } catch (error) {
+      this.logOperationalCheckFailure('database', 'CRITICAL', error);
+      return {
+        state: 'CRITICAL',
+        checkedAt,
+        summary: 'Database connectivity check failed',
+        details: { errorCategory: this.safeErrorCategory(error) },
+      };
+    }
+  }
+
+  private async uploadStorageOperationalCheck(): Promise<OperationalCheckResult> {
+    const checkedAt = new Date().toISOString();
+    const configured = process.env.UPLOAD_ROOT?.trim();
+    const canaryPath = join(
+      this.uploadRoot,
+      `.fixzone-operational-health-canary-${process.pid}-${Date.now()}-${randomUUID()}.tmp`,
+    );
+    let canaryCreated = false;
+
+    try {
+      const info = await stat(this.uploadRoot);
+      if (!info.isDirectory()) {
+        return {
+          state: 'CRITICAL',
+          checkedAt,
+          summary: 'Configured upload root is not a directory',
+          details: { configured: Boolean(configured) },
+        };
+      }
+
+      await access(this.uploadRoot, constants.R_OK | constants.W_OK);
+      await readdir(this.uploadRoot);
+      await writeFile(canaryPath, 'fixzone operational health canary\n', {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+      canaryCreated = true;
+      await readFile(canaryPath, 'utf8');
+      await unlink(canaryPath);
+      canaryCreated = false;
+
+      const stats = await this.directoryStats(this.uploadRoot);
+      return {
+        state: 'HEALTHY',
+        checkedAt,
+        summary:
+          'Upload root exists, is readable, and passed write/delete canary',
+        details: {
+          configured: Boolean(configured),
+          fileCount: stats.fileCount,
+          sizeBytes: stats.sizeBytes,
+          canaryRemoved: true,
+        },
+      };
+    } catch (error) {
+      if (canaryCreated) {
+        try {
+          await unlink(canaryPath);
+          canaryCreated = false;
+        } catch (cleanupError) {
+          this.logOperationalCheckFailure(
+            'upload_storage_canary_cleanup',
+            'WARNING',
+            cleanupError,
+          );
+        }
+      }
+      this.logOperationalCheckFailure('upload_storage', 'CRITICAL', error);
+      return {
+        state: 'CRITICAL',
+        checkedAt,
+        summary: 'Upload root check failed',
+        details: {
+          configured: Boolean(configured),
+          errorCategory: this.safeErrorCategory(error),
+          canaryRemoved: !canaryCreated,
+        },
+      };
+    }
+  }
+
+  private async diskCapacityOperationalCheck(): Promise<OperationalCheckResult> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const info = await statfs(this.uploadRoot);
+      const totalBytes = Number(info.blocks) * Number(info.bsize);
+      const freeBytes = Number(info.bavail) * Number(info.bsize);
+      if (totalBytes <= 0) {
+        return {
+          state: 'UNKNOWN',
+          checkedAt,
+          summary: 'Filesystem capacity check returned no total capacity',
+        };
+      }
+      const freePercent = Math.round((freeBytes / totalBytes) * 100);
+      const warningPercent = this.readPercentEnv(
+        'FIXZONE_UPLOAD_DISK_WARNING_FREE_PERCENT',
+        15,
+      );
+      const criticalPercent = this.readPercentEnv(
+        'FIXZONE_UPLOAD_DISK_CRITICAL_FREE_PERCENT',
+        5,
+      );
+      const state: OperationalHealthState =
+        freePercent <= criticalPercent
+          ? 'CRITICAL'
+          : freePercent <= warningPercent
+            ? 'WARNING'
+            : 'HEALTHY';
+      return {
+        state,
+        checkedAt,
+        summary: `Upload filesystem free space is ${freePercent}%`,
+        details: {
+          freePercent,
+          freeBytes,
+          totalBytes,
+          warningFreePercent: warningPercent,
+          criticalFreePercent: criticalPercent,
+        },
+      };
+    } catch (error) {
+      this.logOperationalCheckFailure('disk_capacity', 'UNKNOWN', error);
+      return {
+        state: 'UNKNOWN',
+        checkedAt,
+        summary: 'Filesystem capacity check is unavailable in this runtime',
+        details: { errorCategory: this.safeErrorCategory(error) },
+      };
+    }
+  }
+
+  private async backupFreshnessOperationalCheck(): Promise<OperationalCheckResult> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const latest = await this.prisma.platformBackup.findFirst({
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: {
+          id: true,
+          fileName: true,
+          createdAt: true,
+          sizeBytes: true,
+          restoredAt: true,
+        },
+      });
+
+      if (!latest) {
+        return {
+          state: 'UNKNOWN',
+          checkedAt,
+          summary:
+            'No Platform Tools metadata snapshot is visible to the application runtime',
+          details: {
+            operationalBackupCovered: false,
+            requiresExternalMonitor: true,
+          },
+        };
+      }
+
+      const ageHours =
+        Math.round((Date.now() - latest.createdAt.getTime()) / 36_000) / 100;
+      const warningHours = this.readPositiveNumberEnv(
+        'FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS',
+      );
+      const criticalHours = this.readPositiveNumberEnv(
+        'FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS',
+      );
+      const thresholdState =
+        criticalHours !== null && ageHours >= criticalHours
+          ? 'CRITICAL'
+          : warningHours !== null && ageHours >= warningHours
+            ? 'WARNING'
+            : 'UNKNOWN';
+
+      return {
+        state: thresholdState,
+        checkedAt,
+        summary:
+          thresholdState === 'UNKNOWN'
+            ? 'Latest Platform Tools metadata snapshot is visible; no approved freshness threshold is configured'
+            : 'Latest Platform Tools metadata snapshot exceeded configured freshness threshold',
+        details: {
+          latestSnapshotId: latest.id,
+          latestSnapshotFileName: latest.fileName,
+          latestSnapshotCreatedAt: latest.createdAt.toISOString(),
+          latestSnapshotSizeBytes: latest.sizeBytes,
+          latestSnapshotRestoredAt: latest.restoredAt?.toISOString() ?? null,
+          ageHours,
+          warningHours,
+          criticalHours,
+          operationalBackupCovered: false,
+          requiresExternalMonitor: true,
+        },
+      };
+    } catch (error) {
+      this.logOperationalCheckFailure('backup_freshness', 'UNKNOWN', error);
+      return {
+        state: 'UNKNOWN',
+        checkedAt,
+        summary:
+          'Backup freshness check is unavailable from application runtime',
+        details: {
+          errorCategory: this.safeErrorCategory(error),
+          requiresExternalMonitor: true,
+        },
+      };
+    }
+  }
+
+  private worstState(states: OperationalHealthState[]): OperationalHealthState {
+    if (states.includes('CRITICAL')) return 'CRITICAL';
+    if (states.includes('WARNING')) return 'WARNING';
+    if (states.includes('UNKNOWN')) return 'UNKNOWN';
+    return 'HEALTHY';
+  }
+
+  private readPercentEnv(name: string, fallback: number) {
+    const raw = process.env[name];
+    if (!raw) return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(100, Math.max(0, value));
+  }
+
+  private readPositiveNumberEnv(name: string) {
+    const raw = process.env[name];
+    if (!raw) return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) return null;
+    return value;
+  }
+
+  private logOperationalCheckFailure(
+    checkType: string,
+    state: OperationalHealthState,
+    error: unknown,
+  ) {
+    this.logger.warn({
+      message: 'Operational health check failed',
+      checkType,
+      state,
+      timestamp: new Date().toISOString(),
+      errorCategory: this.safeErrorCategory(error),
+    });
+  }
+
+  private safeErrorCategory(error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error) {
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string') return code;
+    }
+    if (error instanceof Error) return error.name;
+    return 'UnknownError';
   }
 
   private requireSuperAdmin(user: JwtUser) {

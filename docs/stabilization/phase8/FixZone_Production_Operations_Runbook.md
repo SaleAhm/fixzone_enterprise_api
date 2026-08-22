@@ -166,6 +166,28 @@ Writable directory check design:
 - Do not use citizen/provider evidence directories for infrastructure probes.
 - If write-canary approval is not available, use read-only mount and file-count checks plus the next approved upload workflow.
 
+Application operational-health check:
+
+- Public liveness remains `GET /api/health` and exposes only a safe process summary.
+- Protected operational status is available to Super Admin users through `GET /api/platform-tools/operational-health`.
+- The protected check verifies database connectivity with a read-only query.
+- The protected check verifies the configured upload root exists, is readable, and passes a single temporary write/read/delete canary.
+- The canary file name starts with `.fixzone-operational-health-canary-`.
+- The canary is created directly under `UPLOAD_ROOT`, not under `report-evidence/` or `report-completion/`.
+- The canary uses exclusive creation and is deleted immediately.
+- The application does not claim to prove the Docker host bind source path from inside the container.
+- Host-level monitoring must separately verify that `/srv/securezone-data/fixzone/uploads` is mounted to `/app/uploads`.
+- The operational-health response avoids database hostnames, credentials, container IDs, host backup locations, detailed exception stacks, and private file contents.
+
+Alert-state model:
+
+- `HEALTHY`: check passed.
+- `WARNING`: check passed with a threshold concern.
+- `CRITICAL`: dependency is unavailable or unsafe for normal operation.
+- `UNKNOWN`: the check cannot be performed safely from application runtime.
+
+No automatic remediation is performed by the operational-health endpoint.
+
 ## 7. Deployment Rollback Checklist
 
 Rollback must preserve uploaded evidence.
@@ -232,6 +254,7 @@ DONE:
 - Evidence-persistence hardening deployed through Dokploy with status `Done`.
 - Post-deployment API health, upload mount, file-count, and storage-size checks recorded as PASS.
 - No evidence loss observed during the hardening redeployment.
+- Protected operational-health endpoint added for database, upload-root, disk-capacity, backup-visibility, and alert-state reporting.
 
 TO VERIFY:
 

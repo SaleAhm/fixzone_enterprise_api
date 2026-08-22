@@ -47,6 +47,14 @@ export class PlatformToolsController {
     return this.platformTools.systemHealth(user);
   }
 
+  @Get('operational-health')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN)
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  operationalHealth(@CurrentUser() user: CurrentAuthUser) {
+    return this.platformTools.operationalHealth(user);
+  }
+
   @Post('backups')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)

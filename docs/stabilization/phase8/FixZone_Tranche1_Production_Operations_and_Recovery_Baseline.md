@@ -26,6 +26,14 @@ The main operational gap has shifted from initial proof to ongoing operations. R
 
 Primary remaining Tranche 1 objective: operationalize the verified backup/restore path with monitoring, alerting, retention, rollback rehearsal, and periodic evidence-consistency review before broad operational adoption.
 
+Current monitoring foundation update:
+
+- Public liveness remains limited to safe API process status at `GET /api/health`.
+- Protected operational health is exposed to Super Admin users through `GET /api/platform-tools/operational-health`.
+- Application-visible checks include database reachability, upload-root existence/readability/writability, temporary canary cleanup, upload directory counts/size, disk capacity where supported, metadata backup visibility, and generated alert state.
+- The application does not claim to prove Docker host bind mount identity; that remains an external host-level monitoring requirement.
+- No cron job, production backup command, restore command, service restart, evidence repair, or destructive auto-remediation was introduced.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:
@@ -355,7 +363,8 @@ Open Phase 8 items:
 - Alerting.
 - Recurring restore cadence.
 - Rollback rehearsal.
-- Mount monitoring.
+- Host-level mount monitoring for actual bind source/destination identity.
+- External operational-backup freshness monitoring for the verified recovery-set path.
 
 ## 17. Evidence-Persistence Hardening Production Verification
 
