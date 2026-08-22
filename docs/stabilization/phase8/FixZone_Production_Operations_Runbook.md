@@ -19,7 +19,7 @@ This document defines how FixZone should be operated, verified, rolled back, and
 
 Current stabilized operating assumptions:
 
-- Backend repository baseline: `f7a395e docs: add tranche 1 operations recovery baseline`
+- Backend repository baseline: `71ac5ff fix: clean unpersisted evidence uploads on persistence failure`
 - Frontend repository baseline: `9378331 fix: keep report citizen rating report-scoped`
 - Persistent upload host path: `/srv/securezone-data/fixzone/uploads`
 - API container upload path: `/app/uploads`
@@ -36,6 +36,30 @@ The baseline protects:
 - Organization completion governance.
 - CLOSED-state provider-performance semantics.
 - Protected evidence routes.
+- Evidence-persistence failure-path hardening for current citizen report evidence and provider completion evidence uploads.
+
+Most recent production hardening deployment verification:
+
+```text
+71ac5ff fix: clean unpersisted evidence uploads on persistence failure
+Dokploy status: Done
+Production hardening deployment verification: PASS
+```
+
+Recorded post-deployment checks:
+
+- API health: `{"status":"ok","service":"fixzone-enterprise-api","apiPrefix":"/api"}`.
+- `UPLOAD_ROOT`: `/app/uploads`.
+- Persistent bind mount: host `/srv/securezone-data/fixzone/uploads` to container `/app/uploads`.
+- Upload file counts: container `28`, host `28`.
+- Upload storage size: container approximately `2.6M`, host approximately `2.6M`.
+- No evidence loss observed during container replacement/redeployment.
+
+Hardening limitation:
+
+- File write and database persistence are still not fully atomic.
+- The current hardening cleans request-created unpersisted files on handled EvidenceRecord persistence failure.
+- A crash/process-kill window remains documented.
 
 ## 3. Operational Roles
 
@@ -204,13 +228,17 @@ DONE:
 - Exact database count reproduction verified.
 - Production/restored evidence-tree equality verified.
 - Canonical Gwagwalada UAT recovery proof documented.
+- Evidence-persistence failure-path hardening implemented in `71ac5ff`.
+- Evidence-persistence hardening deployed through Dokploy with status `Done`.
+- Post-deployment API health, upload mount, file-count, and storage-size checks recorded as PASS.
+- No evidence loss observed during the hardening redeployment.
 
 TO VERIFY:
 
 - Actual production backup schedule.
 - Retention policy.
 - Latest backup freshness.
-- Historical EvidenceRecord/file mismatch investigation.
+- Historical EvidenceRecord/file mismatch per-item export and classification.
 - Mount monitoring.
 - Alerting.
 - Recurring restore cadence.
@@ -218,7 +246,7 @@ TO VERIFY:
 
 BLOCKS PILOT:
 
-- Historical EvidenceRecord/file mismatch investigation remains open.
+- Historical EvidenceRecord/file mismatch remains unresolved and unrepaired.
 - Backup schedule, retention, alerting, mount monitoring, recurring restore cadence, and rollback rehearsal remain open.
 
 ## 9. Stop Conditions

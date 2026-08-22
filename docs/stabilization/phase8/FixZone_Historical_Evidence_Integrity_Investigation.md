@@ -287,12 +287,27 @@ Potential governed future repair plan:
 
 Implemented hardening in the evidence persistence tranche:
 
+Implementation commit:
+
+```text
+71ac5ff fix: clean unpersisted evidence uploads on persistence failure
+```
+
+Production verification record:
+
+```text
+PASS
+```
+
 - Current citizen report evidence and provider completion evidence uploads now track files created by the active request until their corresponding EvidenceRecord row is persisted.
 - If EvidenceRecord persistence fails after a file write, the service attempts compensating deletion of only the newly created, unpersisted file.
 - Cleanup uses upload-root path validation and single-file deletion only.
 - Cleanup failure is logged and does not replace the original persistence exception.
 - Files that already have persisted EvidenceRecord rows are not removed by this compensating cleanup.
 - Pre-existing evidence is not targeted.
+- The successful deployment of commit `71ac5ff` was recorded after `f3468bf..71ac5ff main -> main`, followed by Dokploy status `Done`.
+- Post-deployment API health, `UPLOAD_ROOT`, persistent bind mount, container/host upload counts, and container/host storage size were recorded as passing.
+- No evidence loss was observed during the redeployment.
 
 Recommended remaining hardening, separate from this documentation task:
 
@@ -308,6 +323,8 @@ Historical mismatch status:
 - The three unreferenced physical files remain unrepaired.
 - No historical root cause is proven by this hardening.
 - Gwagwalada Jurisdiction Routing UAT 2 remains unaffected and recoverable.
+- The hardening reduces the current orphan-file failure path but does not make filesystem and database writes fully atomic.
+- A residual crash/process-kill window remains if the process terminates after file write and before compensating cleanup can run.
 
 ## 15. Tranche 1 Readiness Impact
 
@@ -328,7 +345,7 @@ The historical mismatch does not invalidate the verified recovery set or the can
 Pilot readiness remains conditional until:
 
 - The nine mismatch items are exported and classified.
-- Current upload-flow orphan-file hardening is either accepted as residual risk or addressed.
+- Current upload-flow orphan-file hardening is accepted with the documented residual crash/process-kill limitation.
 - Backup schedule, retention, alerting, mount monitoring, recurring restore cadence, and rollback rehearsal are completed.
 
 ## 16. Rehearsal Resources

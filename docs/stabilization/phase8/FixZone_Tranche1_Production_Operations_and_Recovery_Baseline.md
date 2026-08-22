@@ -4,11 +4,11 @@ Date: 2026-08-22
 
 Scope: read-only baseline investigation for operational reliability, backup, restore, rollback, health monitoring, incident readiness, and adoption support.
 
-Backend repository head observed: `20a22ef docs: plan operational reliability adoption phase`
+Backend repository head observed: `71ac5ff fix: clean unpersisted evidence uploads on persistence failure`
 
 Frontend repository head observed: `9378331 fix: keep report citizen rating report-scoped`
 
-Verdict: production operations are suitable for controlled V1 stabilization only with conditions. Core application recovery controls are partially documented, and a local controlled release script contains practical backup mechanics, but current repository evidence does not prove a full production restore rehearsal for both PostgreSQL data and uploaded evidence artifacts.
+Verdict: production operations are suitable for controlled V1 stabilization only with conditions. Core recovery controls now include a documented isolated recovery rehearsal and a deployed evidence-persistence failure-path hardening fix, but Tranche 1 is not fully complete until backup scheduling, retention, alerting, mount monitoring, rollback rehearsal, recurring restore cadence, and historical mismatch classification are closed.
 
 ## 1. Executive Summary
 
@@ -19,10 +19,12 @@ The Phase 8 Tranche 1 baseline confirms that FixZone has important building bloc
 - Platform Tools expose guarded health and metadata-backup workflows.
 - Prior stabilization documentation identifies backup, restore, persistent upload storage, rollback, and incident-readiness gaps.
 - A local protected controlled-release script contains concrete manual backup behavior for PostgreSQL and uploads.
+- The coordinated recovery set `fixzone-v1-baseline-2026-08-22_15-53-38` passed isolated restore rehearsal.
+- Backend commit `71ac5ff fix: clean unpersisted evidence uploads on persistence failure` was deployed successfully and production-verified as PASS.
 
-The main operational gap is proof. The current baseline does not show a recent, documented, isolated restore rehearsal that restores both the database and uploads together, verifies evidence-file consistency, and records the result as production-ready recovery evidence.
+The main operational gap has shifted from initial proof to ongoing operations. Recovery rehearsal evidence and hardening deployment verification now exist, while schedule, retention, alerting, mount monitoring, rollback rehearsal, recurring restore cadence, and historical mismatch classification remain open.
 
-Primary Tranche 1 objective: establish an approved, repeatable, documented backup and restore rehearsal path for database plus uploads before broad operational adoption.
+Primary remaining Tranche 1 objective: operationalize the verified backup/restore path with monitoring, alerting, retention, rollback rehearsal, and periodic evidence-consistency review before broad operational adoption.
 
 ## 2. Current Backup Inventory
 
@@ -41,7 +43,7 @@ Important distinction:
 
 ## 3. Database Recovery Status
 
-Classification: documented but unrehearsed for the current Phase 8 operational baseline.
+Classification: rehearsed once for the recorded Phase 8 recovery set; recurring operational cadence remains open.
 
 Evidence found:
 
@@ -49,15 +51,15 @@ Evidence found:
 - Application startup and Platform Tools include database connectivity checks.
 - The protected controlled-release script performs a PostgreSQL custom-format dump with `pg_dump`.
 - The script verifies dump readability with `pg_restore --list`.
-- Prior documentation refers to restore and DR analysis, but current repository evidence does not prove a recent end-to-end restore rehearsal.
+- The recovery evidence document records an isolated PostgreSQL restore rehearsal with exact database count reproduction.
 
 Operational risk:
 
-- A backup file that passes `pg_restore --list` is necessary but not sufficient. Recovery is not proven until the dump is restored into an isolated database and app-level smoke checks pass.
+- A backup file that passes `pg_restore --list` is necessary but not sufficient. The recorded recovery set has been rehearsed once, but future backups are not proven recoverable until each approved restore drill completes in isolation and records evidence.
 
 ## 4. Evidence Recovery Status
 
-Classification: documented but unrehearsed, with consistency gaps.
+Classification: rehearsed once for the recorded Phase 8 recovery set, with historical consistency findings remaining.
 
 Evidence found:
 
@@ -66,10 +68,12 @@ Evidence found:
 - Evidence references are stored as relative paths such as `report-evidence/<reportId>/<fileName>` and `report-completion/<reportId>/<fileName>`.
 - Protected evidence routes include report evidence and completion evidence endpoints.
 - The protected controlled-release script archives uploads as a tarball and verifies readability with `tar -tzf`.
+- The recovery evidence document records isolated upload restore, production/restored evidence-tree equality, and canonical Gwagwalada UAT recovery proof.
+- Post-hardening deployment verification recorded container and host upload file counts of `28` and `28`, with both storage sizes approximately `2.6M`.
 
 Operational risk:
 
-- Upload archive verification proves the archive can be listed, not that every database evidence reference resolves to a restored file.
+- Upload archive listing alone proves only readability. The recorded recovery rehearsal adds stronger proof for that recovery set, but future backup sets still require database-to-file reconciliation.
 - Database and uploads are captured sequentially, so new evidence created during backup can create a consistency gap unless operations are paused or otherwise bounded.
 
 ## 5. Backup Consistency Model
@@ -98,7 +102,7 @@ Minimum V1 mitigation:
 
 ## 6. Retention Status
 
-Classification: partial.
+Classification: improved but not complete.
 
 Findings:
 
@@ -126,11 +130,23 @@ Verification mechanisms found:
 
 Verification gaps:
 
-- No current isolated full restore proof.
-- No current database-to-upload evidence consistency report.
+- One current isolated full restore proof exists for recovery set `fixzone-v1-baseline-2026-08-22_15-53-38`.
+- Database-to-upload evidence consistency found a historical mismatch and must become a recurring report.
 - No current sampled protected evidence URL verification after restore.
 - No current backup failure alert verification.
 - No current scheduled backup success evidence.
+
+Production hardening deployment verification recorded:
+
+- Backend commit: `71ac5ff fix: clean unpersisted evidence uploads on persistence failure`.
+- Deployment path: `f3468bf..71ac5ff main -> main`.
+- Dokploy result: `Done`.
+- API health: PASS.
+- `UPLOAD_ROOT`: PASS at `/app/uploads`.
+- Persistent bind mount: PASS from `/srv/securezone-data/fixzone/uploads` to `/app/uploads`.
+- Container/host upload file counts: PASS at `28/28`.
+- Container/host upload storage size: PASS at approximately `2.6M/2.6M`.
+- Evidence loss during redeployment: none observed.
 
 ## 8. Restore Rehearsal Design
 
@@ -284,6 +300,7 @@ Tranche 1 should not be considered complete until all of the following are true:
 - Backup verification includes checksums, dump listing, archive listing, and file count evidence.
 - A restore rehearsal has been completed in an isolated environment.
 - Restored database references have been checked against restored evidence files.
+- Evidence-persistence failure-path hardening is deployed and its residual crash/process-kill limitation is accepted.
 - API, database, upload storage, disk, and backup health checks have owner response paths.
 - Rollback procedure has owner approval and post-rollback smoke checks.
 - No production restore, migration, deployment, or data mutation is performed without explicit release authorization.
@@ -332,10 +349,58 @@ Important limitation:
 
 Open Phase 8 items:
 
-- Historical EvidenceRecord/file mismatch investigation.
+- Historical EvidenceRecord/file mismatch per-item export and classification.
 - Backup scheduling.
 - Retention.
 - Alerting.
 - Recurring restore cadence.
 - Rollback rehearsal.
 - Mount monitoring.
+
+## 17. Evidence-Persistence Hardening Production Verification
+
+Implementation commit:
+
+```text
+71ac5ff fix: clean unpersisted evidence uploads on persistence failure
+```
+
+Deployment record:
+
+```text
+f3468bf..71ac5ff main -> main
+Dokploy status: Done
+```
+
+Post-deployment verification:
+
+- Active API container observed: `ebc89a5f8ae1`.
+- API health: PASS.
+- `UPLOAD_ROOT`: `/app/uploads`, PASS.
+- Persistent bind mount: host `/srv/securezone-data/fixzone/uploads`, container `/app/uploads`, type `bind`, PASS.
+- Upload file counts: container `28`, host `28`, PASS.
+- Upload storage size: container approximately `2.6M`, host approximately `2.6M`, PASS.
+- Evidence loss during redeployment: none observed.
+
+Hardening behavior now completed for current V1 failure path:
+
+- Request-created evidence files are tracked until EvidenceRecord persistence succeeds.
+- On handled EvidenceRecord persistence failure, only newly created unpersisted files are targeted for compensating cleanup.
+- Cleanup is path-checked under `UPLOAD_ROOT` and uses single-file deletion only.
+- Original database/business exceptions are preserved.
+- Cleanup failure is logged without replacing the original failure.
+- Already persisted files in multi-image workflows remain preserved.
+- Pre-existing evidence and historical files are not targeted.
+
+Residual limitation:
+
+- Filesystem writes and database writes are not fully atomic.
+- A crash or process kill after file write and before cleanup remains a documented residual risk.
+- Historical mismatch remains unresolved and unrepaired.
+
+Canonical UAT status:
+
+- Gwagwalada Jurisdiction Routing UAT 2 remains CLOSED and recoverable.
+- Citizen evidence recovery remains PASS.
+- Provider completion evidence recovery remains PASS.
+- It is not part of the historical mismatch set.
