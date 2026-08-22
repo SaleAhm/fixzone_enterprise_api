@@ -29,10 +29,7 @@ const ACTIVE_STATUSES: ReportStatus[] = [
   ReportStatus.COMPLETED_BY_PROVIDER,
 ];
 
-const RESOLVED_STATUSES: ReportStatus[] = [
-  ReportStatus.COMPLETED_BY_PROVIDER,
-  ReportStatus.CLOSED,
-];
+const RESOLVED_STATUSES: ReportStatus[] = [ReportStatus.CLOSED];
 
 @Injectable()
 export class AnalyticsService {
@@ -256,29 +253,30 @@ export class AnalyticsService {
     for (const report of reports) {
       const provider = report.assignedProvider;
       if (!provider) continue;
-      const row =
-        providers.get(provider.id) ??
-        {
-          providerPublicId: provider.providerId ?? 'PROVIDER',
-          providerName: provider.fullName,
-          organizationName: provider.organization?.name ?? null,
-          assigned: 0,
-          completed: 0,
-          ratingTotal: 0,
-          ratingCount: 0,
-          resolutionHoursTotal: 0,
-          resolutionHoursCount: 0,
-        };
+      const row = providers.get(provider.id) ?? {
+        providerPublicId: provider.providerId ?? 'PROVIDER',
+        providerName: provider.fullName,
+        organizationName: provider.organization?.name ?? null,
+        assigned: 0,
+        completed: 0,
+        ratingTotal: 0,
+        ratingCount: 0,
+        resolutionHoursTotal: 0,
+        resolutionHoursCount: 0,
+      };
 
       row.assigned += 1;
       if (RESOLVED_STATUSES.includes(report.status)) {
         row.completed += 1;
       }
-      if (report.citizenRating != null) {
+      if (
+        report.status === ReportStatus.CLOSED &&
+        report.citizenRating != null
+      ) {
         row.ratingTotal += report.citizenRating;
         row.ratingCount += 1;
       }
-      if (report.assignedAt) {
+      if (report.status === ReportStatus.CLOSED && report.assignedAt) {
         const completedAt = report.completedByProviderAt ?? report.updatedAt;
         row.resolutionHoursTotal +=
           (completedAt.getTime() - report.assignedAt.getTime()) /
@@ -299,11 +297,15 @@ export class AnalyticsService {
           completionRate:
             provider.assigned === 0
               ? null
-              : Number(((provider.completed / provider.assigned) * 100).toFixed(1)),
+              : Number(
+                  ((provider.completed / provider.assigned) * 100).toFixed(1),
+                ),
           averageRating:
             provider.ratingCount === 0
               ? null
-              : Number((provider.ratingTotal / provider.ratingCount).toFixed(2)),
+              : Number(
+                  (provider.ratingTotal / provider.ratingCount).toFixed(2),
+                ),
           averageResolutionHours:
             provider.resolutionHoursCount === 0
               ? null
@@ -427,7 +429,9 @@ export class AnalyticsService {
       query.organizationId?.trim() &&
       query.organizationId.trim() !== user.organizationId
     ) {
-      throw new ForbiddenException('Cannot access another organization analytics scope');
+      throw new ForbiddenException(
+        'Cannot access another organization analytics scope',
+      );
     }
     return user.organizationId;
   }
@@ -460,7 +464,11 @@ export class AnalyticsService {
     if (interval === AnalyticsInterval.Weekly) {
       const start = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
       const days = Math.floor(
-        (Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) -
+        (Date.UTC(
+          date.getUTCFullYear(),
+          date.getUTCMonth(),
+          date.getUTCDate(),
+        ) -
           start.getTime()) /
           86400000,
       );
@@ -479,11 +487,13 @@ export class AnalyticsService {
     };
   }
 
-  private regionLabel(row?: {
-    state?: string | null;
-    lga?: string | null;
-    country?: string | null;
-  } | null) {
+  private regionLabel(
+    row?: {
+      state?: string | null;
+      lga?: string | null;
+      country?: string | null;
+    } | null,
+  ) {
     const state = this.safeLabel(row?.state, '');
     const lga = this.safeLabel(row?.lga, '');
     const country = this.safeLabel(row?.country, '');

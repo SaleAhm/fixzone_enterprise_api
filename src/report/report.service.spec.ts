@@ -136,6 +136,7 @@ type ReportServicePublic = Pick<
   ReportService,
   | 'getAssignedReports'
   | 'getReportById'
+  | 'getProviderPerformance'
   | 'createReportMessage'
   | 'rejectAssignment'
 >;
@@ -1453,6 +1454,99 @@ describe('ReportService provider response metrics', () => {
       sampleCount: 0,
       reason: 'MISSING_ACCEPTANCE_TIMESTAMP',
     });
+  });
+});
+
+describe('ReportService provider performance metrics', () => {
+  it('counts and rates closed organization-scoped reports only', async () => {
+    const findMany = jest
+      .fn<Promise<unknown[]>, [unknown]>()
+      .mockResolvedValue([
+        {
+          id: 'provider-1',
+          fullName: 'Provider One',
+          email: 'provider@test.com',
+          assignedReports: [
+            {
+              id: 'closed-rated',
+              title: 'Closed rated',
+              status: ReportStatus.CLOSED,
+              citizenRating: 5,
+              citizenFeedback: 'Good',
+              updatedAt: new Date('2026-08-01T12:00:00.000Z'),
+              assignedAt: new Date('2026-08-01T10:00:00.000Z'),
+              activities: [
+                {
+                  actorUserId: 'provider-1',
+                  providerId: 'provider-1',
+                  createdAt: new Date('2026-08-01T10:30:00.000Z'),
+                },
+              ],
+            },
+            {
+              id: 'closed-unrated',
+              title: 'Closed unrated',
+              status: ReportStatus.CLOSED,
+              citizenRating: null,
+              citizenFeedback: null,
+              updatedAt: new Date('2026-08-02T12:00:00.000Z'),
+              assignedAt: new Date('2026-08-02T10:00:00.000Z'),
+              activities: [],
+            },
+            {
+              id: 'awaiting-governance-rated',
+              title: 'Awaiting governance rated',
+              status: ReportStatus.COMPLETED_BY_PROVIDER,
+              citizenRating: 1,
+              citizenFeedback: 'Not final yet',
+              updatedAt: new Date('2026-08-03T12:00:00.000Z'),
+              assignedAt: new Date('2026-08-03T10:00:00.000Z'),
+              activities: [],
+            },
+            {
+              id: 'rework-pending',
+              title: 'Rework pending',
+              status: ReportStatus.ASSIGNED,
+              citizenRating: 2,
+              citizenFeedback: 'Needs rework',
+              updatedAt: new Date('2026-08-04T12:00:00.000Z'),
+              assignedAt: new Date('2026-08-04T10:00:00.000Z'),
+              activities: [],
+            },
+          ],
+        },
+      ]);
+    const service = reportService({ user: { findMany } });
+
+    const result = (await service.getProviderPerformance({
+      role: UserRole.ORG_ADMIN,
+      organizationId: 'org-1',
+    })) as Array<{
+      completedJobs: number;
+      averageRating: number;
+      ratingCount: number;
+      averageResponseHours: number | null;
+      recentReviews: Array<{ reportId: string }>;
+    }>;
+
+    const findManyArgs = findMany.mock.calls[0]?.[0] as {
+      include: { assignedReports: { where: { organizationId: string } } };
+    };
+    expect(findManyArgs.include.assignedReports.where.organizationId).toBe(
+      'org-1',
+    );
+    expect(result).toEqual([
+      expect.objectContaining({
+        providerId: 'provider-1',
+        completedJobs: 2,
+        averageRating: 5,
+        ratingCount: 1,
+        averageResponseHours: 0.5,
+      }),
+    ]);
+    const providerPerformance = result[0];
+    expect(providerPerformance.recentReviews).toHaveLength(1);
+    expect(providerPerformance.recentReviews[0].reportId).toBe('closed-rated');
   });
 });
 

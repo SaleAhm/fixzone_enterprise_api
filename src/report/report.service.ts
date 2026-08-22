@@ -3624,11 +3624,9 @@ export class ReportService {
 
     return providers.map((p) => {
       const completed = p.assignedReports.filter(
-        (report) =>
-          report.status === ReportStatus.CLOSED ||
-          report.status === ReportStatus.COMPLETED_BY_PROVIDER,
+        (report) => report.status === ReportStatus.CLOSED,
       );
-      const rated = p.assignedReports.filter(
+      const rated = completed.filter(
         (report) => typeof report.citizenRating === 'number',
       );
       const ratingTotal = rated.reduce(

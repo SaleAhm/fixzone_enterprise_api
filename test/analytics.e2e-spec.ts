@@ -175,6 +175,23 @@ describe('Executive Analytics (e2e)', () => {
       }),
       prisma.report.create({
         data: {
+          title: 'Provider submitted but not governed complete',
+          description: 'Awaiting organization verification',
+          category: 'Road',
+          location: 'Private pending address',
+          status: ReportStatus.COMPLETED_BY_PROVIDER,
+          organizationId: orgA.id,
+          citizenId: citizenA.id,
+          assignedProviderId: providerA.id,
+          assignedAt: new Date('2026-07-03T12:00:00.000Z'),
+          completedByProviderAt: new Date('2026-07-03T14:00:00.000Z'),
+          citizenRating: 1,
+          createdAt: new Date('2026-07-03T11:00:00.000Z'),
+          updatedAt: new Date('2026-07-03T15:00:00.000Z'),
+        },
+      }),
+      prisma.report.create({
+        data: {
           title: 'Other tenant title must not leak',
           description: 'Other tenant description must not leak',
           category: 'Drainage',
@@ -226,6 +243,26 @@ describe('Executive Analytics (e2e)', () => {
     });
   }
 
+  type OverviewBody = {
+    scope?: { organizationId?: string | null };
+    totals: {
+      totalReports: number;
+      resolvedReports: number;
+      closedReports?: number;
+    };
+    quality: { reworkEvents: number };
+  };
+
+  type ProviderPerformanceBody = {
+    providers: Array<{
+      providerPublicId: string;
+      assigned: number;
+      completed: number;
+      completionRate: number | null;
+      averageRating: number | null;
+    }>;
+  };
+
   it('returns tenant-scoped executive analytics without private report fields', async () => {
     const { orgA, superToken } = await createAnalyticsFixture();
 
@@ -274,21 +311,36 @@ describe('Executive Analytics (e2e)', () => {
       expect(body).not.toContain('7.4938');
     }
 
-    expect(overview.body.totals.totalReports).toBe(2);
-    expect(overview.body.quality.reworkEvents).toBe(1);
-    expect(trends.body.points.length).toBeGreaterThan(0);
-    expect(categories.body.categories).toEqual(
+    const overviewBody = overview.body as OverviewBody;
+    const trendsBody = trends.body as { points: unknown[] };
+    const categoriesBody = categories.body as { categories: unknown[] };
+    const statusesBody = statuses.body as { statuses: unknown[] };
+    const providersBody = providers.body as ProviderPerformanceBody;
+    const geographyBody = geography.body as { reportsByRegion: unknown[] };
+
+    expect(overviewBody.totals.totalReports).toBe(3);
+    expect(overviewBody.totals.resolvedReports).toBe(1);
+    expect(overviewBody.totals.closedReports).toBe(1);
+    expect(overviewBody.quality.reworkEvents).toBe(1);
+    expect(trendsBody.points.length).toBeGreaterThan(0);
+    expect(categoriesBody.categories).toEqual(
       expect.arrayContaining([expect.objectContaining({ category: 'Road' })]),
     );
-    expect(statuses.body.statuses).toEqual(
+    expect(statusesBody.statuses).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ status: ReportStatus.CLOSED }),
       ]),
     );
-    expect(providers.body.providers[0]).toMatchObject({
-      providerPublicId: expect.stringMatching(/^PRV-ANALYTICS-A-/),
+    expect(providersBody.providers[0].providerPublicId).toMatch(
+      /^PRV-ANALYTICS-A-/,
+    );
+    expect(providersBody.providers[0]).toMatchObject({
+      assigned: 3,
+      completed: 1,
+      completionRate: 33.3,
+      averageRating: 5,
     });
-    expect(geography.body.reportsByRegion).toEqual(
+    expect(geographyBody.reportsByRegion).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ region: 'Abuja Municipal, FCT, Nigeria' }),
       ]),
@@ -306,8 +358,10 @@ describe('Executive Analytics (e2e)', () => {
       .set('Authorization', `Bearer ${orgToken}`);
 
     expect(allowed.status).toBe(200);
-    expect(allowed.body.scope.organizationId).toBe(orgA.id);
-    expect(allowed.body.totals.totalReports).toBe(2);
+    const allowedBody = allowed.body as OverviewBody;
+    expect(allowedBody.scope?.organizationId).toBe(orgA.id);
+    expect(allowedBody.totals.totalReports).toBe(3);
+    expect(allowedBody.totals.resolvedReports).toBe(1);
     expect(forbidden.status).toBe(403);
   });
 });
