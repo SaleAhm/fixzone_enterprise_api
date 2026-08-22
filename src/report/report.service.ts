@@ -5825,25 +5825,27 @@ export class ReportService {
       this.prismaDelegate<PrismaFindManyDelegate<OptionalEvidenceRecord>>(
         'evidenceRecord',
       );
-    const [timeline, notifications, evidenceRecords] = await Promise.all([
-      this.reportActivityTimeline(report.id),
-      notification
-        ? notification.findMany({
-            where: { reportId: report.id },
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-            take: 25,
-          })
-        : Promise.resolve([]),
-      evidenceRecord
-        ? evidenceRecord.findMany({
-            where: {
-              relatedEntityType: EvidenceRelatedEntityType.REPORT,
-              relatedEntityId: report.id,
-            },
-            orderBy: [{ uploadedAt: 'asc' }, { id: 'asc' }],
-          })
-        : Promise.resolve([]),
-    ]);
+    const [timeline, notifications, evidenceRecords, providerPerformance] =
+      await Promise.all([
+        this.reportActivityTimeline(report.id),
+        notification
+          ? notification.findMany({
+              where: { reportId: report.id },
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              take: 25,
+            })
+          : Promise.resolve([]),
+        evidenceRecord
+          ? evidenceRecord.findMany({
+              where: {
+                relatedEntityType: EvidenceRelatedEntityType.REPORT,
+                relatedEntityId: report.id,
+              },
+              orderBy: [{ uploadedAt: 'asc' }, { id: 'asc' }],
+            })
+          : Promise.resolve([]),
+        this.providerPerformanceForReportDetail(report),
+      ]);
 
     const protectedReport = this.withProtectedEvidenceUrls(report);
     const evidenceItems = this.reportEvidenceItems(
@@ -5896,6 +5898,7 @@ export class ReportService {
           incompleteReason: protectedReport.completionRejectionReason ?? null,
         },
         completionGovernance: this.completionGovernanceSummary(protectedReport),
+        providerPerformance,
         assignment: {
           assignedAt: protectedReport.assignedAt ?? null,
           deadlineAt: protectedReport.assignmentDeadlineAt ?? null,
@@ -5907,6 +5910,100 @@ export class ReportService {
         timeline,
         notifications,
       },
+    };
+  }
+
+  private async providerPerformanceForReportDetail(report: {
+    assignedProviderId?: string | null;
+    organizationId: string;
+  }) {
+    if (!report.assignedProviderId) return null;
+
+    const userDelegate = (
+      this.prisma as unknown as {
+        user?: {
+          findUnique(args: {
+            where: { id: string };
+            select: {
+              id: true;
+              fullName: true;
+              email: true;
+              providerId: true;
+            };
+          }): Promise<{
+            id: string;
+            fullName: string | null;
+            email: string | null;
+            providerId: string | null;
+          } | null>;
+        };
+      }
+    ).user;
+    if (!userDelegate) return null;
+
+    const provider = await userDelegate.findUnique({
+      where: { id: report.assignedProviderId },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        providerId: true,
+      },
+    });
+    if (!provider) return null;
+
+    const assignedReports = await this.prisma.report.findMany({
+      where: {
+        assignedProviderId: provider.id,
+        organizationId: report.organizationId,
+      },
+      include: {
+        activities: {
+          where: { action: 'PROVIDER_STARTED_WORK' },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            actorUserId: true,
+            providerId: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    const completed = assignedReports.filter(
+      (item) => item.status === ReportStatus.CLOSED,
+    );
+    const rated = completed.filter(
+      (item) => typeof item.citizenRating === 'number',
+    );
+    const ratingTotal = rated.reduce(
+      (sum, item) => sum + (item.citizenRating ?? 0),
+      0,
+    );
+    const responseMetric = this.calculateProviderAverageResponse(
+      assignedReports,
+      provider.id,
+    );
+
+    return {
+      providerId: provider.id,
+      publicProviderId: provider.providerId,
+      fullName: provider.fullName,
+      email: provider.email,
+      organizationId: report.organizationId,
+      assignedCount: assignedReports.length,
+      completedJobs: completed.length,
+      totalCompleted: completed.length,
+      averageRating:
+        rated.length === 0
+          ? 0
+          : Number((ratingTotal / rated.length).toFixed(2)),
+      ratingCount: rated.length,
+      averageResponseHours:
+        responseMetric.averageHours == null
+          ? null
+          : Number(responseMetric.averageHours.toFixed(2)),
+      averageResponseReason: responseMetric.reason,
+      averageResponseSampleCount: responseMetric.sampleCount,
     };
   }
 

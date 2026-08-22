@@ -1063,6 +1063,12 @@ describe('Report Workflow (e2e)', () => {
       role: UserRole.ORG_ADMIN,
       organizationId: unrelatedOrg.id,
     });
+    const unrelatedCitizen = await createUser({
+      email: 'wf-citizen-road-default-unrelated@test.com',
+      fullName: 'Workflow Road Default Unrelated Citizen',
+      role: UserRole.CITIZEN,
+      organizationId: unrelatedOrg.id,
+    });
     const report = await createReport({
       title: 'WF road default dual confirmation',
       status: ReportStatus.IN_PROGRESS,
@@ -1078,6 +1084,14 @@ describe('Report Workflow (e2e)', () => {
     const unrelatedAdminToken = await signToken(unrelatedAdmin);
     const completionNote =
       'Road surface repaired and area cleared for final review.';
+    await createReport({
+      title: 'WF road unrelated provider history',
+      status: ReportStatus.CLOSED,
+      organizationId: unrelatedOrg.id,
+      citizenId: unrelatedCitizen.id,
+      assignedProviderId: provider.id,
+      category: 'Road & Infrastructure',
+    });
 
     const uploadRes = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/completion-evidence`)
@@ -1140,6 +1154,25 @@ describe('Report Workflow (e2e)', () => {
     expect(json(duplicateCitizenConfirmRes).citizenFeedback).toBe(
       'Looks complete from my side.',
     );
+
+    const awaitingDetail = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(awaitingDetail.status).toBe(200);
+    const awaitingEnterprise = json(awaitingDetail).enterpriseDetails as {
+      citizenReview?: { rating?: number | null };
+      providerPerformance?: {
+        completedJobs?: number;
+        totalCompleted?: number;
+        averageRating?: number;
+        ratingCount?: number;
+      };
+    };
+    expect(awaitingEnterprise.citizenReview?.rating).toBe(5);
+    expect(awaitingEnterprise.providerPerformance?.completedJobs).toBe(0);
+    expect(awaitingEnterprise.providerPerformance?.totalCompleted).toBe(0);
+    expect(awaitingEnterprise.providerPerformance?.averageRating).toBe(0);
+    expect(awaitingEnterprise.providerPerformance?.ratingCount).toBe(0);
 
     const providerBeforeClosureNotifications = await request(
       app.getHttpServer(),
@@ -1218,6 +1251,20 @@ describe('Report Workflow (e2e)', () => {
         }
       ).assignment?.status,
     ).toBe('Closed');
+    const closedEnterprise = json(closedDetail).enterpriseDetails as {
+      citizenReview?: { rating?: number | null };
+      providerPerformance?: {
+        completedJobs?: number;
+        totalCompleted?: number;
+        averageRating?: number;
+        ratingCount?: number;
+      };
+    };
+    expect(closedEnterprise.citizenReview?.rating).toBe(5);
+    expect(closedEnterprise.providerPerformance?.completedJobs).toBe(1);
+    expect(closedEnterprise.providerPerformance?.totalCompleted).toBe(1);
+    expect(closedEnterprise.providerPerformance?.averageRating).toBe(5);
+    expect(closedEnterprise.providerPerformance?.ratingCount).toBe(1);
 
     const closedCitizenRework = await request(app.getHttpServer())
       .post(`/api/report/citizen/${report.id}/reject-completion`)
@@ -1397,6 +1444,18 @@ describe('Report Workflow (e2e)', () => {
       .send({ reason: 'Trying to close disputed report.' });
     expect(blockedByDispute.status).toBe(409);
 
+    const disputedDetail = await request(app.getHttpServer())
+      .get(`/api/report/${report.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(disputedDetail.status).toBe(200);
+    expect(
+      (
+        json(disputedDetail).enterpriseDetails as {
+          providerPerformance?: { completedJobs?: number };
+        }
+      ).providerPerformance?.completedJobs,
+    ).toBe(0);
+
     const adminOverrideWithoutReason = await request(app.getHttpServer())
       .post(`/api/report/${report.id}/admin-completion/resolve-close`)
       .set('Authorization', `Bearer ${superAdminToken}`)
@@ -1480,6 +1539,18 @@ describe('Report Workflow (e2e)', () => {
     expect(json(citizenConfirmSecondAttempt).citizenCompletionDecision).toBe(
       CompletionDecision.CONFIRMED,
     );
+
+    const reworkPendingDetail = await request(app.getHttpServer())
+      .get(`/api/report/${citizenReworkReport.id}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(reworkPendingDetail.status).toBe(200);
+    expect(
+      (
+        json(reworkPendingDetail).enterpriseDetails as {
+          providerPerformance?: { completedJobs?: number };
+        }
+      ).providerPerformance?.completedJobs,
+    ).toBe(0);
   });
 
   it('enforces multi-image evidence limits for citizen and provider uploads', async () => {
