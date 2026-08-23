@@ -81,6 +81,113 @@ exec "$FIXZONE_REAL_SHA256SUM" "$@"
 SH
 chmod +x "$FAKE_BIN/sha256sum"
 
+cat >"$FAKE_BIN/docker" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FIXZONE_TEST_DOCKER_LOG:-/dev/null}"
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  ps)
+    requested=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --filter)
+          case "${2:-}" in
+            label=com.docker.swarm.service.name=*)
+              requested="${2#label=com.docker.swarm.service.name=}"
+              ;;
+          esac
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    if [ "${FIXZONE_TEST_DOCKER_PS_FAIL:-false}" = "true" ]; then
+      exit 1
+    fi
+    if [ "${FIXZONE_TEST_SWARM_ZERO:-false}" = "true" ] || [ "$requested" != "${FIXZONE_TEST_SWARM_SERVICE:-fixture-postgres}" ]; then
+      exit 0
+    fi
+    if [ "${FIXZONE_TEST_SWARM_MULTI:-false}" = "true" ]; then
+      printf 'fixture-container-1\nfixture-container-2\n'
+    else
+      printf 'fixture-container-1\n'
+    fi
+    ;;
+  inspect)
+    label="${FIXZONE_TEST_SWARM_SERVICE:-fixture-postgres}"
+    if [ "${FIXZONE_TEST_SWARM_LABEL_MISMATCH:-false}" = "true" ]; then
+      label="different-service"
+    fi
+    printf '%s\n' "$label"
+    ;;
+  exec)
+    interactive=false
+    if [ "${1:-}" = "-i" ]; then
+      interactive=true
+      shift
+    fi
+    container="${1:-}"
+    shift || true
+    [ "$container" = "fixture-container-1" ] || exit 1
+    tool="${1:-}"
+    shift || true
+    case "$tool" in
+      /usr/bin/pg_dump)
+        if [ "${1:-}" = "--version" ]; then
+          if [ "${FIXZONE_TEST_POSTGRES_VERSION:-17}" = "16" ]; then
+            printf 'pg_dump (PostgreSQL) 16.9\n'
+          else
+            printf 'pg_dump (PostgreSQL) 17.2\n'
+          fi
+          exit 0
+        fi
+        if [ "${FIXZONE_TEST_PG_DUMP_FAIL:-false}" = "true" ]; then
+          exit 1
+        fi
+        if [ "${FIXZONE_TEST_ZERO_DUMP:-false}" = "true" ]; then
+          exit 0
+        fi
+        printf 'PGDMP fixture docker streamed custom dump\n'
+        ;;
+      /usr/bin/pg_restore)
+        if [ "${1:-}" = "--version" ]; then
+          printf 'pg_restore (PostgreSQL) 17.2\n'
+          exit 0
+        fi
+        if [ "$interactive" != "true" ]; then
+          exit 1
+        fi
+        if [ "${FIXZONE_TEST_TOC_FAIL:-false}" = "true" ]; then
+          exit 1
+        fi
+        if [ "${FIXZONE_TEST_TOC_EMPTY:-false}" = "true" ]; then
+          exit 0
+        fi
+        cat >/dev/null
+        cat <<OUT
+;
+; Archive created at fixture
+;
+1234; 1259 100 TABLE public users fixture
+1235; 0 100 TABLE DATA public users fixture
+OUT
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$FAKE_BIN/docker"
+
 assert_contains() {
   local file="$1"
   local text="$2"
@@ -137,6 +244,8 @@ run_backup() {
     FIXZONE_APP_VERSION="fixture-app" \
     FIXZONE_BACKEND_COMMIT="fixture-backend" \
     FIXZONE_FRONTEND_COMMIT="fixture-frontend" \
+    FIXZONE_TEST_DOCKER_LOG="${FIXZONE_TEST_DOCKER_LOG:-$TEST_ROOT/docker.log}" \
+    FIXZONE_TEST_SWARM_SERVICE="${FIXZONE_TEST_SWARM_SERVICE:-fixture-postgres}" \
     FIXZONE_BACKUP_TIMESTAMP="${FIXZONE_BACKUP_TIMESTAMP:-2026-08-23_12-00-00}" \
     "$@" "$SCRIPT" >"$output" 2>&1
   status=$?
@@ -308,6 +417,70 @@ fi
 
 if grep -E 'uploadFileCount[" ]*[:=][" ]*28|row_count|expected_rows' "$SCRIPT"; then
   printf 'Recovery backup script appears to hard-code production counts or row counts\n' >&2
+  exit 1
+fi
+
+expect_exit 0 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_DATABASE=fixturedb FIXZONE_POSTGRES_EXPECTED_MAJOR=17
+SET_DIR="$(final_dir)"
+assert_contains "$SET_DIR/fixzone-postgres.dump" "docker streamed"
+assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresMode" "docker-swarm"
+assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresService" "fixture-postgres"
+assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresDatabase" "fixturedb"
+assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.pgDumpVersion.includes('17.2')" "true"
+assert_not_contains "$SET_DIR/recovery-manifest.txt" "fixture-container-1"
+assert_contains "$TEST_ROOT/docker.log" "ps --filter label=com.docker.swarm.service.name=fixture-postgres"
+assert_contains "$TEST_ROOT/docker.log" "exec fixture-container-1 /usr/bin/pg_dump --format=custom --dbname fixturedb"
+assert_contains "$TEST_ROOT/docker.log" "exec -i fixture-container-1 /usr/bin/pg_restore --list"
+
+expect_exit 0 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres
+assert_not_contains "$TEST_ROOT/docker.log" "generic-postgres"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_SWARM_ZERO=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "no running PostgreSQL task"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_SWARM_MULTI=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "multiple running PostgreSQL tasks"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_SWARM_LABEL_MISMATCH=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "service-name label mismatch"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=wrong-service
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "no running PostgreSQL task"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_DOCKER_BIN=missing-docker
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "docker is unavailable"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_PG_DUMP_FAIL=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "pg_dump failed"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_ZERO_DUMP=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "zero bytes"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_TOC_FAIL=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "TOC"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_POSTGRES_VERSION=16 FIXZONE_POSTGRES_EXPECTED_MAJOR=17
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "major version mismatch"
+
+prepare_fixture
+if run_backup "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres POSTGRES_PASSWORD=fixture_pg_password PGPASSWORD=fixture_pgpassword DATABASE_URL=fixture_database_url; then actual=0; else actual=$?; fi
+[ "$actual" -eq 0 ]
+if grep -R -E 'fixture_pg_password|fixture_pgpassword|fixture_database_url' "$(final_dir)" "$out" "$TEST_ROOT/docker.log" 2>/dev/null; then
+  printf 'Credential fixture values appeared in docker-swarm artifacts, output, or command log\n' >&2
+  exit 1
+fi
+
+if grep -Fq 'securezoneinfrastructure-postgres-bhwgzt' "$SCRIPT" "$REPO_ROOT/ops/systemd/recovery-backup.env.example"; then
+  printf 'Production PostgreSQL service name must not be a universal script/template default\n' >&2
   exit 1
 fi
 

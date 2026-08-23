@@ -429,6 +429,22 @@ The future systemd service/timer design is not installed or scheduled by this do
 
 Local implementation status: `scripts/operations/fixzone_recovery_backup.sh` implements the recovery-set producer for repository review only. It creates a new `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` UTC recovery set, writes `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`, verifies checksums before publication, uses an explicit lock, performs a capacity preflight, excludes operational-health canary residue from the archive, and never overwrites existing sets. No production backup, systemd unit, timer, restore, deployment, or retention deletion is activated by this local implementation.
 
+PostgreSQL execution portability:
+
+- Host-tool mode remains available through `FIXZONE_POSTGRES_MODE=host`, `FIXZONE_PG_DUMP_BIN`, and `FIXZONE_PG_RESTORE_BIN`.
+- Docker Swarm mode is explicitly configured with `FIXZONE_POSTGRES_MODE=docker-swarm` and `FIXZONE_POSTGRES_SERVICE`; it resolves exactly one running task by `com.docker.swarm.service.name`.
+- Docker Swarm mode streams `pg_dump` stdout from the resolved task to the host recovery-set dump file and validates TOC by streaming the host dump to container-local `pg_restore --list`.
+- The script fails safely if Docker is unavailable, no matching service task is running, multiple matching tasks are running, or the resolved task label does not match the configured service.
+- The repository template `ops/systemd/recovery-backup.env.example` records non-secret backup runtime knobs without real credentials or production task IDs.
+
+First backup preflight discovery:
+
+- Read-only production discovery identified the FixZone database service host as `securezoneinfrastructure-postgres-bhwgzt`, port `5432`, database `postgres`; credentials are redacted and must not be committed.
+- The stable service identity is `securezoneinfrastructure-postgres-bhwgzt`; transient container IDs/task names must not be hard-coded.
+- Host-level `pg_dump` / `pg_restore` are unavailable on the VPS, while the FixZone PostgreSQL task has `/usr/bin/pg_dump` and `/usr/bin/pg_restore` from `postgres:17`.
+- Multiple unrelated PostgreSQL services are present, so generic PostgreSQL container discovery is unsafe.
+- The first production backup is not yet executed; portability hardening must be reviewed first.
+
 Retention deletion remains unapproved. A future dry-run-only retention selector may propose preserving `7` daily, `4` weekly, and `3` monthly recovery points while always preserving the newest valid set and latest verified set, but no deletion logic is implemented here.
 
 ## 9. Host-Local State / Heartbeat Design

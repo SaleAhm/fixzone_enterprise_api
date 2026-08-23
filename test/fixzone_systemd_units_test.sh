@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SERVICE="$REPO_ROOT/ops/systemd/fixzone-host-monitor.service"
 TIMER="$REPO_ROOT/ops/systemd/fixzone-host-monitor.timer"
 ENV_EXAMPLE="$REPO_ROOT/ops/systemd/host-monitor.env.example"
+RECOVERY_ENV_EXAMPLE="$REPO_ROOT/ops/systemd/recovery-backup.env.example"
 POLICY_DOC="$REPO_ROOT/docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md"
 RUNBOOK_DOC="$REPO_ROOT/docs/stabilization/phase8/FixZone_Production_Operations_Runbook.md"
 
@@ -44,6 +45,7 @@ assert_before() {
 test -f "$SERVICE"
 test -f "$TIMER"
 test -f "$ENV_EXAMPLE"
+test -f "$RECOVERY_ENV_EXAMPLE"
 test -f "$POLICY_DOC"
 test -f "$RUNBOOK_DOC"
 
@@ -68,6 +70,12 @@ assert_contains "$TIMER" "Persistent=true"
 assert_contains "$TIMER" "Unit=fixzone-host-monitor.service"
 assert_contains "$ENV_EXAMPLE" "FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30"
 assert_contains "$ENV_EXAMPLE" "FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48"
+assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_POSTGRES_MODE=docker-swarm"
+assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_POSTGRES_SERVICE=<configured-fixzone-postgres-swarm-service>"
+assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_POSTGRES_DATABASE=<configured-database-name>"
+assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_POSTGRES_EXPECTED_MAJOR=17"
+assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_BACKUP_ROOT=/srv/securezone-backups/manual"
+assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_UPLOAD_ROOT=/srv/securezone-data/fixzone/uploads"
 
 assert_not_contains_regex "$SERVICE" '^Restart=always$'
 assert_not_contains_regex "$SERVICE" '^Documentation=docs/'
@@ -79,9 +87,12 @@ assert_not_contains_regex "$SERVICE" 'pg_restore|pg_dump|DROP DATABASE|DELETE FR
 assert_not_contains_regex "$SERVICE" 'DATABASE_URL|PASSWORD|TOKEN|SECRET|PRIVATE_KEY|SMTP|WEBHOOK|AUTHORIZATION|COOKIE'
 assert_not_contains_regex "$TIMER" 'DATABASE_URL|PASSWORD|TOKEN|SECRET|PRIVATE_KEY|SMTP|WEBHOOK|AUTHORIZATION|COOKIE'
 assert_not_contains_regex "$ENV_EXAMPLE" 'DATABASE_URL|PASSWORD|TOKEN|SECRET|PRIVATE_KEY|SMTP|WEBHOOK|AUTHORIZATION|COOKIE'
+assert_not_contains_regex "$RECOVERY_ENV_EXAMPLE" 'DATABASE_URL|PASSWORD|TOKEN|SECRET|PRIVATE_KEY|SMTP|WEBHOOK|AUTHORIZATION|COOKIE'
+assert_not_contains_regex "$RECOVERY_ENV_EXAMPLE" 'securezoneinfrastructure-postgres-bhwgzt|8351dc1921b0|rq4qc9hgyfwolf6pw870klcax'
 assert_not_contains_regex "$SERVICE" 'systemctl[[:space:]]+(enable|start)|systemctl[[:space:]]+enable|systemctl[[:space:]]+start'
 assert_not_contains_regex "$TIMER" 'systemctl[[:space:]]+(enable|start)|systemctl[[:space:]]+enable|systemctl[[:space:]]+start'
 assert_not_contains_regex "$ENV_EXAMPLE" 'pg_restore|pg_dump|DROP DATABASE|DELETE FROM|TRUNCATE|docker[[:space:]]+(stop|restart|rm|service[[:space:]]+update)|systemctl[[:space:]]+(enable|start|restart)|rm[[:space:]]+-rf|tar[[:space:]]+-x'
+assert_not_contains_regex "$RECOVERY_ENV_EXAMPLE" 'pg_restore|pg_dump|DROP DATABASE|DELETE FROM|TRUNCATE|docker[[:space:]]+(stop|restart|rm|service[[:space:]]+update)|systemctl[[:space:]]+(enable|start|restart)|rm[[:space:]]+-rf|tar[[:space:]]+-x'
 
 assert_contains "$POLICY_DOC" "VPS systemd validation attempt: BLOCKED SAFELY BEFORE INSTALLATION."
 assert_contains "$POLICY_DOC" "- Removed invalid repository-relative \`Documentation=docs/...\` directives from the production unit files."

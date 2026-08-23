@@ -9,6 +9,11 @@ BACKEND_COMMIT="${FIXZONE_BACKEND_COMMIT:-unknown}"
 FRONTEND_COMMIT="${FIXZONE_FRONTEND_COMMIT:-unknown}"
 PG_DUMP_BIN="${FIXZONE_PG_DUMP_BIN:-pg_dump}"
 PG_RESTORE_BIN="${FIXZONE_PG_RESTORE_BIN:-pg_restore}"
+POSTGRES_MODE="${FIXZONE_POSTGRES_MODE:-host}"
+POSTGRES_SERVICE="${FIXZONE_POSTGRES_SERVICE:-}"
+POSTGRES_DATABASE="${FIXZONE_POSTGRES_DATABASE:-}"
+POSTGRES_EXPECTED_MAJOR="${FIXZONE_POSTGRES_EXPECTED_MAJOR:-}"
+DOCKER_BIN="${FIXZONE_DOCKER_BIN:-docker}"
 TAR_BIN="${FIXZONE_TAR_BIN:-tar}"
 SHA256SUM_BIN="${FIXZONE_SHA256SUM_BIN:-sha256sum}"
 DF_BIN="${FIXZONE_DF_BIN:-df}"
@@ -27,6 +32,9 @@ FAILED_DIR=""
 LOCK_ACQUIRED=false
 LOCK_MODE=""
 LOCK_DIR=""
+POSTGRES_CONTAINER=""
+PG_DUMP_VERSION="unknown"
+PG_RESTORE_VERSION="unknown"
 
 timestamp() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -268,6 +276,120 @@ acquire_lock() {
   exit 75
 }
 
+require_supported_postgres_mode() {
+  case "$POSTGRES_MODE" in
+    host|docker-swarm) ;;
+    *)
+      die "unsupported FIXZONE_POSTGRES_MODE: $POSTGRES_MODE"
+      ;;
+  esac
+}
+
+read_command_version() {
+  local mode="$1"
+  local container="$2"
+  local tool="$3"
+  local version
+
+  if [ "$mode" = "docker-swarm" ]; then
+    version="$("$DOCKER_BIN" exec "$container" "/usr/bin/$tool" --version 2>/dev/null || true)"
+  else
+    version="$("$tool" --version 2>/dev/null || true)"
+  fi
+  printf '%s' "${version:-unknown}"
+}
+
+postgres_major_from_version() {
+  printf '%s\n' "$1" | sed -n 's/.*PostgreSQL) \([0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+validate_postgres_version_if_configured() {
+  local version="$1"
+  local major
+  if [ -z "$POSTGRES_EXPECTED_MAJOR" ]; then
+    return
+  fi
+  if ! is_number "$POSTGRES_EXPECTED_MAJOR"; then
+    die "FIXZONE_POSTGRES_EXPECTED_MAJOR must be numeric"
+  fi
+  major="$(postgres_major_from_version "$version")"
+  if [ "$major" != "$POSTGRES_EXPECTED_MAJOR" ]; then
+    die "PostgreSQL tool major version mismatch"
+  fi
+}
+
+resolve_swarm_postgres_container() {
+  if [ -z "$POSTGRES_SERVICE" ]; then
+    die "FIXZONE_POSTGRES_SERVICE is required for docker-swarm mode"
+  fi
+  if ! command_exists "$DOCKER_BIN"; then
+    die "docker is unavailable for docker-swarm PostgreSQL mode"
+  fi
+
+  local matches count container label
+  matches="$("$DOCKER_BIN" ps \
+    --filter "label=com.docker.swarm.service.name=$POSTGRES_SERVICE" \
+    --filter "status=running" \
+    --format '{{.ID}}' 2>/dev/null || true)"
+  count="$(printf '%s\n' "$matches" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+  if [ "$count" -eq 0 ]; then
+    die "no running PostgreSQL task found for configured Swarm service"
+  fi
+  if [ "$count" -gt 1 ]; then
+    die "multiple running PostgreSQL tasks found for configured Swarm service"
+  fi
+
+  container="$(printf '%s\n' "$matches" | sed '/^[[:space:]]*$/d' | head -n 1)"
+  label="$("$DOCKER_BIN" inspect --format '{{ index .Config.Labels "com.docker.swarm.service.name" }}' "$container" 2>/dev/null || true)"
+  if [ "$label" != "$POSTGRES_SERVICE" ]; then
+    die "resolved PostgreSQL task service-name label mismatch"
+  fi
+
+  POSTGRES_CONTAINER="$container"
+}
+
+prepare_postgres_execution() {
+  require_supported_postgres_mode
+  if [ "$POSTGRES_MODE" = "docker-swarm" ]; then
+    resolve_swarm_postgres_container
+    PG_DUMP_VERSION="$(read_command_version "$POSTGRES_MODE" "$POSTGRES_CONTAINER" "pg_dump")"
+    PG_RESTORE_VERSION="$(read_command_version "$POSTGRES_MODE" "$POSTGRES_CONTAINER" "pg_restore")"
+  else
+    PG_DUMP_VERSION="$(read_command_version "$POSTGRES_MODE" "" "$PG_DUMP_BIN")"
+    PG_RESTORE_VERSION="$(read_command_version "$POSTGRES_MODE" "" "$PG_RESTORE_BIN")"
+  fi
+  validate_postgres_version_if_configured "$PG_DUMP_VERSION"
+}
+
+run_pg_dump_to_host_file() {
+  local dump_path="$1"
+  if [ "$POSTGRES_MODE" = "docker-swarm" ]; then
+    if [ -n "$POSTGRES_DATABASE" ]; then
+      "$DOCKER_BIN" exec "$POSTGRES_CONTAINER" /usr/bin/pg_dump --format=custom --dbname "$POSTGRES_DATABASE" >"$dump_path"
+    else
+      "$DOCKER_BIN" exec "$POSTGRES_CONTAINER" /usr/bin/pg_dump --format=custom >"$dump_path"
+    fi
+    return
+  fi
+
+  if [ -n "$POSTGRES_DATABASE" ]; then
+    "$PG_DUMP_BIN" --format=custom --file "$dump_path" --dbname "$POSTGRES_DATABASE"
+  else
+    "$PG_DUMP_BIN" --format=custom --file "$dump_path"
+  fi
+}
+
+run_pg_restore_list_to_host_file() {
+  local dump_path="$1"
+  local toc_path="$2"
+  if [ "$POSTGRES_MODE" = "docker-swarm" ]; then
+    "$DOCKER_BIN" exec -i "$POSTGRES_CONTAINER" /usr/bin/pg_restore --list <"$dump_path" >"$toc_path"
+    return
+  fi
+
+  "$PG_RESTORE_BIN" --list "$dump_path" >"$toc_path"
+}
+
 write_manifest() {
   local target="$1"
   local completed_at="$2"
@@ -288,6 +410,11 @@ write_manifest() {
     printf '  "appVersion": %s,\n' "$(json_string "$APP_VERSION")"
     printf '  "backendCommit": %s,\n' "$(json_string "$BACKEND_COMMIT")"
     printf '  "frontendCommit": %s,\n' "$(json_string "$FRONTEND_COMMIT")"
+    printf '  "postgresMode": %s,\n' "$(json_string "$POSTGRES_MODE")"
+    printf '  "postgresService": %s,\n' "$(json_string "$POSTGRES_SERVICE")"
+    printf '  "postgresDatabase": %s,\n' "$(json_string "$POSTGRES_DATABASE")"
+    printf '  "pgDumpVersion": %s,\n' "$(json_string "$PG_DUMP_VERSION")"
+    printf '  "pgRestoreVersion": %s,\n' "$(json_string "$PG_RESTORE_VERSION")"
     printf '  "uploadSource": %s,\n' "$(json_string "$UPLOAD_ROOT")"
     printf '  "containerUploadDestination": "/app/uploads",\n'
     printf '  "uploadFileCount": %s,\n' "$upload_count"
@@ -366,12 +493,14 @@ main() {
   checksums_path="$IN_PROGRESS_DIR/checksums.sha256"
   verification_path="$IN_PROGRESS_DIR/verification-status.json"
 
-  "$PG_DUMP_BIN" --format=custom --file "$dump_path" || die "pg_dump failed"
+  prepare_postgres_execution
+
+  run_pg_dump_to_host_file "$dump_path" || die "pg_dump failed"
   if [ ! -s "$dump_path" ]; then
     die "PostgreSQL dump is missing or zero bytes"
   fi
 
-  "$PG_RESTORE_BIN" --list "$dump_path" >"$toc_path" || die "pg_restore TOC listing failed"
+  run_pg_restore_list_to_host_file "$dump_path" "$toc_path" || die "pg_restore TOC listing failed"
   if [ ! -s "$toc_path" ]; then
     die "database TOC listing is missing or zero bytes"
   fi

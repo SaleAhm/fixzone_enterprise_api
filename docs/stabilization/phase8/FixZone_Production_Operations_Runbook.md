@@ -218,9 +218,20 @@ Daily coordinated recovery backup local implementation:
 - Review-only script: `scripts/operations/fixzone_recovery_backup.sh`.
 - The script creates a new UTC `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` recovery set only after PostgreSQL custom-format dump creation, database TOC validation, uploads archive creation, manifest writing, checksum generation, and immediate checksum verification pass.
 - Published artifacts are `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`.
+- PostgreSQL execution modes are explicit: `FIXZONE_POSTGRES_MODE=host` for host tooling and `FIXZONE_POSTGRES_MODE=docker-swarm` for Docker Swarm service-task tooling.
+- Docker Swarm mode requires non-secret `FIXZONE_POSTGRES_SERVICE` and optional `FIXZONE_POSTGRES_DATABASE` / `FIXZONE_POSTGRES_EXPECTED_MAJOR`; it must not auto-select a generic PostgreSQL container.
 - The script uses explicit serialization, capacity preflight, strict path checks, non-overwrite recovery-set creation, and script-owned failed evidence for partial runs.
 - It excludes `.fixzone-operational-health-canary-*` files from uploads archive/listing, records residue state, and does not modify production uploads.
 - It does not install or enable systemd units, run a production backup, restore data, prune retention, push, deploy, or alter application behavior.
+
+First backup preflight discovery:
+
+- Status: PASS for read-only discovery only; the first production backup has not been executed.
+- Sanitized FixZone database mapping: service host `securezoneinfrastructure-postgres-bhwgzt`, port `5432`, database `postgres`; username and password remain redacted.
+- Stable PostgreSQL identity is the Docker Swarm service name `securezoneinfrastructure-postgres-bhwgzt`; observed container/task identifiers are transient and must not be configured or persisted.
+- The VPS host lacks `pg_dump` and `pg_restore`; the exact FixZone PostgreSQL service task provides `/usr/bin/pg_dump` and `/usr/bin/pg_restore`.
+- The FixZone PostgreSQL service uses `postgres:17`; unrelated PostgreSQL services and restore-check containers are present on the VPS, so generic first-container discovery is unsafe.
+- Portability correction is required before the first supervised production backup.
 
 Future monitor integration should read `verification-status.json` from the newest valid recovery set and treat only a real verified `SUCCESS` as healthy checksum evidence. The 15-minute host monitor should not re-hash large recovery artifacts every cycle unless a separate performance and operational review approves that design.
 

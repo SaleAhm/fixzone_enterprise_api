@@ -109,9 +109,19 @@ Daily coordinated recovery backup local implementation update:
 - Review-only script added at `scripts/operations/fixzone_recovery_backup.sh`.
 - It creates a new `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` UTC recovery set using an in-progress directory and publishes only after validation and checksum verification pass.
 - Required artifacts are `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`.
-- It avoids transient container IDs, avoids printing secret values, uses local PostgreSQL tooling supplied by host configuration, and keeps DB credential handling outside artifacts and logs.
+- It supports explicit `host` and `docker-swarm` PostgreSQL execution modes. Docker Swarm mode requires a configured stable service name and refuses zero, ambiguous, or mismatched running service tasks.
+- It avoids transient container IDs, avoids printing secret values, uses PostgreSQL tooling supplied by the selected execution mode, and keeps DB credential handling outside artifacts and logs.
 - It excludes operational-health canary residue from the uploads archive/listing, records residue state, preserves existing recovery sets, and refuses unsafe paths or overwrites.
 - No production backup, systemd backup timer, restore, retention deletion, deployment, push, frontend change, Prisma change, or protected release-script change is authorized by this local implementation.
+
+PostgreSQL container portability preflight update:
+
+- Read-only production discovery is PASS; the first production backup remains NOT EXECUTED.
+- Sanitized FixZone database mapping is host/service `securezoneinfrastructure-postgres-bhwgzt`, port `5432`, database `postgres`, with credentials redacted.
+- The stable identity is the Docker Swarm service `securezoneinfrastructure-postgres-bhwgzt`; observed container ID and task name are transient and must not be hard-coded.
+- The host does not provide `pg_dump` or `pg_restore`, while the FixZone PostgreSQL task provides `/usr/bin/pg_dump` and `/usr/bin/pg_restore`.
+- The FixZone PostgreSQL service uses `postgres:17`; multiple unrelated PostgreSQL services exist, so generic PostgreSQL container discovery is unsafe.
+- Repository portability hardening is required before first supervised backup execution.
 
 ## 2. Current Backup Inventory
 
