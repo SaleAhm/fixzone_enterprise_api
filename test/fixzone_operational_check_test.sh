@@ -62,6 +62,17 @@ SH
 chmod +x "$FAKE_BIN/df"
 cp "$FAKE_BIN/df" "$FAKE_BIN/df.exe"
 
+cat >"$FAKE_BIN/sha256sum" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-c" ] && [ "${FIXZONE_TEST_SHA256SUM_C_FORBIDDEN:-false}" = "true" ]; then
+  printf 'sha256sum -c should not run in monitor durable verification mode\n' >&2
+  exit 99
+fi
+exec "${FIXZONE_REAL_SHA256SUM:-/usr/bin/sha256sum}" "$@"
+SH
+chmod +x "$FAKE_BIN/sha256sum"
+cp "$FAKE_BIN/sha256sum" "$FAKE_BIN/sha256sum.exe"
+
 create_files() {
   local root="$1"
   local count="$2"
@@ -82,6 +93,37 @@ create_backup() {
   printf 'uploads\n' >"$set_dir/fixzone-uploads.tar.gz"
   printf 'manifest\nRecovery rehearsal: PASS\n' >"$set_dir/recovery-manifest.txt"
   (cd "$set_dir" && sha256sum fixzone-postgres.dump fixzone-uploads.tar.gz recovery-manifest.txt >checksums.sha256)
+}
+
+create_recovery_set() {
+  local root="$1"
+  local id="$2"
+  local verification_state="${3:-SUCCESS}"
+  local verification_id="${4:-$id}"
+  local age_hours="${5:-}"
+  local set_dir="$root/$id"
+  mkdir -p "$set_dir"
+  printf 'db\n' >"$set_dir/fixzone-postgres.dump"
+  printf 'uploads\n' >"$set_dir/fixzone-uploads.tar.gz"
+  printf '{"schemaVersion":1,"recoverySetId":"%s","state":"SUCCESS"}\n' "$id" >"$set_dir/recovery-manifest.txt"
+  printf '1234; 1259 100 TABLE public users fixture\n' >"$set_dir/database-toc.txt"
+  printf 'file-1.txt\nfile-2.txt\nfile-3.txt\n' >"$set_dir/uploads-list.txt"
+  (cd "$set_dir" && sha256sum fixzone-postgres.dump fixzone-uploads.tar.gz database-toc.txt uploads-list.txt recovery-manifest.txt >checksums.sha256)
+  cat >"$set_dir/verification-status.json" <<JSON
+{
+  "schemaVersion": 1,
+  "recoverySetId": "$verification_id",
+  "verifiedAt": "2026-08-23T13:40:00Z",
+  "state": "$verification_state",
+  "checksumAlgorithm": "sha256",
+  "artifacts": [
+    {"name": "fixzone-postgres.dump", "state": "$verification_state"}
+  ]
+}
+JSON
+  if [ -n "$age_hours" ]; then
+    touch -d "$age_hours hours ago" "$set_dir" "$set_dir"/* 2>/dev/null || true
+  fi
 }
 
 prepare_fixture() {
@@ -108,6 +150,7 @@ run_check() {
     FIXZONE_TEST_SERVICE_RUNNING="${FIXZONE_TEST_SERVICE_RUNNING:-true}" \
     FIXZONE_TEST_MOUNT_PRESENT="${FIXZONE_TEST_MOUNT_PRESENT:-true}" \
     FIXZONE_TEST_DF_USED_PERCENT="${FIXZONE_TEST_DF_USED_PERCENT:-50}" \
+    FIXZONE_REAL_SHA256SUM="${FIXZONE_REAL_SHA256SUM:-$(command -v sha256sum)}" \
     FIXZONE_MONITOR_STATE_DIR="${FIXZONE_MONITOR_STATE_DIR:-$TMP_ROOT/state}" \
     FIXZONE_MONITOR_VERSION="${FIXZONE_MONITOR_VERSION:-test-version}" \
     FIXZONE_MONITOR_ENVIRONMENT="${FIXZONE_MONITOR_ENVIRONMENT:-test}" \
@@ -274,9 +317,86 @@ assert_contains "$out" "backup_freshness_state=WARNING"
 expect_exit 2 "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=0 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=0
 assert_contains "$out" "backup_freshness_state=CRITICAL"
 
-expect_exit 0 "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_VERIFY_BACKUP_CHECKSUMS=true
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true FIXZONE_VERIFY_BACKUP_CHECKSUMS=true FIXZONE_TEST_SHA256SUM_C_FORBIDDEN=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 0 ]
 assert_contains "$out" "overall_state=HEALTHY"
 assert_contains "$out" "backup_verification_state=HEALTHY"
+assert_contains "$out" "backup_recovery_set_id=fixzone-v1-backup-2026-08-23_13-35-46"
+assert_contains "$out" "backup_verification_status_state=SUCCESS"
+assert_contains "$out" "backup_verification_runtime_rehash=disabled"
+assert_json_eq "$TMP_ROOT/state/latest-status.json" "data.checks.backupVerification.state" "HEALTHY"
+assert_json_eq "$TMP_ROOT/state/latest-status.json" "data.details.backup_recovery_set_id" "fixzone-v1-backup-2026-08-23_13-35-46"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS"
+rm "$BACKUP_ROOT/fixzone-v1-backup-2026-08-23_13-35-46/verification-status.json"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true FIXZONE_TEST_SHA256SUM_C_FORBIDDEN=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 3 ]
+assert_contains "$out" "backup_verification_state=UNKNOWN"
+assert_contains "$out" "durable verification status unavailable"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS"
+printf '{not json\n' >"$BACKUP_ROOT/fixzone-v1-backup-2026-08-23_13-35-46/verification-status.json"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 1 ]
+assert_contains "$out" "backup_verification_state=WARNING"
+assert_contains "$out" "durable verification status is malformed"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS" "fixzone-v1-backup-2026-08-23_00-00-00"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 2 ]
+assert_contains "$out" "backup_verification_state=CRITICAL"
+assert_contains "$out" "recovery-set id mismatch"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "CRITICAL"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 2 ]
+assert_contains "$out" "backup_verification_state=CRITICAL"
+assert_contains "$out" "durable checksum verification metadata reports failure"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS" "fixzone-v1-backup-2026-08-23_13-35-46" "31"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48 FIXZONE_RESTORE_REHEARSED=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 1 ]
+assert_contains "$out" "backup_freshness_state=WARNING"
+assert_contains "$out" "backup_verification_state=HEALTHY"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS" "fixzone-v1-backup-2026-08-23_13-35-46" "49"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48 FIXZONE_RESTORE_REHEARSED=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 2 ]
+assert_contains "$out" "backup_freshness_state=CRITICAL"
+assert_contains "$out" "backup_verification_state=HEALTHY"
+
+prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS"
+mkdir -p "$BACKUP_ROOT/.fixzone-v1-backup-2026-08-23_14-00-00.failed"
+printf 'failed\n' >"$BACKUP_ROOT/.fixzone-v1-backup-2026-08-23_14-00-00.failed/failure-summary.txt"
+touch "$BACKUP_ROOT/.fixzone-v1-backup-2026-08-23_14-00-00.failed"
+if run_check "$out" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true; then actual=0; else actual=$?; fi
+[ "$actual" -eq 0 ]
+assert_contains "$out" "backup_latest_recovery_set=fixzone-v1-backup-2026-08-23_13-35-46"
 
 expect_exit 3 "$out" DATABASE_URL=fixture_database_url_value JWT_ACCESS_SECRET=fixture_access_secret_value
 assert_not_contains "$out" "fixture_database_url_value"
@@ -287,9 +407,12 @@ assert_not_contains "$TMP_ROOT/state/latest-status.json" "fixture_access_secret_
 assert_json_eq "$TMP_ROOT/state/latest-status.json" "new Set(data.alerts.map((alert) => alert.key + '|' + alert.state + '|' + alert.summary)).size === data.alerts.length" "true"
 
 prepare_fixture
+rm -rf "$BACKUP_ROOT"
+mkdir -p "$BACKUP_ROOT"
+create_recovery_set "$BACKUP_ROOT" "fixzone-v1-backup-2026-08-23_13-35-46" "SUCCESS"
 STATE_DIR="$TMP_ROOT/state-failure-parent"
 printf 'not a directory\n' >"$STATE_DIR"
-if run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR/child" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_VERIFY_BACKUP_CHECKSUMS=true; then actual=0; else actual=$?; fi
+if run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR/child" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_RESTORE_REHEARSED=true FIXZONE_VERIFY_BACKUP_CHECKSUMS=true; then actual=0; else actual=$?; fi
 [ "$actual" -eq 1 ]
 assert_contains "$out" "overall_state=HEALTHY"
 assert_contains "$out" "state_persistence_state=WARNING"

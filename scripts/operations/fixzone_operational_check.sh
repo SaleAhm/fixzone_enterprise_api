@@ -25,6 +25,8 @@ RESULT_LINES=()
 RESULT_KEYS=()
 RESULT_STATES=()
 RESULT_SUMMARIES=()
+DETAIL_KEYS=()
+DETAIL_VALUES=()
 ALERT_LINES=()
 ALERT_KEYS=()
 ALERT_STATES=()
@@ -69,6 +71,8 @@ add_result() {
 
 add_detail() {
   RESULT_LINES+=("$1=$2")
+  DETAIL_KEYS+=("$1")
+  DETAIL_VALUES+=("$2")
 }
 
 add_alert() {
@@ -351,7 +355,7 @@ latest_recovery_set() {
   if [ ! -d "$BACKUP_ROOT" ]; then
     return 1
   fi
-  find "$BACKUP_ROOT" -maxdepth 1 -type d -name 'fixzone-v1-baseline-*' -printf '%T@ %p\n' 2>/dev/null |
+  find "$BACKUP_ROOT" -maxdepth 1 -type d \( -name 'fixzone-v1-baseline-*' -o -name 'fixzone-v1-backup-*' \) -printf '%T@ %p\n' 2>/dev/null |
     sort -nr |
     awk 'NR == 1 { sub(/^[^ ]+ /, ""); print }'
 }
@@ -379,6 +383,65 @@ file_age_hours() {
     return
   fi
   echo $(((now - modified) / 3600))
+}
+
+check_durable_backup_verification() {
+  local latest="$1"
+  local status_file="$latest/verification-status.json"
+  local expected_id actual_id schema_version state algorithm
+
+  expected_id="$(basename "$latest")"
+  add_detail "backup_recovery_set_id" "$expected_id"
+
+  if [ ! -s "$status_file" ]; then
+    add_result "backup_verification" "UNKNOWN" "durable verification status unavailable"
+    add_alert "UNKNOWN" "backup_verification_unknown" "Recovery-set durable verification status unavailable"
+    return
+  fi
+
+  schema_version="$(read_json_number_field "$status_file" "schemaVersion")"
+  actual_id="$(read_json_string_field "$status_file" "recoverySetId")"
+  state="$(read_json_string_field "$status_file" "state")"
+  algorithm="$(read_json_string_field "$status_file" "checksumAlgorithm")"
+
+  add_detail "backup_verification_status_artifact" "verification-status.json"
+  add_detail "backup_verification_status_state" "${state:-unknown}"
+  add_detail "backup_verification_checksum_algorithm" "${algorithm:-unknown}"
+
+  if [ "$schema_version" != "1" ] || [ -z "$actual_id" ] || [ -z "$state" ]; then
+    add_result "backup_verification" "WARNING" "durable verification status is malformed"
+    add_alert "WARNING" "backup_verification_malformed" "Recovery-set durable verification status is malformed"
+    return
+  fi
+
+  if [ "$actual_id" != "$expected_id" ]; then
+    add_result "backup_verification" "CRITICAL" "durable verification status recovery-set id mismatch"
+    add_alert "CRITICAL" "backup_verification_mismatch" "Recovery-set durable verification status id mismatch"
+    return
+  fi
+
+  case "$state" in
+    SUCCESS)
+      if [ "$algorithm" = "sha256" ]; then
+        add_result "backup_verification" "HEALTHY" "durable checksum verification metadata reports success"
+      else
+        add_result "backup_verification" "WARNING" "durable verification status uses unexpected checksum algorithm"
+        add_alert "WARNING" "backup_verification_algorithm" "Recovery-set durable verification algorithm unexpected"
+      fi
+      ;;
+    CRITICAL|INVALID|FAILED|PARTIAL_INVALID)
+      add_result "backup_verification" "CRITICAL" "durable checksum verification metadata reports failure"
+      add_alert "CRITICAL" "backup_verification_critical" "Recovery-set durable verification status failed"
+      ;;
+    UNKNOWN|"")
+      add_result "backup_verification" "UNKNOWN" "durable checksum verification metadata is unknown"
+      add_alert "UNKNOWN" "backup_verification_unknown" "Recovery-set durable verification status unknown"
+      ;;
+    *)
+      add_result "backup_verification" "WARNING" "durable verification status is unrecognized"
+      add_alert "WARNING" "backup_verification_unrecognized" "Recovery-set durable verification status unrecognized"
+      ;;
+  esac
 }
 
 check_backup() {
@@ -439,16 +502,11 @@ check_backup() {
   if [ -z "$checksum" ]; then
     add_result "backup_verification" "UNKNOWN" "checksum verification unavailable without checksum manifest"
     add_alert "UNKNOWN" "backup_verification_unknown" "Recovery-set checksum manifest unavailable"
-  elif [ "$VERIFY_BACKUP_CHECKSUMS" = "true" ]; then
-    if command_exists sha256sum && (cd "$latest" && sha256sum -c "$checksum" >/dev/null 2>&1); then
-      add_result "backup_verification" "HEALTHY" "checksum verification passed"
-    else
-      add_result "backup_verification" "CRITICAL" "checksum verification failed or sha256sum unavailable"
-      add_alert "CRITICAL" "backup_verification_critical" "Recovery-set checksum verification failed"
-    fi
   else
-    add_result "backup_verification" "UNKNOWN" "checksum manifest is present but verification was not requested"
-    add_alert "UNKNOWN" "backup_verification_unknown" "Recovery-set checksum verification not executed in this monitoring cycle"
+    if [ "$VERIFY_BACKUP_CHECKSUMS" = "true" ]; then
+      add_detail "backup_verification_runtime_rehash" "disabled"
+    fi
+    check_durable_backup_verification "$latest"
   fi
 
   if [ "$RESTORE_REHEARSED" = "true" ]; then
@@ -639,6 +697,20 @@ write_check_json() {
   printf ' }'
 }
 
+write_details_json() {
+  local i
+  printf '  "details": {\n'
+  for i in "${!DETAIL_KEYS[@]}"; do
+    printf '    "%s": ' "${DETAIL_KEYS[$i]}"
+    json_string "${DETAIL_VALUES[$i]}"
+    if [ "$i" -lt $((${#DETAIL_KEYS[@]} - 1)) ]; then
+      printf ','
+    fi
+    printf '\n'
+  done
+  printf '  }'
+}
+
 exit_code_for_state() {
   case "$1" in
     HEALTHY) printf '0' ;;
@@ -673,6 +745,8 @@ write_latest_status() {
       printf '\n'
     done
     printf '  },\n'
+    write_details_json
+    printf ',\n'
     printf '  "alerts": [\n'
     for i in "${!ALERT_KEYS[@]}"; do
       printf '    { "state": '

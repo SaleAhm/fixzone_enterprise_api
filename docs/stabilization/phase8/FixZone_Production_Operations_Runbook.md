@@ -199,7 +199,7 @@ External host monitoring check:
 - VPS systemd validation attempt is classified as BLOCKED SAFELY BEFORE INSTALLATION due to invalid repository-relative `Documentation=docs/...` unit metadata and missing `/srv/securezone-ops/fixzone/current` at verification time. This is an installation procedure / unit metadata defect, not a monitor runtime failure, application failure, production data failure, or backup failure.
 - Current production systemd host monitoring is verified as PASS: units installed, `systemd-analyze verify` passed on VPS, manual service run passed, timer is enabled and active, first timer-triggered execution passed, systemd recorded a successful completed oneshot, heartbeat advanced at `2026-08-23T10:11:52Z`, canary residue remained `0/0`, uploads remained `28/28`, and API remained healthy.
 - Backup freshness threshold activation is production-verified PASS with `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48` active through host-local monitor configuration.
-- Monitor checksum verification visibility remains `UNKNOWN` by design until the monitor reads approved durable verification metadata from completed recovery sets.
+- Monitor checksum verification visibility is resolved when the newest valid recovery set publishes trustworthy durable metadata. The host monitor reads `verification-status.json` from the newest valid baseline or backup recovery set and does not re-hash large recovery artifacts every 15 minutes.
 
 Application monitoring production verification:
 
@@ -248,7 +248,15 @@ First supervised backup attempt:
 - Backup retry was not performed and failed evidence cleanup was not performed.
 - Future production retry requires adding the verified production database role to `/etc/fixzone/recovery-backup.env` as `FIXZONE_POSTGRES_USER=<verified-role>` without exposing `POSTGRES_PASSWORD`, `PGPASSWORD`, or `DATABASE_URL`.
 
-Future monitor integration should read `verification-status.json` from the newest valid recovery set and treat only a real verified `SUCCESS` as healthy checksum evidence. The 15-minute host monitor should not re-hash large recovery artifacts every cycle unless a separate performance and operational review approves that design.
+Backup role hardening and successful production run:
+
+- Failed evidence from the first supervised attempt remains preserved at `/srv/securezone-backups/manual/.fixzone-v1-backup-2026-08-23_12-10-17.failed`.
+- PostgreSQL role hardening was implemented; the production role was safely verified as `postgres`, with no password exposed.
+- Second supervised backup attempt succeeded with exit code `0`, publishing `/srv/securezone-backups/manual/fixzone-v1-backup-2026-08-23_13-35-46`.
+- Production integrity after backup remained uploads before `28`, uploads after `28`, protected baseline PRESENT, API HEALTHY, and monitor ENABLED/ACTIVE.
+- Independent verification result is `ARTIFACT-INTEGRITY VERIFIED`, not `RESTORE-PROVEN`: required artifacts present/non-empty, checksum verification PASS, `pg_restore --list` structural readability PASS, upload gzip integrity PASS, archive count `28`, upload-list count `28`, current production upload count `28`, archive/list agreement PASS, canaries in archive `0` and upload list `0`, successful-run partial residue NONE, failed evidence PRESERVED, baseline PRESERVED, host/container uploads `28/28`, API healthy, monitor enabled/active. No restore was performed.
+
+Monitor integration reads `verification-status.json` from the newest valid recovery set and treats only matching `schemaVersion: 1`, matching `recoverySetId`, `state: SUCCESS`, and `checksumAlgorithm: sha256` as healthy checksum evidence. Missing durable status remains `UNKNOWN`, malformed status is `WARNING`, recovery-set identity mismatch is `CRITICAL`, and explicit failed/invalid durable states are `CRITICAL`.
 
 Alert-state model:
 

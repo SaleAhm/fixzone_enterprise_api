@@ -72,7 +72,7 @@ Production state/heartbeat verification update:
 - Production upload integrity remained `28` container files and `28` host files, approximately `2.6M` on both sides.
 - Post-run API health passed.
 - Backup freshness threshold activation is production-verified PASS with the approved `30` hour warning and `48` hour critical values active.
-- Checksum verification visibility remains `UNKNOWN` until durable verification metadata is read by the monitor from completed recovery sets.
+- Checksum verification visibility is resolved when durable verification metadata is available from the newest valid completed recovery set. The monitor reads `verification-status.json` instead of re-hashing large recovery artifacts every 15 minutes.
 
 Systemd host-monitor package update:
 
@@ -102,7 +102,7 @@ Backup freshness threshold activation package update:
 - Repository template `ops/systemd/host-monitor.env.example` prepares future activation of the approved 30h/48h policy through `/etc/fixzone/host-monitor.env`.
 - Template values are `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`.
 - Threshold activation is production-verified PASS; the local repository template remains non-secret documentation of the active variable names and values.
-- Checksum verification visibility remains `UNKNOWN`; backup jobs should verify checksums after successful backup creation and publish durable verification status for the monitor to read in a future package.
+- Checksum verification visibility is now supplied by durable `verification-status.json` metadata from the newest valid recovery set. Backup jobs remain responsible for checksum verification after successful backup creation; the monitor consumes that durable status and does not perform a recurring 15-minute rehash.
 
 Daily coordinated recovery backup local implementation update:
 
@@ -134,6 +134,16 @@ First supervised backup attempt update:
 - Production state after failure remained uploads `28/28`, canaries `0/0`, API healthy, and host monitor timer enabled/active.
 - Backup retry was not performed; failed evidence cleanup was not performed.
 - Future production retry requires a safely verified `FIXZONE_POSTGRES_USER` value in `/etc/fixzone/recovery-backup.env`; the role value is not invented by this repository update.
+
+Backup role hardening and second supervised attempt update:
+
+- Failed evidence from the first supervised attempt remains preserved at `/srv/securezone-backups/manual/.fixzone-v1-backup-2026-08-23_12-10-17.failed`.
+- PostgreSQL role hardening was implemented; the production role was safely verified as `postgres`, with no password exposed.
+- Second supervised attempt result: SUCCESS, exit code `0`, recovery set `/srv/securezone-backups/manual/fixzone-v1-backup-2026-08-23_13-35-46`.
+- Production integrity after backup: uploads before `28`, uploads after `28`, protected baseline PRESENT, API HEALTHY, monitor ENABLED/ACTIVE.
+- Independent verification classification: `ARTIFACT-INTEGRITY VERIFIED`, not `RESTORE-PROVEN`.
+- Verification evidence: required artifacts present/non-empty; checksum verification PASS; `pg_restore --list` structural readability PASS; upload gzip integrity PASS; archive count `28`; upload-list count `28`; current production upload count `28`; archive/list agreement PASS; canaries in archive `0` and upload list `0`; successful-run partial residue NONE; failed evidence PRESERVED; baseline PRESERVED; host/container uploads `28/28`; API healthy; monitor enabled/active.
+- No restore was performed for this recovery set, and daily backup scheduling remains inactive unless separately installed/enabled by an approved operations action.
 
 ## 2. Current Backup Inventory
 

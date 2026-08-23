@@ -246,7 +246,7 @@ State/heartbeat production verification:
 - c3e37fb host-local state/heartbeat execution was production-verified as PASS.
 - Observed state recorded monitorVersion `c3e37fb`, completed heartbeat, lastExitCode `3`, lastOverallState `UNKNOWN`, valid JSON, secret-field safety PASS, no temp-file residue, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
 - Backup freshness `UNKNOWN` due only to missing thresholds is resolved after production activation of the approved `30` hour warning and `48` hour critical values.
-- Checksum verification visibility remains `UNKNOWN` until the monitor reads approved durable verification metadata from completed recovery sets.
+- Checksum verification visibility is resolved when the newest valid recovery set publishes trustworthy durable metadata. The host monitor reads `verification-status.json` and treats matching `schemaVersion: 1`, matching `recoverySetId`, `state: SUCCESS`, and `checksumAlgorithm: sha256` as healthy durable verification evidence.
 
 Systemd host monitor production verification: PASS.
 
@@ -261,7 +261,7 @@ Systemd host monitor production verification: PASS.
 - Systemd classification: successful completed oneshot.
 - Monitor classification: `UNKNOWN` by design with lastExitCode `3`, lastOverallState `UNKNOWN`, monitorVersion `c3e37fb`, latest heartbeat completion `2026-08-23T10:11:52Z`.
 - Canary residue remained `0/0`; uploads remained `28/28`; API remained healthy; no production evidence loss or mutation was observed.
-- Thresholds are not yet active. Checksum verification visibility remains `UNKNOWN`.
+- Thresholds are production-verified active at `30` hour warning and `48` hour critical values. Checksum verification visibility is driven by durable `verification-status.json` metadata from the newest valid recovery set, not by rehashing artifacts every 15 minutes.
 
 Threshold activation package template: `ops/systemd/host-monitor.env.example`.
 
@@ -444,9 +444,11 @@ First backup preflight discovery:
 - The stable service identity is `securezoneinfrastructure-postgres-bhwgzt`; transient container IDs/task names must not be hard-coded.
 - Host-level `pg_dump` / `pg_restore` are unavailable on the VPS, while the FixZone PostgreSQL task has `/usr/bin/pg_dump` and `/usr/bin/pg_restore` from `postgres:17`.
 - Multiple unrelated PostgreSQL services are present, so generic PostgreSQL container discovery is unsafe.
-- First supervised backup attempt result: FAILED SAFELY after capacity preflight PASS, exact database service selection PASS, and PostgreSQL major `17` PASS. The failure point was `pg_dump` database role selection/authentication because no explicit PostgreSQL database role was supplied.
-- No successful new-style recovery set was created; protected baseline remained present; uploads remained `28/28`; canaries remained `0/0`; API remained healthy; host monitor timer remained enabled/active; no retry was performed.
-- Future production retry requires adding the safely verified production database role to `/etc/fixzone/recovery-backup.env` as `FIXZONE_POSTGRES_USER=<verified-role>` without adding password fields.
+- First supervised backup attempt result: FAILED SAFELY after capacity preflight PASS, exact database service selection PASS, and PostgreSQL major `17` PASS. The failure point was `pg_dump` database role selection/authentication because no explicit PostgreSQL database role was supplied. Failed evidence remains preserved at `/srv/securezone-backups/manual/.fixzone-v1-backup-2026-08-23_12-10-17.failed`.
+- PostgreSQL role hardening was implemented. The production role was safely verified as `postgres`; no password or connection secret is recorded here.
+- Second supervised backup attempt result: SUCCESS, exit code `0`, recovery set `/srv/securezone-backups/manual/fixzone-v1-backup-2026-08-23_13-35-46`.
+- Production integrity after the successful backup remained stable: uploads before `28`, uploads after `28`, protected baseline PRESENT, API HEALTHY, and monitor ENABLED/ACTIVE.
+- Independent verification result: `ARTIFACT-INTEGRITY VERIFIED`, not `RESTORE-PROVEN`. Required artifacts were present and non-empty; checksum verification passed; `pg_restore --list` structural readability passed; upload gzip integrity passed; archive count `28`, upload-list count `28`, current production upload count `28`; archive/list agreement passed; archive and upload-list canary counts `0`; successful-run partial residue NONE; failed evidence PRESERVED; baseline PRESERVED; host/container uploads `28/28`; API healthy; monitor enabled/active. No restore was performed.
 
 Retention deletion remains unapproved. A future dry-run-only retention selector may propose preserving `7` daily, `4` weekly, and `3` monthly recovery points while always preserving the newest valid set and latest verified set, but no deletion logic is implemented here.
 
