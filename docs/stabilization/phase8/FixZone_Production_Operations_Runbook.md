@@ -227,19 +227,26 @@ Daily coordinated recovery backup local implementation:
 
 Daily coordinated recovery backup systemd package:
 
-Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+Approved daily backup time: 02:00 WAT.
+
+Approved timezone: Africa/Lagos.
+
+OnCalendar contract: `*-*-* 02:00:00 Africa/Lagos`.
 
 - Status: LOCAL REVIEW ONLY, NOT INSTALLED, NOT ENABLED, NOT SCHEDULED IN PRODUCTION.
 - Service unit: `ops/systemd/fixzone-recovery-backup.service`.
-- Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+- Timer unit: `ops/systemd/fixzone-recovery-backup.timer`.
 - Version lifecycle: deploy the backup script under `/srv/securezone-ops/fixzone-backup/<version>` and move `/srv/securezone-ops/fixzone-backup/current` atomically; do not hard-code commit hashes in the permanent unit.
 - Service execution: `Type=oneshot`, `User=root`, `Group=root`, `EnvironmentFile=/etc/fixzone/recovery-backup.env`, `ExecStart=/srv/securezone-ops/fixzone-backup/current/fixzone_recovery_backup.sh`, and `TimeoutStartSec=6h`.
 - Permissions: uploads are read-only, `/srv/securezone-backups/manual` is writable, Docker socket access is available for Swarm task discovery/exec, and broad filesystem write access is not granted.
 - Failure semantics: do not copy the host-monitor `SuccessExitStatus=1 2 3` contract; a failed backup must leave `fixzone-recovery-backup.service` failed.
-- Timer scheduling: daily backup timing requires separate operator approval. The review template contains `OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` as a fail-safe placeholder until that approval exists.
-The materialized production candidate must be named `fixzone-recovery-backup.timer` and must contain no unresolved `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` token.
-- After exact schedule approval, copy/materialize the template into a temporary `fixzone-recovery-backup.timer`, replace the placeholder with the approved valid `OnCalendar` expression, run `systemd-analyze verify <candidate-service> <candidate-timer>`, install `/etc/systemd/system/fixzone-recovery-backup.timer` only after PASS, run `daemon-reload`, confirm the timer remains disabled/inactive, perform the manual service-run gate, then request separate timer-enable approval.
-- Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup service package: LOCAL REVIEW READY; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
+- Timer scheduling: daily backup timing is approved for `02:00` WAT using explicit `Africa/Lagos` timezone syntax.
+- Production installation: NOT YET DONE.
+- Production timer enablement: NOT YET APPROVED/EXECUTED.
+
+Production installation: NOT YET DONE.
+- Future production sequence remains: verify deployed commit, install versioned backup script, verify `/etc/fixzone/recovery-backup.env`, verify exact Swarm PostgreSQL service and role, install backup service, install approved timer, run `systemd-analyze verify <candidate-service> <candidate-timer>`, run `daemon-reload`, confirm timer disabled/inactive, run one manual systemd backup service, independently verify the resulting recovery set, verify monitor durable verification consumption, then separately enable the timer and observe the first scheduled 02:00 WAT run.
+- Daily backup policy: APPROVED; exact daily execution time: APPROVED as 02:00 WAT; backup service package: LOCAL REVIEW READY; backup timer: LOCALLY MATERIALIZED / REVIEW READY; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
 - `Persistent=true` is intended for missed daily backup catch-up after downtime; the first scheduled-run gate must account for immediate catch-up after reboot.
 - Retention deletion remains unapproved. The service and timer do not prune old recovery sets.
 

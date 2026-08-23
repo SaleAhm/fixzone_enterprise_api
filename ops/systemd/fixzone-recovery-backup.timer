@@ -3,7 +3,7 @@ Description=FixZone Daily Coordinated Recovery Backup Timer
 
 [Timer]
 Unit=fixzone-recovery-backup.service
-OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED
+OnCalendar=*-*-* 02:00:00 Africa/Lagos
 Persistent=true
 AccuracySec=1min
 

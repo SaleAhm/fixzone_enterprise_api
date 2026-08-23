@@ -411,7 +411,7 @@ Future unit names:
 
 ```text
 fixzone-recovery-backup.service
-fixzone-recovery-backup.timer.example
+fixzone-recovery-backup.timer
 ```
 
 Type:
@@ -451,22 +451,24 @@ Backup service unit:
 - Runs as `root` for the pilot because the backup needs Docker inspection/exec, upload reads, backup-root writes, lock creation, and atomic recovery-set publication.
 - Uses `TimeoutStartSec=6h`, journald stdout/stderr, uploads read-only access, backup-root write access, Docker socket access, and no monitor-style `SuccessExitStatus=1 2 3`.
 
-Backup timer template:
+Backup timer:
 
-Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+Approved daily backup time: 02:00 WAT.
 
-- Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+Approved timezone: Africa/Lagos.
+
+Materialized timer: `ops/systemd/fixzone-recovery-backup.timer`.
+
+OnCalendar contract: `*-*-* 02:00:00 Africa/Lagos`.
+
 - The timer targets `fixzone-recovery-backup.service`.
-- Daily scheduling uses the explicit fail-safe placeholder `OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` until an operator-approved wall-clock time is supplied during a separate installation gate.
+- Daily scheduling uses the approved `02:00` Africa/Lagos wall-clock time.
 - `Persistent=true` is documented so a missed daily run after host downtime can catch up after reboot; this must be considered during first scheduled-run verification because it may start a backup soon after boot.
 - `RandomizedDelaySec` is intentionally omitted until operations approve whether randomized drift is desirable for a single-host backup job.
-- Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup service package: LOCAL REVIEW READY; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
-Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL.
-- The repository package does not include an installable `ops/systemd/fixzone-recovery-backup.timer`, and does not enable, start, or schedule the timer.
+- Daily backup policy: APPROVED; exact daily execution time: APPROVED as 02:00 WAT; backup service package: LOCAL REVIEW READY; backup timer: LOCALLY MATERIALIZED / REVIEW READY; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
+- The repository package includes the materialized `ops/systemd/fixzone-recovery-backup.timer`, but does not install, enable, start, or schedule the timer in production.
 
-Materialized production candidate name: `fixzone-recovery-backup.timer`.
-
-Replace `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` with the explicitly approved valid `OnCalendar` expression before running `systemd-analyze verify`.
+Production timer enablement: NOT YET APPROVED/EXECUTED.
 
 Overlap behavior:
 
@@ -483,18 +485,15 @@ Future production installation gate, documentation only:
 5. Install `/etc/fixzone/recovery-backup.env` with approved non-secret values and `root:root` ownership, mode `0640` or stricter.
 6. Verify exact PostgreSQL Swarm service and configured role.
 7. Verify backup root, upload root, and capacity.
-8. Copy/materialize `ops/systemd/fixzone-recovery-backup.timer.example` into a temporary candidate named exactly `fixzone-recovery-backup.timer`.
-9. Replace `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` with the explicitly approved valid `OnCalendar` expression before running `systemd-analyze verify`.
-10. Verify the candidate contains no unresolved `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` token.
-11. Run `systemd-analyze verify <candidate-service> <candidate-timer>`.
-12. Install `/etc/systemd/system/fixzone-recovery-backup.timer` only after verification PASS.
-13. Run `daemon-reload`.
-14. Confirm the backup timer is disabled/inactive.
-15. Manually run exactly one supervised backup service.
-16. Independently verify generated recovery set and monitor durable verification consumption.
-17. Request separate timer-enable approval.
-
-Materialized production candidate name: `fixzone-recovery-backup.timer`.
+8. Install the approved timer definition for `fixzone-recovery-backup.timer`.
+9. Run `systemd-analyze verify <candidate-service> <candidate-timer>`.
+10. Install `/etc/systemd/system/fixzone-recovery-backup.timer` only after verification PASS.
+11. Run `daemon-reload`.
+12. Confirm the backup timer is disabled/inactive.
+13. Manually run exactly one supervised backup service.
+14. Independently verify generated recovery set and monitor durable verification consumption.
+15. Request separate timer-enable approval.
+16. Observe the first scheduled 02:00 WAT run after separate enablement approval.
 
 First scheduled-run gate after separate timer approval:
 

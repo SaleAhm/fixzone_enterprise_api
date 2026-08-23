@@ -125,11 +125,11 @@ Daily coordinated recovery backup local implementation update:
 Daily coordinated recovery backup systemd package update:
 
 - Status: LOCAL REVIEW ONLY, NOT INSTALLED, NOT ENABLED, NOT SCHEDULED IN PRODUCTION.
-- Local review package is `ops/systemd/fixzone-recovery-backup.service` plus timer template `ops/systemd/fixzone-recovery-backup.timer.example`.
+- Local review package is `ops/systemd/fixzone-recovery-backup.service` plus materialized timer `ops/systemd/fixzone-recovery-backup.timer`.
 - The service uses `/srv/securezone-ops/fixzone-backup/current/fixzone_recovery_backup.sh`, `/etc/fixzone/recovery-backup.env`, root execution for Docker/upload/backup-root access, `TimeoutStartSec=6h`, journald output, uploads read-only access, backup-root write access, Docker socket access, and ordinary failed-service semantics for failed backups.
-- The timer template targets the backup service and intentionally uses `OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` until a separate operator approval supplies the exact daily wall-clock time.
-- Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup service package: LOCAL REVIEW READY; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
-- Future materialization must create a temporary candidate named exactly `fixzone-recovery-backup.timer`, replace the placeholder, verify no unresolved token remains, run `systemd-analyze verify <candidate-service> <candidate-timer>`, and only after PASS install `/etc/systemd/system/fixzone-recovery-backup.timer`.
+- The timer targets the backup service and uses approved `OnCalendar=*-*-* 02:00:00 Africa/Lagos` for daily 02:00 WAT execution.
+- Daily backup policy: APPROVED; exact daily execution time: APPROVED as 02:00 WAT; backup service package: LOCAL REVIEW READY; backup timer: LOCALLY MATERIALIZED / REVIEW READY; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
+- Future production installation must run `systemd-analyze verify <candidate-service> <candidate-timer>` and only after PASS install `/etc/systemd/system/fixzone-recovery-backup.timer`, run `daemon-reload`, confirm disabled/inactive, run one manual service backup, independently verify the recovery set, verify monitor durable verification consumption, then separately enable the timer and observe the first scheduled 02:00 WAT run.
 - `Persistent=true` is included for missed-run catch-up after downtime, but no timer is enabled by this repository package.
 - No retention deletion is implemented; the target remains `7` daily, `4` weekly, and `3` monthly pending a future dry-run retention approval.
 
