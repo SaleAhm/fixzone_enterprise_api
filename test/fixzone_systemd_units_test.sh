@@ -53,7 +53,6 @@ assert_contains "$SERVICE" "Type=oneshot"
 assert_contains "$SERVICE" "WorkingDirectory=/srv/securezone-ops/fixzone/current"
 assert_contains "$SERVICE" "ExecStart=/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh"
 assert_contains "$SERVICE" "Environment=FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state"
-assert_contains "$SERVICE" "Environment=FIXZONE_MONITOR_VERSION=c3e37fb"
 assert_contains "$SERVICE" "EnvironmentFile=-/etc/fixzone/host-monitor.env"
 assert_contains "$SERVICE" "SuccessExitStatus=1 2 3"
 assert_contains "$SERVICE" "TimeoutStartSec=120"
@@ -81,6 +80,8 @@ assert_contains "$RECOVERY_ENV_EXAMPLE" "FIXZONE_UPLOAD_ROOT=/srv/securezone-dat
 assert_not_contains_regex "$SERVICE" '^Restart=always$'
 assert_not_contains_regex "$SERVICE" '^Documentation=docs/'
 assert_not_contains_regex "$TIMER" '^Documentation=docs/'
+assert_not_contains_regex "$SERVICE" '^Environment=FIXZONE_MONITOR_VERSION='
+assert_not_contains_regex "$SERVICE" '(^|[^A-Za-z0-9])c3e37fb([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])a38b2a5([^A-Za-z0-9]|$)'
 assert_not_contains_regex "$SERVICE" 'FIXZONE_BACKUP_(FRESHNESS_)?WARNING_HOURS=30|FIXZONE_BACKUP_(FRESHNESS_)?CRITICAL_HOURS=48'
 assert_not_contains_regex "$TIMER" 'FIXZONE_BACKUP_(FRESHNESS_)?WARNING_HOURS=30|FIXZONE_BACKUP_(FRESHNESS_)?CRITICAL_HOURS=48'
 assert_not_contains_regex "$SERVICE" 'Exec(StartPre|StartPost|StopPost)='

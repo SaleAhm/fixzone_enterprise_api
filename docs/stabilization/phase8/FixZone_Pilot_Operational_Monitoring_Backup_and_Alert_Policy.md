@@ -224,7 +224,6 @@ Current service design:
 - `WorkingDirectory=/srv/securezone-ops/fixzone/current`.
 - `ExecStart=/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`.
 - `Environment=FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state`.
-- `Environment=FIXZONE_MONITOR_VERSION=c3e37fb`.
 - Optional non-secret override file: `EnvironmentFile=-/etc/fixzone/host-monitor.env`.
 - `SuccessExitStatus=1 2 3`, so monitor `WARNING`, `CRITICAL`, and `UNKNOWN` classifications are not treated as implementation crashes.
 - `TimeoutStartSec=120`.
@@ -240,6 +239,8 @@ Version selection:
 - `/srv/securezone-ops/fixzone/current` should be an atomically switched symlink to the approved version directory.
 - Future upgrades install a new version directory, verify its checksum and monitor output, then atomically switch `current`.
 - Rollback switches `current` back to the previous preserved version directory and manually runs the service once before any timer use.
+- Version identity must travel with the versioned monitor installation, not with a permanent hard-coded commit value in `fixzone-host-monitor.service`.
+- Runtime precedence is deterministic: safe explicit `FIXZONE_MONITOR_VERSION` override, then safe version directory basename derived from the resolved script path, then `local` fallback. Unsafe explicit values report `unknown`; unsafe derived basenames fall back to `local`.
 
 State/heartbeat production verification:
 
@@ -262,6 +263,15 @@ Systemd host monitor production verification: PASS.
 - Monitor classification: `UNKNOWN` by design with lastExitCode `3`, lastOverallState `UNKNOWN`, monitorVersion `c3e37fb`, latest heartbeat completion `2026-08-23T10:11:52Z`.
 - Canary residue remained `0/0`; uploads remained `28/28`; API remained healthy; no production evidence loss or mutation was observed.
 - Thresholds are production-verified active at `30` hour warning and `48` hour critical values. Checksum verification visibility is driven by durable `verification-status.json` metadata from the newest valid recovery set, not by rehashing artifacts every 15 minutes.
+
+Version metadata lifecycle follow-up:
+
+- Current production monitor code `a38b2a5` is deployed through `/srv/securezone-ops/fixzone/current -> /srv/securezone-ops/fixzone/a38b2a5`.
+- The `a38b2a5` script contains and executes durable `verification-status.json` consumption.
+- A natural timer-triggered cycle selected `fixzone-v1-backup-2026-08-23_13-35-46` and reported durable verification `SUCCESS` with checksum algorithm `sha256`; durable verification consumption is PASS.
+- Production integrity remained uploads `28/28`, canaries `0`, API HEALTHY. No backup, restore, or retention deletion occurred.
+- State files incorrectly reported monitorVersion `c3e37fb` because the installed service had a stale `Environment=FIXZONE_MONITOR_VERSION=c3e37fb` assignment and `/etc/fixzone/host-monitor.env` had no version override.
+- Classification: systemd version-metadata lifecycle / configuration defect only. It is not old monitor code executing, timer execution failure, durable verification failure, backup failure, application failure, or database failure.
 
 Threshold activation package template: `ops/systemd/host-monitor.env.example`.
 

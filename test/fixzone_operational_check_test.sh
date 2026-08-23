@@ -73,6 +73,17 @@ SH
 chmod +x "$FAKE_BIN/sha256sum"
 cp "$FAKE_BIN/sha256sum" "$FAKE_BIN/sha256sum.exe"
 
+cat >"$FAKE_BIN/readlink" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-f" ] && [ -n "${FIXZONE_TEST_READLINK_F_PATH:-}" ] && [ "${2:-}" = "$FIXZONE_TEST_READLINK_F_PATH" ]; then
+  printf '%s\n' "$FIXZONE_TEST_READLINK_F_TARGET"
+  exit 0
+fi
+exec "${FIXZONE_REAL_READLINK:-/usr/bin/readlink}" "$@"
+SH
+chmod +x "$FAKE_BIN/readlink"
+cp "$FAKE_BIN/readlink" "$FAKE_BIN/readlink.exe"
+
 create_files() {
   local root="$1"
   local count="$2"
@@ -137,24 +148,34 @@ prepare_fixture() {
 
 run_check() {
   local output_file="$1"
+  local script_path="${FIXZONE_TEST_SCRIPT:-$SCRIPT}"
+  local workdir="${FIXZONE_TEST_WORKDIR:-$REPO_ROOT}"
+  local monitor_version_env=()
   shift
+  if [ "${FIXZONE_TEST_OMIT_MONITOR_VERSION:-false}" != "true" ]; then
+    monitor_version_env=(FIXZONE_MONITOR_VERSION="${FIXZONE_MONITOR_VERSION:-test-version}")
+  fi
   set +e
-  env \
-    PATH="$FAKE_BIN:$PATH" \
-    FIXZONE_API_HEALTH_URL="https://example.invalid/api/health" \
-    FIXZONE_HOST_UPLOAD_PATH="$HOST_UPLOAD" \
-    FIXZONE_CONTAINER_UPLOAD_MIRROR="$CONTAINER_UPLOAD" \
-    FIXZONE_BACKUP_ROOT="$BACKUP_ROOT" \
-    FIXZONE_TEST_MOUNT_SOURCE="$HOST_UPLOAD" \
-    FIXZONE_TEST_API_OK="${FIXZONE_TEST_API_OK:-true}" \
-    FIXZONE_TEST_SERVICE_RUNNING="${FIXZONE_TEST_SERVICE_RUNNING:-true}" \
-    FIXZONE_TEST_MOUNT_PRESENT="${FIXZONE_TEST_MOUNT_PRESENT:-true}" \
-    FIXZONE_TEST_DF_USED_PERCENT="${FIXZONE_TEST_DF_USED_PERCENT:-50}" \
-    FIXZONE_REAL_SHA256SUM="${FIXZONE_REAL_SHA256SUM:-$(command -v sha256sum)}" \
-    FIXZONE_MONITOR_STATE_DIR="${FIXZONE_MONITOR_STATE_DIR:-$TMP_ROOT/state}" \
-    FIXZONE_MONITOR_VERSION="${FIXZONE_MONITOR_VERSION:-test-version}" \
-    FIXZONE_MONITOR_ENVIRONMENT="${FIXZONE_MONITOR_ENVIRONMENT:-test}" \
-    "$@" "$SCRIPT" >"$output_file" 2>&1
+  (
+    cd "$workdir"
+    env \
+      PATH="$FAKE_BIN:$PATH" \
+      FIXZONE_API_HEALTH_URL="https://example.invalid/api/health" \
+      FIXZONE_HOST_UPLOAD_PATH="$HOST_UPLOAD" \
+      FIXZONE_CONTAINER_UPLOAD_MIRROR="$CONTAINER_UPLOAD" \
+      FIXZONE_BACKUP_ROOT="$BACKUP_ROOT" \
+      FIXZONE_TEST_MOUNT_SOURCE="$HOST_UPLOAD" \
+      FIXZONE_TEST_API_OK="${FIXZONE_TEST_API_OK:-true}" \
+      FIXZONE_TEST_SERVICE_RUNNING="${FIXZONE_TEST_SERVICE_RUNNING:-true}" \
+      FIXZONE_TEST_MOUNT_PRESENT="${FIXZONE_TEST_MOUNT_PRESENT:-true}" \
+      FIXZONE_TEST_DF_USED_PERCENT="${FIXZONE_TEST_DF_USED_PERCENT:-50}" \
+      FIXZONE_REAL_SHA256SUM="${FIXZONE_REAL_SHA256SUM:-$(command -v sha256sum)}" \
+      FIXZONE_REAL_READLINK="${FIXZONE_REAL_READLINK:-$(command -v readlink)}" \
+      FIXZONE_MONITOR_STATE_DIR="${FIXZONE_MONITOR_STATE_DIR:-$TMP_ROOT/state}" \
+      FIXZONE_MONITOR_ENVIRONMENT="${FIXZONE_MONITOR_ENVIRONMENT:-test}" \
+      "${monitor_version_env[@]}" \
+      "$@" "$script_path"
+  ) >"$output_file" 2>&1
   status=$?
   set -e
   return "$status"
@@ -251,6 +272,7 @@ assert_json_parses "$STATE_DIR/heartbeat.json"
 assert_json_eq "$STATE_DIR/latest-status.json" "data.overallState" "UNKNOWN"
 assert_json_eq "$STATE_DIR/latest-status.json" "data.exitCode" "3"
 assert_json_eq "$STATE_DIR/latest-status.json" "data.monitorVersion" "test-version"
+assert_json_eq "$STATE_DIR/heartbeat.json" "data.monitorVersion" "test-version"
 assert_json_eq "$STATE_DIR/latest-status.json" "data.environment" "test"
 assert_json_eq "$STATE_DIR/latest-status.json" "data.checks.api.state" "HEALTHY"
 assert_json_eq "$STATE_DIR/latest-status.json" "data.checks.backupFreshness.state" "UNKNOWN"
@@ -261,6 +283,55 @@ assert_json_eq "$STATE_DIR/heartbeat.json" "data.lastExitCode" "3"
 assert_json_eq "$STATE_DIR/heartbeat.json" "data.lastOverallState" "UNKNOWN"
 assert_json_eq "$STATE_DIR/heartbeat.json" "Boolean(data.lastUnknownAt)" "true"
 assert_no_state_temp_files "$STATE_DIR"
+
+prepare_fixture
+STATE_DIR="$TMP_ROOT/state-explicit-version"
+mkdir -p "$STATE_DIR"
+if run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR" FIXZONE_MONITOR_VERSION=explicit-2026 FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999; then actual=0; else actual=$?; fi
+[ "$actual" -eq 3 ]
+assert_json_eq "$STATE_DIR/latest-status.json" "data.monitorVersion" "explicit-2026"
+assert_json_eq "$STATE_DIR/heartbeat.json" "data.monitorVersion" "explicit-2026"
+
+prepare_fixture
+VERSION_INSTALL="$TMP_ROOT/install/a38b2a5"
+mkdir -p "$VERSION_INSTALL"
+cp "$SCRIPT" "$VERSION_INSTALL/fixzone_operational_check.sh"
+chmod +x "$VERSION_INSTALL/fixzone_operational_check.sh"
+STATE_DIR="$TMP_ROOT/state-derived-versioned"
+mkdir -p "$STATE_DIR"
+if FIXZONE_TEST_OMIT_MONITOR_VERSION=true FIXZONE_TEST_SCRIPT="$VERSION_INSTALL/fixzone_operational_check.sh" run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999; then actual=0; else actual=$?; fi
+[ "$actual" -eq 3 ]
+assert_json_eq "$STATE_DIR/latest-status.json" "data.monitorVersion" "a38b2a5"
+assert_json_eq "$STATE_DIR/heartbeat.json" "data.monitorVersion" "a38b2a5"
+
+prepare_fixture
+CURRENT_LINK="$TMP_ROOT/install/current"
+ln -s "$VERSION_INSTALL" "$CURRENT_LINK"
+STATE_DIR="$TMP_ROOT/state-derived-current"
+mkdir -p "$STATE_DIR"
+if FIXZONE_TEST_OMIT_MONITOR_VERSION=true FIXZONE_TEST_SCRIPT="$CURRENT_LINK/fixzone_operational_check.sh" FIXZONE_TEST_WORKDIR="$CURRENT_LINK" run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999 FIXZONE_TEST_READLINK_F_PATH="$CURRENT_LINK" FIXZONE_TEST_READLINK_F_TARGET="$VERSION_INSTALL"; then actual=0; else actual=$?; fi
+[ "$actual" -eq 3 ]
+assert_json_eq "$STATE_DIR/latest-status.json" "data.monitorVersion" "a38b2a5"
+assert_json_eq "$STATE_DIR/heartbeat.json" "data.monitorVersion" "a38b2a5"
+
+prepare_fixture
+STATE_DIR="$TMP_ROOT/state-local-version"
+mkdir -p "$STATE_DIR"
+if FIXZONE_TEST_OMIT_MONITOR_VERSION=true run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999; then actual=0; else actual=$?; fi
+[ "$actual" -eq 3 ]
+assert_json_eq "$STATE_DIR/latest-status.json" "data.monitorVersion" "local"
+
+prepare_fixture
+UNTRUSTED_INSTALL="$TMP_ROOT/install/not a version"
+mkdir -p "$UNTRUSTED_INSTALL"
+cp "$SCRIPT" "$UNTRUSTED_INSTALL/fixzone_operational_check.sh"
+chmod +x "$UNTRUSTED_INSTALL/fixzone_operational_check.sh"
+STATE_DIR="$TMP_ROOT/state-untrusted-version"
+mkdir -p "$STATE_DIR"
+if FIXZONE_TEST_OMIT_MONITOR_VERSION=true FIXZONE_TEST_SCRIPT="$UNTRUSTED_INSTALL/fixzone_operational_check.sh" run_check "$out" FIXZONE_MONITOR_STATE_DIR="$STATE_DIR" FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=9999 FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=99999; then actual=0; else actual=$?; fi
+[ "$actual" -eq 3 ]
+assert_json_eq "$STATE_DIR/latest-status.json" "data.monitorVersion" "local"
+assert_not_contains "$STATE_DIR/latest-status.json" "not a version"
 
 prepare_fixture
 STATE_DIR="$TMP_ROOT/state-preserve"

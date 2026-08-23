@@ -97,6 +97,14 @@ Systemd production verification update:
 - Canary residue remained `0/0`, uploads remained `28/28`, and API remained healthy.
 - No production evidence loss or mutation was observed.
 
+Version metadata lifecycle follow-up:
+
+- Current production monitor code is `a38b2a5`, deployed through `/srv/securezone-ops/fixzone/current -> /srv/securezone-ops/fixzone/a38b2a5`.
+- Durable backup verification is functional/PASS. A natural timer-triggered cycle selected `fixzone-v1-backup-2026-08-23_13-35-46`, read durable status `SUCCESS`, and recorded checksum algorithm `sha256`.
+- Production integrity remained uploads `28/28`, canaries `0`, and API HEALTHY. No backup, restore, or retention deletion occurred.
+- The reported monitorVersion `c3e37fb` is incorrect and was caused by a stale systemd `Environment=FIXZONE_MONITOR_VERSION=c3e37fb` assignment; the host monitor environment file contains no monitor-version override.
+- Classification: version-metadata lifecycle / configuration defect only. Do not downgrade the durable backup verification milestone and do not claim c3e37fb code is executing.
+
 Backup freshness threshold activation package update:
 
 - Repository template `ops/systemd/host-monitor.env.example` prepares future activation of the approved 30h/48h policy through `/etc/fixzone/host-monitor.env`.

@@ -17,9 +17,62 @@ BACKUP_CRITICAL_HOURS="${FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS:-}"
 VERIFY_BACKUP_CHECKSUMS="${FIXZONE_VERIFY_BACKUP_CHECKSUMS:-false}"
 RESTORE_REHEARSED="${FIXZONE_RESTORE_REHEARSED:-unknown}"
 MONITOR_STATE_DIR="${FIXZONE_MONITOR_STATE_DIR:-/srv/securezone-ops/fixzone/state}"
-MONITOR_VERSION="${FIXZONE_MONITOR_VERSION:-local}"
 MONITOR_ENVIRONMENT="${FIXZONE_MONITOR_ENVIRONMENT:-production}"
 TEST_EXIT_AFTER_START_HEARTBEAT="${FIXZONE_TEST_EXIT_AFTER_START_HEARTBEAT:-false}"
+
+safe_monitor_version_identifier() {
+  local candidate="$1"
+  case "$candidate" in
+    ""|"."|".."|current|operations|scripts|bin|tmp|temp)
+      return 1
+      ;;
+  esac
+  [[ "$candidate" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$ ]]
+}
+
+resolve_script_path() {
+  local script_path="${BASH_SOURCE[0]}"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$script_path" 2>/dev/null && return 0
+  fi
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$script_path" 2>/dev/null && return 0
+  fi
+  printf '%s\n' "$script_path"
+}
+
+derive_monitor_version() {
+  local explicit="${FIXZONE_MONITOR_VERSION:-}"
+  local resolved version_dir candidate physical_workdir
+
+  if [ -n "$explicit" ]; then
+    if safe_monitor_version_identifier "$explicit"; then
+      printf '%s\n' "$explicit"
+    else
+      printf 'unknown\n'
+    fi
+    return
+  fi
+
+  resolved="$(resolve_script_path)"
+  version_dir="$(dirname "$resolved")"
+  candidate="$(basename "$version_dir")"
+  if [ "$candidate" = "current" ] && command -v readlink >/dev/null 2>&1; then
+    version_dir="$(readlink -f "$version_dir" 2>/dev/null || printf '%s\n' "$version_dir")"
+    candidate="$(basename "$version_dir")"
+  fi
+  if [ "$candidate" = "current" ] && [ "$(basename "${PWD:-}")" = "current" ]; then
+    physical_workdir="$(pwd -P 2>/dev/null || printf '%s\n' "${PWD:-}")"
+    candidate="$(basename "$physical_workdir")"
+  fi
+  if safe_monitor_version_identifier "$candidate"; then
+    printf '%s\n' "$candidate"
+  else
+    printf 'local\n'
+  fi
+}
+
+MONITOR_VERSION="$(derive_monitor_version)"
 
 RESULT_LINES=()
 RESULT_KEYS=()

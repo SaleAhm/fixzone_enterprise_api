@@ -10,7 +10,6 @@ Group=root
 WorkingDirectory=/srv/securezone-ops/fixzone/current
 Environment=FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state
 Environment=FIXZONE_MONITOR_ENVIRONMENT=production
-Environment=FIXZONE_MONITOR_VERSION=c3e37fb
 EnvironmentFile=-/etc/fixzone/host-monitor.env
 ExecStart=/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh
 SuccessExitStatus=1 2 3

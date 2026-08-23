@@ -200,6 +200,7 @@ External host monitoring check:
 - Current production systemd host monitoring is verified as PASS: units installed, `systemd-analyze verify` passed on VPS, manual service run passed, timer is enabled and active, first timer-triggered execution passed, systemd recorded a successful completed oneshot, heartbeat advanced at `2026-08-23T10:11:52Z`, canary residue remained `0/0`, uploads remained `28/28`, and API remained healthy.
 - Backup freshness threshold activation is production-verified PASS with `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48` active through host-local monitor configuration.
 - Monitor checksum verification visibility is resolved when the newest valid recovery set publishes trustworthy durable metadata. The host monitor reads `verification-status.json` from the newest valid baseline or backup recovery set and does not re-hash large recovery artifacts every 15 minutes.
+- Version metadata lifecycle diagnosis: `a38b2a5` monitor code is deployed through `/srv/securezone-ops/fixzone/current -> /srv/securezone-ops/fixzone/a38b2a5` and durable verification consumption is functional/PASS, but state files reported monitorVersion `c3e37fb` because the installed service injected stale `Environment=FIXZONE_MONITOR_VERSION=c3e37fb`. This is a version-metadata configuration defect only, not old code execution or durable verification failure.
 
 Application monitoring production verification:
 
@@ -375,6 +376,24 @@ install -o root -g root -m 0755 <verified-source> <versioned-target>
 ```
 
 The VPS installation found that a `curl`-downloaded monitor arrived as mode `0644`; direct systemd `ExecStart` required `0755`. Verify SHA-256 before and after mode correction. The executable bit must change only file mode, not content hash.
+
+Future host-monitor version-metadata correction gate:
+
+1. Install the corrected `fixzone-host-monitor.service` that does not hard-code a monitor commit in `Environment=FIXZONE_MONITOR_VERSION=...`.
+2. Run `systemd-analyze verify`.
+3. Run `systemctl daemon-reload`.
+4. Confirm the timer remains enabled and active.
+5. Do not restart the application.
+6. Run one manual monitor service cycle.
+7. Confirm `monitorVersion=a38b2a5`.
+8. Confirm durable backup verification remains `SUCCESS` / `HEALTHY`.
+9. Confirm uploads remain `28/28`.
+10. Confirm canaries remain `0`.
+11. Confirm API remains healthy.
+12. Observe one natural timer-triggered cycle.
+13. Confirm `monitorVersion` remains `a38b2a5`.
+
+These are future controlled production steps only; this repository update does not perform them.
 
 Future backup freshness threshold activation gate:
 
