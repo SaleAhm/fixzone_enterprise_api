@@ -1,6 +1,5 @@
 [Unit]
 Description=FixZone Host Operational Monitor
-Documentation=docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md
 After=docker.service network-online.target
 Wants=network-online.target
 

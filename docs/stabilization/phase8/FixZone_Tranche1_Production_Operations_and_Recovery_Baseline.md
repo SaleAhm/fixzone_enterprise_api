@@ -80,6 +80,9 @@ Systemd host-monitor package update:
 - `fixzone-host-monitor.timer` defines the approved 15-minute cadence with `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true`.
 - The package is not installed, enabled, started, pushed, deployed, or used to activate thresholds.
 - Runtime 30h/48h backup freshness thresholds remain a separate approval gate.
+- First VPS systemd validation was blocked safely before installation. Findings were invalid repository-relative `Documentation=docs/...` unit metadata and missing `/srv/securezone-ops/fixzone/current` during `systemd-analyze verify`.
+- This is classified as an installation procedure / unit metadata defect, not monitor runtime failure, application failure, production data failure, or backup failure.
+- Corrected package removes invalid `Documentation=` directives and corrected documentation requires state/current setup before systemd verification. No timer was enabled and no threshold was activated.
 
 ## 2. Current Backup Inventory
 

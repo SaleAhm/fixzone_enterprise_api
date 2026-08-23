@@ -196,6 +196,7 @@ External host monitoring check:
 - Repository-managed systemd service/timer package is prepared locally under `ops/systemd/` for review only. It has not been installed, enabled, started, pushed, deployed, or used to activate backup thresholds.
 - The service package uses `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, `FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state`, optional non-secret `/etc/fixzone/host-monitor.env`, and `SuccessExitStatus=1 2 3` to distinguish monitor classifications from true service execution failures.
 - The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence, but timer enablement remains a separate gate.
+- VPS systemd validation attempt is classified as BLOCKED SAFELY BEFORE INSTALLATION due to invalid repository-relative `Documentation=docs/...` unit metadata and missing `/srv/securezone-ops/fixzone/current` at verification time. This is an installation procedure / unit metadata defect, not a monitor runtime failure, application failure, production data failure, or backup failure.
 
 Application monitoring production verification:
 
@@ -304,17 +305,20 @@ Future manual host-monitor service installation gate:
 
 1. Verify exact Git commit and checksums for `ops/systemd/fixzone-host-monitor.service`, `ops/systemd/fixzone-host-monitor.timer`, and the monitor script.
 2. Verify the approved version directory exists under `/srv/securezone-ops/fixzone/<commit>/`.
-3. Create or verify the `/srv/securezone-ops/fixzone/current` symlink.
-4. Create or verify `/srv/securezone-ops/fixzone/state`.
-5. Install unit files under `/etc/systemd/system/`.
-6. Run `systemd-analyze verify`.
-7. Run `systemctl daemon-reload`.
-8. Do not enable the timer yet.
-9. Manually run `fixzone-host-monitor.service` once.
-10. Inspect service status, journald output, `latest-status.json`, and `heartbeat.json`.
-11. Verify API health, upload count parity, and canary residue `0/0`.
-12. Enable the timer only after explicit approval.
-13. Observe and record the first timer-triggered execution.
+3. Create or verify `/srv/securezone-ops/fixzone/state`.
+4. Create or verify the `/srv/securezone-ops/fixzone/current` symlink.
+5. Download or copy candidate unit files into a review location.
+6. Run `systemd-analyze verify` against the candidate unit files while the current symlink exists.
+7. Install unit files under `/etc/systemd/system/`.
+8. Run `systemd-analyze verify` against the installed units.
+9. Run `systemctl daemon-reload`.
+10. Confirm the timer is disabled and inactive.
+11. Stop for separate manual first-service-run approval.
+12. Manually run `fixzone-host-monitor.service` once only after that approval.
+13. Inspect service status, journald output, `latest-status.json`, and `heartbeat.json`.
+14. Verify API health, upload count parity, and canary residue `0/0`.
+15. Enable the timer only after explicit approval.
+16. Observe and record the first timer-triggered execution.
 
 Rollback gate:
 

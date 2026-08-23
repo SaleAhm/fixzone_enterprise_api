@@ -229,6 +229,7 @@ Current service design:
 - `TimeoutStartSec=120`.
 - No `Restart=always`.
 - Journald remains the logging sink through stdout/stderr.
+- No `Documentation=` directive is included in the production unit files because repository-relative Markdown paths are invalid systemd documentation URIs.
 
 The optional `/etc/fixzone/host-monitor.env` file must contain only non-secret monitor configuration. It may later contain approved backup freshness variables, but this package does not activate the 30h/48h thresholds.
 
@@ -244,6 +245,17 @@ State/heartbeat production verification:
 - c3e37fb host-local state/heartbeat execution was production-verified as PASS.
 - Observed state recorded monitorVersion `c3e37fb`, completed heartbeat, lastExitCode `3`, lastOverallState `UNKNOWN`, valid JSON, secret-field safety PASS, no temp-file residue, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
 - The `UNKNOWN` result is expected until backup freshness thresholds and checksum verification execution are separately approved.
+
+VPS systemd validation attempt: BLOCKED SAFELY BEFORE INSTALLATION.
+
+Findings:
+
+- The first validation gate stopped at `systemd-analyze verify` before unit installation or activation.
+- The unit package used invalid repository-relative `Documentation=docs/...` paths. systemd expects supported URI forms, so those directives were removed instead of inventing a public URL.
+- `systemd-analyze verify` was attempted before `/srv/securezone-ops/fixzone/current` existed, so the approved `ExecStart=/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh` could not be resolved.
+- Classification: installation procedure / unit metadata defect, not monitor runtime failure, application failure, production data failure, or backup failure.
+- No timer was enabled, no threshold was activated, and no production schedule was created by this blocked attempt.
+- Removed invalid repository-relative `Documentation=docs/...` directives from the production unit files.
 
 ## 7. systemd Monitor Timer Design
 
@@ -282,21 +294,24 @@ Chosen scheduling semantic:
 
 Manual installation gate for future approval:
 
-1. Verify the exact Git commit and unit file checksums.
-2. Verify `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh` exists.
-3. Create or verify `/srv/securezone-ops/fixzone/current` points to the approved version.
-4. Create `/srv/securezone-ops/fixzone/state`.
-5. Install the service and timer units.
-6. Run `systemd-analyze verify` against the units.
-7. Run `systemctl daemon-reload`.
-8. Do not enable the timer yet.
-9. Manually run the service once.
-10. Inspect `systemctl status`, `journalctl`, `latest-status.json`, and `heartbeat.json`.
-11. Verify API health.
-12. Verify upload counts.
-13. Verify canary residue `0/0`.
-14. Enable the timer only after separate approval.
-15. Observe the first timer-triggered execution.
+1. Verify `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh` exists.
+2. Verify the monitor script syntax and checksum.
+3. Create or verify `/srv/securezone-ops/fixzone/state`.
+4. Create or verify `/srv/securezone-ops/fixzone/current` points to the approved version.
+5. Download or copy the candidate service and timer unit files into a review location.
+6. Run `systemd-analyze verify` against the candidate unit files while the current symlink exists.
+7. Install the service and timer units into the systemd unit directory.
+8. Run `systemd-analyze verify` against the installed units.
+9. Run `systemctl daemon-reload`.
+10. Confirm the timer is disabled and inactive.
+11. Stop for separate manual first-service-run approval.
+12. Manually run the service once only after that approval.
+13. Inspect `systemctl status`, `journalctl`, `latest-status.json`, and `heartbeat.json`.
+14. Verify API health.
+15. Verify upload counts.
+16. Verify canary residue `0/0`.
+17. Enable the timer only after separate approval.
+18. Observe the first timer-triggered execution.
 
 Rollback procedure:
 
