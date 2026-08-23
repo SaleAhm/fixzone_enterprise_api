@@ -39,7 +39,7 @@ Application monitoring production verification update:
 - Authenticated Super Admin UI verified `GET /api/platform-tools/operational-health` with HTTP `200` and preflight `204`.
 - Observed production states: overall `UNKNOWN`, database `HEALTHY`, database latency `2 ms`, upload storage `HEALTHY`, canary `Removed`, upload files `28`, upload size `2.4 MB`, capacity `HEALTHY`, free space `48%`, backup visibility `UNKNOWN`.
 - Canary residue after checks remained `0` in the container and `0` on the host.
-- Overall `UNKNOWN` is expected because external backup freshness remains outside application runtime visibility and formal RPO/RTO thresholds are not approved.
+- Application runtime `UNKNOWN` remains expected for external backup verification because durable checksum status is not yet consumed by the routine monitor. Host-monitor backup freshness thresholds are production-verified active at `30`/`48` hours, while formal RPO/RTO values remain not approved.
 
 External host-monitoring design update:
 
@@ -53,7 +53,7 @@ Approved pilot policy update:
 - The Balanced / Option B pilot policy is now approved as the Phase 8 Tranche 1 operating policy baseline.
 - Approved operating values: daily coordinated PostgreSQL plus uploads recovery set, 30-hour freshness warning, 48-hour freshness critical, 15-minute host monitor cadence, checksum verification after every backup, monthly restore rehearsal plus change-triggered rehearsals, systemd timer scheduler, and retention target of 7 daily / 4 weekly / 3 monthly recovery points.
 - Formal RPO and formal RTO remain not approved.
-- No systemd unit, timer, backup automation, threshold activation, alert delivery, retention deletion, restore, production repair, or production mutation is authorized by this policy documentation update.
+- No new systemd unit, timer, backup automation, alert delivery, retention deletion, restore, production repair, or production mutation is authorized by this policy documentation update. Threshold activation is separately production-verified PASS.
 
 Host-local state implementation update:
 
@@ -61,7 +61,7 @@ Host-local state implementation update:
 - State output is configured with `FIXZONE_MONITOR_STATE_DIR`; the host default is `/srv/securezone-ops/fixzone/state`, while tests use temporary fixture directories.
 - The monitor updates `heartbeat.json` at start and writes completed-cycle state only after checks finish.
 - State files are written with same-directory temporary files and atomic replacement.
-- The monitor does not delete unrelated files in the state directory and does not schedule itself, activate thresholds, send alerts, create backups, restore backups, delete backups, or mutate production.
+- The monitor does not delete unrelated files in the state directory and does not schedule itself, send alerts, create backups, restore backups, delete backups, or mutate production. Threshold activation is managed by non-secret host-local configuration and is now verified PASS.
 
 Production state/heartbeat verification update:
 
@@ -71,15 +71,16 @@ Production state/heartbeat verification update:
 - Canary residue remained `0` in the container and `0` on the host.
 - Production upload integrity remained `28` container files and `28` host files, approximately `2.6M` on both sides.
 - Post-run API health passed.
-- `UNKNOWN` remains expected because backup freshness threshold runtime configuration and recovery-set checksum verification execution are not yet approved.
+- Backup freshness threshold activation is production-verified PASS with the approved `30` hour warning and `48` hour critical values active.
+- Checksum verification visibility remains `UNKNOWN` until durable verification metadata is read by the monitor from completed recovery sets.
 
 Systemd host-monitor package update:
 
 - Review-only repository-managed unit files are prepared under `ops/systemd/`.
 - `fixzone-host-monitor.service` invokes `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, records state under `/srv/securezone-ops/fixzone/state`, and uses `SuccessExitStatus=1 2 3`.
 - `fixzone-host-monitor.timer` defines the approved 15-minute cadence with `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true`.
-- The package is not installed, enabled, started, pushed, deployed, or used to activate thresholds.
-- Runtime 30h/48h backup freshness thresholds remain a separate approval gate.
+- That repository package was not installed, enabled, started, pushed, deployed, or used to activate thresholds during local review.
+- Runtime 30h/48h backup freshness thresholds are now production-verified active through non-secret host-local configuration.
 - First VPS systemd validation was blocked safely before installation. Findings were invalid repository-relative `Documentation=docs/...` unit metadata and missing `/srv/securezone-ops/fixzone/current` during `systemd-analyze verify`.
 - This is classified as an installation procedure / unit metadata defect, not monitor runtime failure, application failure, production data failure, or backup failure.
 - Corrected package removes invalid `Documentation=` directives and corrected documentation requires state/current setup before systemd verification. No timer was enabled and no threshold was activated.
@@ -100,8 +101,17 @@ Backup freshness threshold activation package update:
 
 - Repository template `ops/systemd/host-monitor.env.example` prepares future activation of the approved 30h/48h policy through `/etc/fixzone/host-monitor.env`.
 - Template values are `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`.
-- Thresholds are not activated by this local package.
+- Threshold activation is production-verified PASS; the local repository template remains non-secret documentation of the active variable names and values.
 - Checksum verification visibility remains `UNKNOWN`; backup jobs should verify checksums after successful backup creation and publish durable verification status for the monitor to read in a future package.
+
+Daily coordinated recovery backup local implementation update:
+
+- Review-only script added at `scripts/operations/fixzone_recovery_backup.sh`.
+- It creates a new `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` UTC recovery set using an in-progress directory and publishes only after validation and checksum verification pass.
+- Required artifacts are `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`.
+- It avoids transient container IDs, avoids printing secret values, uses local PostgreSQL tooling supplied by host configuration, and keeps DB credential handling outside artifacts and logs.
+- It excludes operational-health canary residue from the uploads archive/listing, records residue state, preserves existing recovery sets, and refuses unsafe paths or overwrites.
+- No production backup, systemd backup timer, restore, retention deletion, deployment, push, frontend change, Prisma change, or protected release-script change is authorized by this local implementation.
 
 ## 2. Current Backup Inventory
 

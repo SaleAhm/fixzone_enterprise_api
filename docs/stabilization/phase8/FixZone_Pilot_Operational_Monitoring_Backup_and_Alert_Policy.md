@@ -77,7 +77,8 @@ First supervised host-monitor execution:
 - Script copy: `/srv/securezone-ops/fixzone/89df3a1/fixzone_operational_check.sh`.
 - Exit code: `3`.
 - Classification: `UNKNOWN BY DESIGN`.
-- Reasons: freshness thresholds unset, checksum verification not executed in routine monitoring cycle, restore-rehearsal evidence not directly visible to monitor.
+- Current freshness threshold activation is production-verified PASS with `30` hour warning and `48` hour critical values active through host-local monitor configuration.
+- Remaining reason for checksum-related `UNKNOWN`: durable checksum verification metadata is not yet read by the routine monitor.
 
 Production remained safe:
 
@@ -128,7 +129,7 @@ Override rules:
 - Checksum not yet executed under an approved after-backup policy: `WARNING` after one monitor cycle grace; `UNKNOWN` before the after-backup policy is technically implemented.
 - Restore rehearsal age remains a separate signal and does not by itself redefine backup freshness.
 
-Do not activate these thresholds until implementation is separately approved.
+Production activation status: PASS. The host-local monitor threshold configuration uses `30` hours for warning and `48` hours for critical. This does not approve backup deletion, restore automation, alert delivery changes, or formal RPO/RTO language.
 
 ## 5. Checksum-State Contract
 
@@ -145,7 +146,7 @@ States:
 - `INVALID`: required checksum manifest or required artifact is absent.
 - `UNKNOWN`: checksum verification status is not visible to the routine monitor.
 
-No checksum verification is run by this documentation task.
+No production checksum verification is run by this documentation task. The local recovery-backup implementation now writes durable verification metadata for future monitor integration.
 
 ## 6. systemd Monitor Service Design
 
@@ -231,7 +232,7 @@ Current service design:
 - Journald remains the logging sink through stdout/stderr.
 - No `Documentation=` directive is included in the production unit files because repository-relative Markdown paths are invalid systemd documentation URIs.
 
-The optional `/etc/fixzone/host-monitor.env` file must contain only non-secret monitor configuration. It may later contain approved backup freshness variables, but this package does not activate the 30h/48h thresholds.
+The optional `/etc/fixzone/host-monitor.env` file must contain only non-secret monitor configuration. Production threshold activation is verified PASS with approved `30` hour warning and `48` hour critical values active.
 
 Version selection:
 
@@ -244,7 +245,8 @@ State/heartbeat production verification:
 
 - c3e37fb host-local state/heartbeat execution was production-verified as PASS.
 - Observed state recorded monitorVersion `c3e37fb`, completed heartbeat, lastExitCode `3`, lastOverallState `UNKNOWN`, valid JSON, secret-field safety PASS, no temp-file residue, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
-- The `UNKNOWN` result is expected until backup freshness thresholds and checksum verification execution are separately approved.
+- Backup freshness `UNKNOWN` due only to missing thresholds is resolved after production activation of the approved `30` hour warning and `48` hour critical values.
+- Checksum verification visibility remains `UNKNOWN` until the monitor reads approved durable verification metadata from completed recovery sets.
 
 Systemd host monitor production verification: PASS.
 
@@ -269,6 +271,8 @@ Approved runtime freshness values for future activation:
 - `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`.
 
 The service already loads optional non-secret host-local configuration from `/etc/fixzone/host-monitor.env`. The repository template is not the production file and does not activate thresholds by itself.
+
+Production threshold activation evidence: PASS. Runtime values are active as `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`; backup freshness is no longer `UNKNOWN` solely because thresholds are absent.
 
 Threshold state contract:
 
@@ -421,7 +425,11 @@ Backup service contract:
 - Run checksum verification after artifact creation.
 - Never delete existing recovery sets as part of initial backup creation.
 
-This design is not implemented or scheduled by this document.
+The future systemd service/timer design is not installed or scheduled by this document.
+
+Local implementation status: `scripts/operations/fixzone_recovery_backup.sh` implements the recovery-set producer for repository review only. It creates a new `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` UTC recovery set, writes `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`, verifies checksums before publication, uses an explicit lock, performs a capacity preflight, excludes operational-health canary residue from the archive, and never overwrites existing sets. No production backup, systemd unit, timer, restore, deployment, or retention deletion is activated by this local implementation.
+
+Retention deletion remains unapproved. A future dry-run-only retention selector may propose preserving `7` daily, `4` weekly, and `3` monthly recovery points while always preserving the newest valid set and latest verified set, but no deletion logic is implemented here.
 
 ## 9. Host-Local State / Heartbeat Design
 

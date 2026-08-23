@@ -260,7 +260,7 @@ P1 remains open:
 
 ## 9. Final Recommendation
 
-Use the host script as a read-only V1 operational monitor after review. Keep application operational health and external host monitoring distinct. Treat backup freshness as `UNKNOWN` until thresholds are approved, and treat recovery-set validity as structural unless checksum verification and restore rehearsal evidence are present.
+Use the host script as a read-only V1 operational monitor after review. Keep application operational health and external host monitoring distinct. Backup freshness thresholds are now production-verified active at `30`/`48` hours; treat recovery-set checksum validity as `UNKNOWN` unless durable checksum verification metadata is present.
 
 Policy proposal follow-up:
 
@@ -288,13 +288,16 @@ Systemd host-monitor package follow-up:
 - Repository-managed review-only unit files now live under `ops/systemd/`: `fixzone-host-monitor.service` and `fixzone-host-monitor.timer`.
 - The service uses `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, writes state to `/srv/securezone-ops/fixzone/state`, and treats monitor exits `1`, `2`, and `3` as successful service execution statuses while leaving true execution failures visible to systemd.
 - The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence. It is not installed or enabled by this repository change.
-- Runtime backup freshness thresholds remain inactive. No 30h/48h environment values, backup automation, retention deletion, alert delivery, production mutation, deployment, push, or systemd activation is performed by this package.
+- Historical local systemd packaging did not activate thresholds. Current production threshold activation is verified separately as PASS; no backup automation, retention deletion, alert delivery, production mutation, deployment, push, or systemd activation is performed by this repository review package.
 - VPS validation was blocked safely before installation because repository-relative `Documentation=docs/...` unit metadata was invalid and `/srv/securezone-ops/fixzone/current` did not yet exist when `systemd-analyze verify` was attempted. The package now omits invalid `Documentation=` directives and the docs require current symlink verification before systemd verification.
 
 Systemd production verification and threshold activation follow-up:
 
 - Host monitoring is production-verified as PASS with installed systemd service/timer, VPS `systemd-analyze verify` PASS, manual service run PASS, timer enabled and active, first timer-triggered execution PASS, and systemd successful completed oneshot classification.
-- Monitor state remains `UNKNOWN` by design: backup freshness thresholds are not runtime-active and checksum verification was not executed or read as durable verification status in the monitor cycle.
+- Backup freshness threshold activation is production-verified PASS with the approved `30` hour warning and `48` hour critical values active.
+- Checksum verification visibility remains `UNKNOWN` by design because durable verification status is not yet read by the monitor.
 - Production evidence after timer-triggered execution remained stable: heartbeat advanced at `2026-08-23T10:11:52Z`, canary residue `0/0`, uploads `28/28`, and API healthy.
-- Repository template `ops/systemd/host-monitor.env.example` prepares future activation of approved 30h/48h freshness thresholds through the existing optional `/etc/fixzone/host-monitor.env` mechanism. This local package does not activate thresholds.
+- Repository template `ops/systemd/host-monitor.env.example` documents the active approved 30h/48h freshness threshold variable names and values while keeping secrets out of source control.
+- Local recovery-backup implementation for review lives at `scripts/operations/fixzone_recovery_backup.sh`. It creates a new UTC recovery set, validates PostgreSQL custom dump structure through `pg_restore --list`, archives uploads without canary residue, writes `checksums.sha256`, verifies checksums immediately, and persists `verification-status.json` before publishing the set.
 - Checksum verification should remain a backup-job responsibility after each successful backup, with the monitor reading approved durable verification metadata/status in a future package rather than performing expensive checksum verification every 15 minutes.
+- Retention deletion is not approved. Future retention work should begin with an auditable dry-run selector for `7` daily, `4` weekly, and `3` monthly recovery points while preserving the newest valid and latest verified sets.

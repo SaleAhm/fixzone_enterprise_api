@@ -198,7 +198,8 @@ External host monitoring check:
 - The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence, but timer enablement remains a separate gate.
 - VPS systemd validation attempt is classified as BLOCKED SAFELY BEFORE INSTALLATION due to invalid repository-relative `Documentation=docs/...` unit metadata and missing `/srv/securezone-ops/fixzone/current` at verification time. This is an installation procedure / unit metadata defect, not a monitor runtime failure, application failure, production data failure, or backup failure.
 - Current production systemd host monitoring is verified as PASS: units installed, `systemd-analyze verify` passed on VPS, manual service run passed, timer is enabled and active, first timer-triggered execution passed, systemd recorded a successful completed oneshot, heartbeat advanced at `2026-08-23T10:11:52Z`, canary residue remained `0/0`, uploads remained `28/28`, and API remained healthy.
-- Monitor classification remains `UNKNOWN` by design because backup freshness thresholds are not yet runtime-active and checksum verification visibility remains `UNKNOWN`.
+- Backup freshness threshold activation is production-verified PASS with `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48` active through host-local monitor configuration.
+- Monitor checksum verification visibility remains `UNKNOWN` by design until the monitor reads approved durable verification metadata from completed recovery sets.
 
 Application monitoring production verification:
 
@@ -210,7 +211,18 @@ Approved pilot policy baseline:
 
 - The Balanced / Option B policy is approved as the Phase 8 Tranche 1 pilot operating baseline in `docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md`.
 - Approved values: daily coordinated PostgreSQL plus uploads recovery set, 30-hour freshness warning, 48-hour freshness critical, 15-minute host monitor cadence, checksum verification after every backup, monthly restore rehearsal, systemd timer scheduler, and retention target of 7 daily / 4 weekly / 3 monthly recovery points.
-- This approval does not create the systemd timer, activate runtime thresholds, delete backups, create backups, restore data, or configure alert delivery.
+- Threshold activation is now verified PASS. This approval still does not delete backups, create production backups from this repository change, restore data, configure alert delivery, or approve formal RPO/RTO.
+
+Daily coordinated recovery backup local implementation:
+
+- Review-only script: `scripts/operations/fixzone_recovery_backup.sh`.
+- The script creates a new UTC `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` recovery set only after PostgreSQL custom-format dump creation, database TOC validation, uploads archive creation, manifest writing, checksum generation, and immediate checksum verification pass.
+- Published artifacts are `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`.
+- The script uses explicit serialization, capacity preflight, strict path checks, non-overwrite recovery-set creation, and script-owned failed evidence for partial runs.
+- It excludes `.fixzone-operational-health-canary-*` files from uploads archive/listing, records residue state, and does not modify production uploads.
+- It does not install or enable systemd units, run a production backup, restore data, prune retention, push, deploy, or alter application behavior.
+
+Future monitor integration should read `verification-status.json` from the newest valid recovery set and treat only a real verified `SUCCESS` as healthy checksum evidence. The 15-minute host monitor should not re-hash large recovery artifacts every cycle unless a separate performance and operational review approves that design.
 
 Alert-state model:
 
