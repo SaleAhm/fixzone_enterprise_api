@@ -1,0 +1,11 @@
+[Unit]
+Description=FixZone Daily Coordinated Recovery Backup Timer
+
+[Timer]
+Unit=fixzone-recovery-backup.service
+OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

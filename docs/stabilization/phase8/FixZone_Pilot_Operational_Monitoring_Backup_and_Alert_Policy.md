@@ -411,7 +411,7 @@ Future unit names:
 
 ```text
 fixzone-recovery-backup.service
-fixzone-recovery-backup.timer
+fixzone-recovery-backup.timer.example
 ```
 
 Type:
@@ -438,6 +438,67 @@ Backup service contract:
 The future systemd service/timer design is not installed or scheduled by this document.
 
 Local implementation status: `scripts/operations/fixzone_recovery_backup.sh` implements the recovery-set producer for repository review only. It creates a new `fixzone-v1-backup-YYYY-MM-DD_HH-MM-SS` UTC recovery set, writes `fixzone-postgres.dump`, `fixzone-uploads.tar.gz`, `database-toc.txt`, `uploads-list.txt`, `recovery-manifest.txt`, `checksums.sha256`, and `verification-status.json`, verifies checksums before publication, uses an explicit lock, performs a capacity preflight, excludes operational-health canary residue from the archive, and never overwrites existing sets. No production backup, systemd unit, timer, restore, deployment, or retention deletion is activated by this local implementation.
+
+Daily coordinated recovery backup systemd package status: LOCAL REVIEW ONLY, NOT INSTALLED, NOT ENABLED, NOT SCHEDULED IN PRODUCTION.
+
+Backup service unit:
+
+- Local review file: `ops/systemd/fixzone-recovery-backup.service`.
+- Uses `Type=oneshot` and ordinary failure semantics; backup failures remain failed systemd service executions.
+- Uses `/srv/securezone-ops/fixzone-backup/current` as the stable symlink to the approved versioned backup script directory.
+- Runs `/srv/securezone-ops/fixzone-backup/current/fixzone_recovery_backup.sh`.
+- Loads required host-local configuration from `/etc/fixzone/recovery-backup.env`.
+- Runs as `root` for the pilot because the backup needs Docker inspection/exec, upload reads, backup-root writes, lock creation, and atomic recovery-set publication.
+- Uses `TimeoutStartSec=6h`, journald stdout/stderr, uploads read-only access, backup-root write access, Docker socket access, and no monitor-style `SuccessExitStatus=1 2 3`.
+
+Backup timer template:
+
+Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+
+- Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+- The timer targets `fixzone-recovery-backup.service`.
+- Daily scheduling uses the explicit fail-safe placeholder `OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` until an operator-approved wall-clock time is supplied during a separate installation gate.
+- `Persistent=true` is documented so a missed daily run after host downtime can catch up after reboot; this must be considered during first scheduled-run verification because it may start a backup soon after boot.
+- `RandomizedDelaySec` is intentionally omitted until operations approve whether randomized drift is desirable for a single-host backup job.
+- Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup service package: LOCAL REVIEW READY; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
+Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL.
+- The repository package does not include an installable `ops/systemd/fixzone-recovery-backup.timer`, and does not enable, start, or schedule the timer.
+
+Materialized production candidate name: `fixzone-recovery-backup.timer`.
+
+Replace `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` with the explicitly approved valid `OnCalendar` expression before running `systemd-analyze verify`.
+
+Overlap behavior:
+
+- The backup script lock remains the primary serialization control.
+- systemd will not start another instance of the same active oneshot service while it is still running.
+- A manual backup overlapping a timer run, a timer run overlapping a manual run, or a persistent catch-up overlapping a running job is rejected by the script lock with a failed backup execution rather than creating concurrent recovery sets.
+
+Future production installation gate, documentation only:
+
+1. Verify deployed backend commit.
+2. Install the approved versioned backup script with mode `0755`.
+3. Verify SHA-256 before and after mode correction.
+4. Atomically create/update `/srv/securezone-ops/fixzone-backup/current`.
+5. Install `/etc/fixzone/recovery-backup.env` with approved non-secret values and `root:root` ownership, mode `0640` or stricter.
+6. Verify exact PostgreSQL Swarm service and configured role.
+7. Verify backup root, upload root, and capacity.
+8. Copy/materialize `ops/systemd/fixzone-recovery-backup.timer.example` into a temporary candidate named exactly `fixzone-recovery-backup.timer`.
+9. Replace `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` with the explicitly approved valid `OnCalendar` expression before running `systemd-analyze verify`.
+10. Verify the candidate contains no unresolved `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` token.
+11. Run `systemd-analyze verify <candidate-service> <candidate-timer>`.
+12. Install `/etc/systemd/system/fixzone-recovery-backup.timer` only after verification PASS.
+13. Run `daemon-reload`.
+14. Confirm the backup timer is disabled/inactive.
+15. Manually run exactly one supervised backup service.
+16. Independently verify generated recovery set and monitor durable verification consumption.
+17. Request separate timer-enable approval.
+
+Materialized production candidate name: `fixzone-recovery-backup.timer`.
+
+First scheduled-run gate after separate timer approval:
+
+- Verify service success, exactly one new recovery set, required artifacts, `verification-status.json` state `SUCCESS`, checksum status `SUCCESS`, unchanged uploads, excluded canaries, healthy API, appropriate monitor state, no partial/lock residue, and preserved prior recovery sets.
 
 PostgreSQL execution portability:
 

@@ -1,0 +1,25 @@
+[Unit]
+Description=FixZone Coordinated Recovery Backup
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/srv/securezone-ops/fixzone-backup/current
+EnvironmentFile=/etc/fixzone/recovery-backup.env
+ExecStart=/srv/securezone-ops/fixzone-backup/current/fixzone_recovery_backup.sh
+TimeoutStartSec=6h
+StandardOutput=journal
+StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/securezone-ops/fixzone-backup
+ReadOnlyPaths=/srv/securezone-data/fixzone/uploads
+ReadWritePaths=/srv/securezone-backups/manual
+ReadWritePaths=/run/docker.sock
+ReadWritePaths=/var/run/docker.sock

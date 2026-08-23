@@ -225,6 +225,33 @@ Daily coordinated recovery backup local implementation:
 - It excludes `.fixzone-operational-health-canary-*` files from uploads archive/listing, records residue state, and does not modify production uploads.
 - It does not install or enable systemd units, run a production backup, restore data, prune retention, push, deploy, or alter application behavior.
 
+Daily coordinated recovery backup systemd package:
+
+Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+
+- Status: LOCAL REVIEW ONLY, NOT INSTALLED, NOT ENABLED, NOT SCHEDULED IN PRODUCTION.
+- Service unit: `ops/systemd/fixzone-recovery-backup.service`.
+- Timer template: `ops/systemd/fixzone-recovery-backup.timer.example`.
+- Version lifecycle: deploy the backup script under `/srv/securezone-ops/fixzone-backup/<version>` and move `/srv/securezone-ops/fixzone-backup/current` atomically; do not hard-code commit hashes in the permanent unit.
+- Service execution: `Type=oneshot`, `User=root`, `Group=root`, `EnvironmentFile=/etc/fixzone/recovery-backup.env`, `ExecStart=/srv/securezone-ops/fixzone-backup/current/fixzone_recovery_backup.sh`, and `TimeoutStartSec=6h`.
+- Permissions: uploads are read-only, `/srv/securezone-backups/manual` is writable, Docker socket access is available for Swarm task discovery/exec, and broad filesystem write access is not granted.
+- Failure semantics: do not copy the host-monitor `SuccessExitStatus=1 2 3` contract; a failed backup must leave `fixzone-recovery-backup.service` failed.
+- Timer scheduling: daily backup timing requires separate operator approval. The review template contains `OnCalendar=FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` as a fail-safe placeholder until that approval exists.
+The materialized production candidate must be named `fixzone-recovery-backup.timer` and must contain no unresolved `FIXZONE_APPROVED_DAILY_BACKUP_TIME_REQUIRED` token.
+- After exact schedule approval, copy/materialize the template into a temporary `fixzone-recovery-backup.timer`, replace the placeholder with the approved valid `OnCalendar` expression, run `systemd-analyze verify <candidate-service> <candidate-timer>`, install `/etc/systemd/system/fixzone-recovery-backup.timer` only after PASS, run `daemon-reload`, confirm the timer remains disabled/inactive, perform the manual service-run gate, then request separate timer-enable approval.
+- Daily backup policy: APPROVED; exact daily execution time: NOT YET APPROVED; backup service package: LOCAL REVIEW READY; backup timer: TEMPLATE ONLY / NOT INSTALLABLE UNTIL SCHEDULE APPROVAL; production backup scheduling: NOT ACTIVE; retention deletion: NOT APPROVED.
+- `Persistent=true` is intended for missed daily backup catch-up after downtime; the first scheduled-run gate must account for immediate catch-up after reboot.
+- Retention deletion remains unapproved. The service and timer do not prune old recovery sets.
+
+Monitoring milestone after version metadata lifecycle hardening:
+
+- Host monitor code/version `ba7e816` is production-verified by manual service execution and natural 15-minute timer execution.
+- Installed versioned monitor path is `/srv/securezone-ops/fixzone/ba7e816` with `/srv/securezone-ops/fixzone/current -> /srv/securezone-ops/fixzone/ba7e816`.
+- The permanent host-monitor service no longer pins a stale monitor commit hash.
+- Durable recovery-set verification consumption is PASS for `fixzone-v1-backup-2026-08-23_13-35-46`, durable state `SUCCESS`, checksum algorithm `sha256`.
+- Production integrity remained uploads host `28`, container `28`, canaries host `0`, container `0`, API HEALTHY, monitor timer ENABLED/ACTIVE.
+- The recovery set remains `ARTIFACT-INTEGRITY VERIFIED`, not `RESTORE-PROVEN`; no restore has been performed.
+
 First backup preflight discovery:
 
 - Status: PASS for read-only discovery only; the first production backup has not been executed.
