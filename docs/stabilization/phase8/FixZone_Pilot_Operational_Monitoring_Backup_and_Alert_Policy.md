@@ -208,6 +208,43 @@ Compatible hardening options to evaluate:
 - `ProtectSystem=full` if it does not block Docker/socket or required read paths.
 - `ReadWritePaths=/srv/securezone-ops/fixzone/state` only after state output is implemented.
 
+Local implementation package prepared for review:
+
+```text
+ops/systemd/fixzone-host-monitor.service
+```
+
+The service is repository-managed only and is not installed on production by this task.
+
+Current service design:
+
+- `Type=oneshot`.
+- `User=root` / `Group=root` for the initial pilot because the monitor needs Docker inspection plus host upload and backup metadata access. A future dedicated `fixzone-ops` identity may be approved only if Docker and filesystem permissions are explicitly governed.
+- `WorkingDirectory=/srv/securezone-ops/fixzone/current`.
+- `ExecStart=/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`.
+- `Environment=FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state`.
+- `Environment=FIXZONE_MONITOR_VERSION=c3e37fb`.
+- Optional non-secret override file: `EnvironmentFile=-/etc/fixzone/host-monitor.env`.
+- `SuccessExitStatus=1 2 3`, so monitor `WARNING`, `CRITICAL`, and `UNKNOWN` classifications are not treated as implementation crashes.
+- `TimeoutStartSec=120`.
+- No `Restart=always`.
+- Journald remains the logging sink through stdout/stderr.
+
+The optional `/etc/fixzone/host-monitor.env` file must contain only non-secret monitor configuration. It may later contain approved backup freshness variables, but this package does not activate the 30h/48h thresholds.
+
+Version selection:
+
+- Production monitor versions remain under `/srv/securezone-ops/fixzone/<commit>/`.
+- `/srv/securezone-ops/fixzone/current` should be an atomically switched symlink to the approved version directory.
+- Future upgrades install a new version directory, verify its checksum and monitor output, then atomically switch `current`.
+- Rollback switches `current` back to the previous preserved version directory and manually runs the service once before any timer use.
+
+State/heartbeat production verification:
+
+- c3e37fb host-local state/heartbeat execution was production-verified as PASS.
+- Observed state recorded monitorVersion `c3e37fb`, completed heartbeat, lastExitCode `3`, lastOverallState `UNKNOWN`, valid JSON, secret-field safety PASS, no temp-file residue, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
+- The `UNKNOWN` result is expected until backup freshness thresholds and checksum verification execution are separately approved.
+
 ## 7. systemd Monitor Timer Design
 
 Timer name:
@@ -230,6 +267,45 @@ Behavior:
 - Triggers the one-shot monitor service.
 - Does not overlap monitor runs; systemd will not start a second instance while the service is still active.
 - Does not activate until separately approved and created on the VPS.
+
+Local implementation package prepared for review:
+
+```text
+ops/systemd/fixzone-host-monitor.timer
+```
+
+Chosen scheduling semantic:
+
+- Use `OnUnitActiveSec=15min` for the pilot timer because it schedules relative to the service activation cycle and pairs naturally with a one-shot monitor.
+- `OnCalendar` would provide stricter wall-clock alignment, but wall-clock predictability is less important than a simple recurring health cadence for this pilot.
+- systemd will not start a second instance of the same one-shot service while the previous run is still active; a long run therefore does not create unsafe concurrent monitor executions.
+
+Manual installation gate for future approval:
+
+1. Verify the exact Git commit and unit file checksums.
+2. Verify `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh` exists.
+3. Create or verify `/srv/securezone-ops/fixzone/current` points to the approved version.
+4. Create `/srv/securezone-ops/fixzone/state`.
+5. Install the service and timer units.
+6. Run `systemd-analyze verify` against the units.
+7. Run `systemctl daemon-reload`.
+8. Do not enable the timer yet.
+9. Manually run the service once.
+10. Inspect `systemctl status`, `journalctl`, `latest-status.json`, and `heartbeat.json`.
+11. Verify API health.
+12. Verify upload counts.
+13. Verify canary residue `0/0`.
+14. Enable the timer only after separate approval.
+15. Observe the first timer-triggered execution.
+
+Rollback procedure:
+
+- Stop and disable the timer if required.
+- Preserve state and journal evidence.
+- Atomically switch `/srv/securezone-ops/fixzone/current` back to the previous version directory.
+- Run `systemctl daemon-reload` only if unit files changed.
+- Manually test the previous monitor before restoring timer use.
+- Never touch production uploads or backups during monitor rollback.
 
 ## 8. Future Backup Service/Timer Design
 

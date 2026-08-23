@@ -1,0 +1,13 @@
+[Unit]
+Description=Run FixZone Host Operational Monitor every 15 minutes
+Documentation=docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=fixzone-host-monitor.service
+
+[Install]
+WantedBy=timers.target

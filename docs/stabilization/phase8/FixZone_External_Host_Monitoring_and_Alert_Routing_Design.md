@@ -280,3 +280,12 @@ Host-local state implementation follow-up:
 - `heartbeat.json` records lastStartedAt immediately at run start, then lastCompletedAt, lastExitCode, lastOverallState, monitor version, and state-specific timestamps only after completion.
 - State writes use a temp-file plus atomic rename pattern. A failed state write emits a local error and does not fake completion; a healthy operational run with state persistence failure exits `WARNING`, while existing non-healthy operational classifications are preserved.
 - This implementation does not create a schedule, systemd unit, threshold activation, alert delivery route, backup, restore, deletion, production repair, or production mutation.
+
+Systemd host-monitor package follow-up:
+
+- The c3e37fb host-local state/heartbeat monitor was production-verified as PASS from `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh`.
+- Observed production state recorded monitorVersion `c3e37fb`, completed heartbeat fields, lastExitCode `3`, lastOverallState `UNKNOWN`, valid JSON, no temp-file residue, no secret-field leakage, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
+- Repository-managed review-only unit files now live under `ops/systemd/`: `fixzone-host-monitor.service` and `fixzone-host-monitor.timer`.
+- The service uses `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, writes state to `/srv/securezone-ops/fixzone/state`, and treats monitor exits `1`, `2`, and `3` as successful service execution statuses while leaving true execution failures visible to systemd.
+- The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence. It is not installed or enabled by this repository change.
+- Runtime backup freshness thresholds remain inactive. No 30h/48h environment values, backup automation, retention deletion, alert delivery, production mutation, deployment, push, or systemd activation is performed by this package.

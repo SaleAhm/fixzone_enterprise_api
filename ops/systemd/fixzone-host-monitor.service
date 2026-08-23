@@ -1,0 +1,28 @@
+[Unit]
+Description=FixZone Host Operational Monitor
+Documentation=docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/srv/securezone-ops/fixzone/current
+Environment=FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state
+Environment=FIXZONE_MONITOR_ENVIRONMENT=production
+Environment=FIXZONE_MONITOR_VERSION=c3e37fb
+EnvironmentFile=-/etc/fixzone/host-monitor.env
+ExecStart=/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh
+SuccessExitStatus=1 2 3
+TimeoutStartSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/securezone-ops/fixzone
+ReadOnlyPaths=/srv/securezone-data/fixzone/uploads
+ReadOnlyPaths=/srv/securezone-backups
+ReadWritePaths=/srv/securezone-ops/fixzone/state
+ReadWritePaths=/run/docker.sock
+ReadWritePaths=/var/run/docker.sock

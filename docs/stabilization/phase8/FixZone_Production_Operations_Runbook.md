@@ -192,6 +192,10 @@ External host monitoring check:
 - `latest-status.json` records the latest completed cycle; `heartbeat.json` records `lastStartedAt` at start and completion metadata only after the run completes.
 - State write failure is reported locally. It changes an otherwise `HEALTHY` run to `WARNING`, but it does not mask an existing `WARNING`, `CRITICAL`, or `UNKNOWN` operational classification.
 - This state support does not create a systemd timer, activate backup freshness thresholds, configure alert delivery, create backups, restore backups, or delete backups.
+- Production verification of c3e37fb host-local state/heartbeat support is recorded as PASS: valid state JSON, completed heartbeat, lastExitCode `3`, lastOverallState `UNKNOWN`, secret-field safety PASS, no temp-file residue, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
+- Repository-managed systemd service/timer package is prepared locally under `ops/systemd/` for review only. It has not been installed, enabled, started, pushed, deployed, or used to activate backup thresholds.
+- The service package uses `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, `FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state`, optional non-secret `/etc/fixzone/host-monitor.env`, and `SuccessExitStatus=1 2 3` to distinguish monitor classifications from true service execution failures.
+- The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence, but timer enablement remains a separate gate.
 
 Application monitoring production verification:
 
@@ -293,8 +297,28 @@ TO VERIFY:
 - Recurring restore cadence.
 - Rollback rehearsal.
 - Operator-approved scheduling and first production evidence for the external host-monitoring script.
-- Production deployment/versioning of host-local state/heartbeat support.
+- Production deployment/versioning of host-local state/heartbeat support. c3e37fb state/heartbeat execution is verified; recurring timer activation remains separate.
 - First supervised systemd timer run after separate approval.
+
+Future manual host-monitor service installation gate:
+
+1. Verify exact Git commit and checksums for `ops/systemd/fixzone-host-monitor.service`, `ops/systemd/fixzone-host-monitor.timer`, and the monitor script.
+2. Verify the approved version directory exists under `/srv/securezone-ops/fixzone/<commit>/`.
+3. Create or verify the `/srv/securezone-ops/fixzone/current` symlink.
+4. Create or verify `/srv/securezone-ops/fixzone/state`.
+5. Install unit files under `/etc/systemd/system/`.
+6. Run `systemd-analyze verify`.
+7. Run `systemctl daemon-reload`.
+8. Do not enable the timer yet.
+9. Manually run `fixzone-host-monitor.service` once.
+10. Inspect service status, journald output, `latest-status.json`, and `heartbeat.json`.
+11. Verify API health, upload count parity, and canary residue `0/0`.
+12. Enable the timer only after explicit approval.
+13. Observe and record the first timer-triggered execution.
+
+Rollback gate:
+
+- Disable/stop the timer if required, preserve state evidence, atomically switch `current` back to a previous version, manually test the previous monitor, and never alter production uploads or backups as part of monitor rollback.
 
 BLOCKS PILOT:
 

@@ -63,6 +63,24 @@ Host-local state implementation update:
 - State files are written with same-directory temporary files and atomic replacement.
 - The monitor does not delete unrelated files in the state directory and does not schedule itself, activate thresholds, send alerts, create backups, restore backups, delete backups, or mutate production.
 
+Production state/heartbeat verification update:
+
+- c3e37fb state/heartbeat monitor execution is production-verified as PASS from `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh`.
+- Observed heartbeat recorded monitorVersion `c3e37fb`, lastStartedAt, lastCompletedAt, lastExitCode `3`, lastOverallState `UNKNOWN`, and lastUnknownAt.
+- State JSON validated; secret-field safety passed; no temp-file residue was observed.
+- Canary residue remained `0` in the container and `0` on the host.
+- Production upload integrity remained `28` container files and `28` host files, approximately `2.6M` on both sides.
+- Post-run API health passed.
+- `UNKNOWN` remains expected because backup freshness threshold runtime configuration and recovery-set checksum verification execution are not yet approved.
+
+Systemd host-monitor package update:
+
+- Review-only repository-managed unit files are prepared under `ops/systemd/`.
+- `fixzone-host-monitor.service` invokes `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, records state under `/srv/securezone-ops/fixzone/state`, and uses `SuccessExitStatus=1 2 3`.
+- `fixzone-host-monitor.timer` defines the approved 15-minute cadence with `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true`.
+- The package is not installed, enabled, started, pushed, deployed, or used to activate thresholds.
+- Runtime 30h/48h backup freshness thresholds remain a separate approval gate.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:
