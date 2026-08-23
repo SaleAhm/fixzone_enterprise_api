@@ -246,6 +246,45 @@ State/heartbeat production verification:
 - Observed state recorded monitorVersion `c3e37fb`, completed heartbeat, lastExitCode `3`, lastOverallState `UNKNOWN`, valid JSON, secret-field safety PASS, no temp-file residue, canary residue `0/0`, upload count `28/28`, and post-run API health PASS.
 - The `UNKNOWN` result is expected until backup freshness thresholds and checksum verification execution are separately approved.
 
+Systemd host monitor production verification: PASS.
+
+- Installed monitor: `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh`.
+- Current symlink: `/srv/securezone-ops/fixzone/current -> /srv/securezone-ops/fixzone/c3e37fb`.
+- State directory: `/srv/securezone-ops/fixzone/state`.
+- Installed units: `/etc/systemd/system/fixzone-host-monitor.service` and `/etc/systemd/system/fixzone-host-monitor.timer`.
+- VPS `systemd-analyze verify`: PASS.
+- Manual service run: PASS.
+- Timer: enabled and active.
+- First timer-triggered execution: PASS.
+- Systemd classification: successful completed oneshot.
+- Monitor classification: `UNKNOWN` by design with lastExitCode `3`, lastOverallState `UNKNOWN`, monitorVersion `c3e37fb`, latest heartbeat completion `2026-08-23T10:11:52Z`.
+- Canary residue remained `0/0`; uploads remained `28/28`; API remained healthy; no production evidence loss or mutation was observed.
+- Thresholds are not yet active. Checksum verification visibility remains `UNKNOWN`.
+
+Threshold activation package template: `ops/systemd/host-monitor.env.example`.
+
+Approved runtime freshness values for future activation:
+
+- `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30`.
+- `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`.
+
+The service already loads optional non-secret host-local configuration from `/etc/fixzone/host-monitor.env`. The repository template is not the production file and does not activate thresholds by itself.
+
+Threshold state contract:
+
+- Backup age less than `30 hours`: `HEALTHY`.
+- Backup age greater than or equal to `30 hours` and less than `48 hours`: `WARNING`.
+- Backup age greater than or equal to `48 hours`: `CRITICAL`.
+- Required recovery artifact missing or invalid recovery set: `CRITICAL`, regardless of age.
+- Metadata unavailable: `UNKNOWN`.
+
+Checksum visibility recommendation:
+
+- Do not fake checksum `HEALTHY` when the monitor did not execute or read approved verification evidence.
+- Keep checksum verification as a backup-job responsibility after every successful backup.
+- The routine 15-minute monitor should read durable verification metadata/status from the recovery set when that format is approved, rather than performing expensive checksum verification every cycle.
+- `FIXZONE_VERIFY_BACKUP_CHECKSUMS=true` remains an optional read-only monitor capability, not the preferred pilot cadence.
+
 VPS systemd validation attempt: BLOCKED SAFELY BEFORE INSTALLATION.
 
 Findings:
@@ -312,6 +351,36 @@ Manual installation gate for future approval:
 16. Verify canary residue `0/0`.
 17. Enable the timer only after separate approval.
 18. Observe the first timer-triggered execution.
+
+Versioned monitor executable installation requirement:
+
+```text
+install -o root -g root -m 0755 <verified-source> <versioned-target>
+```
+
+- Do not rely on `curl` preserving Git executable mode.
+- Verify SHA-256 before and after executable-mode correction; changing the executable bit must not alter the content hash.
+- systemd direct `ExecStart` requires the target script to be executable.
+
+Future threshold activation gate:
+
+1. Verify the timer is currently healthy and active.
+2. Capture heartbeat and latest-status baseline.
+3. Create `/etc/fixzone` if absent.
+4. Install approved `/etc/fixzone/host-monitor.env` with `root:root` ownership and mode `0644`.
+5. Verify the file contains only approved non-secret operational values.
+6. Run `systemctl daemon-reload` if the service environment handling changed.
+7. Manually run the service once.
+8. Inspect `latest-status.json` and `heartbeat.json`.
+9. Confirm backup freshness is no longer `UNKNOWN` solely because thresholds are missing.
+10. Verify canary residue `0/0`.
+11. Verify host/container upload consistency.
+12. Verify API health.
+13. Confirm the timer remains active.
+14. Observe one timer-triggered execution.
+15. Capture evidence.
+
+This document records the activation procedure only. It does not activate thresholds, create backups, delete backups, restore data, configure alert delivery, or mutate production.
 
 Rollback procedure:
 

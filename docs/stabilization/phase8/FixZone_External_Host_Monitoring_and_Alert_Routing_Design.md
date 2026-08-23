@@ -290,3 +290,11 @@ Systemd host-monitor package follow-up:
 - The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence. It is not installed or enabled by this repository change.
 - Runtime backup freshness thresholds remain inactive. No 30h/48h environment values, backup automation, retention deletion, alert delivery, production mutation, deployment, push, or systemd activation is performed by this package.
 - VPS validation was blocked safely before installation because repository-relative `Documentation=docs/...` unit metadata was invalid and `/srv/securezone-ops/fixzone/current` did not yet exist when `systemd-analyze verify` was attempted. The package now omits invalid `Documentation=` directives and the docs require current symlink verification before systemd verification.
+
+Systemd production verification and threshold activation follow-up:
+
+- Host monitoring is production-verified as PASS with installed systemd service/timer, VPS `systemd-analyze verify` PASS, manual service run PASS, timer enabled and active, first timer-triggered execution PASS, and systemd successful completed oneshot classification.
+- Monitor state remains `UNKNOWN` by design: backup freshness thresholds are not runtime-active and checksum verification was not executed or read as durable verification status in the monitor cycle.
+- Production evidence after timer-triggered execution remained stable: heartbeat advanced at `2026-08-23T10:11:52Z`, canary residue `0/0`, uploads `28/28`, and API healthy.
+- Repository template `ops/systemd/host-monitor.env.example` prepares future activation of approved 30h/48h freshness thresholds through the existing optional `/etc/fixzone/host-monitor.env` mechanism. This local package does not activate thresholds.
+- Checksum verification should remain a backup-job responsibility after each successful backup, with the monitor reading approved durable verification metadata/status in a future package rather than performing expensive checksum verification every 15 minutes.

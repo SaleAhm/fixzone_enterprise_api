@@ -197,6 +197,8 @@ External host monitoring check:
 - The service package uses `/srv/securezone-ops/fixzone/current/fixzone_operational_check.sh`, `FIXZONE_MONITOR_STATE_DIR=/srv/securezone-ops/fixzone/state`, optional non-secret `/etc/fixzone/host-monitor.env`, and `SuccessExitStatus=1 2 3` to distinguish monitor classifications from true service execution failures.
 - The timer package uses `OnBootSec=5min`, `OnUnitActiveSec=15min`, `AccuracySec=1min`, and `Persistent=true` for the approved 15-minute cadence, but timer enablement remains a separate gate.
 - VPS systemd validation attempt is classified as BLOCKED SAFELY BEFORE INSTALLATION due to invalid repository-relative `Documentation=docs/...` unit metadata and missing `/srv/securezone-ops/fixzone/current` at verification time. This is an installation procedure / unit metadata defect, not a monitor runtime failure, application failure, production data failure, or backup failure.
+- Current production systemd host monitoring is verified as PASS: units installed, `systemd-analyze verify` passed on VPS, manual service run passed, timer is enabled and active, first timer-triggered execution passed, systemd recorded a successful completed oneshot, heartbeat advanced at `2026-08-23T10:11:52Z`, canary residue remained `0/0`, uploads remained `28/28`, and API remained healthy.
+- Monitor classification remains `UNKNOWN` by design because backup freshness thresholds are not yet runtime-active and checksum verification visibility remains `UNKNOWN`.
 
 Application monitoring production verification:
 
@@ -319,6 +321,32 @@ Future manual host-monitor service installation gate:
 14. Verify API health, upload count parity, and canary residue `0/0`.
 15. Enable the timer only after explicit approval.
 16. Observe and record the first timer-triggered execution.
+
+Future versioned monitor installation must use executable mode:
+
+```text
+install -o root -g root -m 0755 <verified-source> <versioned-target>
+```
+
+The VPS installation found that a `curl`-downloaded monitor arrived as mode `0644`; direct systemd `ExecStart` required `0755`. Verify SHA-256 before and after mode correction. The executable bit must change only file mode, not content hash.
+
+Future backup freshness threshold activation gate:
+
+1. Verify the timer is currently healthy and active.
+2. Capture heartbeat and latest-status baseline.
+3. Create `/etc/fixzone` if absent.
+4. Install approved `/etc/fixzone/host-monitor.env` with `root:root` ownership and mode `0644`.
+5. Verify only approved non-secret values are present.
+6. Run `systemctl daemon-reload` if service environment handling changed.
+7. Manually run the service once.
+8. Inspect `latest-status.json` and `heartbeat.json`.
+9. Confirm backup freshness is no longer `UNKNOWN` solely because thresholds are missing.
+10. Verify canary residue `0/0`, upload consistency, and API health.
+11. Confirm the timer remains active.
+12. Observe one timer-triggered execution.
+13. Capture evidence.
+
+The repository threshold template is `ops/systemd/host-monitor.env.example`. It uses `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`, matching the current monitor variable names.
 
 Rollback gate:
 

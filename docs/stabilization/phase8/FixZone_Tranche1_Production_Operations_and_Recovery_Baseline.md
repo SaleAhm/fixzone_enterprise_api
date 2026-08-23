@@ -84,6 +84,25 @@ Systemd host-monitor package update:
 - This is classified as an installation procedure / unit metadata defect, not monitor runtime failure, application failure, production data failure, or backup failure.
 - Corrected package removes invalid `Documentation=` directives and corrected documentation requires state/current setup before systemd verification. No timer was enabled and no threshold was activated.
 
+Systemd production verification update:
+
+- Host monitor systemd installation is production-verified as PASS.
+- Installed monitor: `/srv/securezone-ops/fixzone/c3e37fb/fixzone_operational_check.sh`.
+- Current symlink: `/srv/securezone-ops/fixzone/current -> /srv/securezone-ops/fixzone/c3e37fb`.
+- Installed units: `/etc/systemd/system/fixzone-host-monitor.service` and `/etc/systemd/system/fixzone-host-monitor.timer`.
+- Timer is enabled and active with the approved 15-minute design.
+- Manual service run and first timer-triggered execution passed; systemd recorded a successful completed oneshot.
+- Monitor classification remains `UNKNOWN` by design with lastExitCode `3`, lastOverallState `UNKNOWN`, monitorVersion `c3e37fb`, and heartbeat completion `2026-08-23T10:11:52Z`.
+- Canary residue remained `0/0`, uploads remained `28/28`, and API remained healthy.
+- No production evidence loss or mutation was observed.
+
+Backup freshness threshold activation package update:
+
+- Repository template `ops/systemd/host-monitor.env.example` prepares future activation of the approved 30h/48h policy through `/etc/fixzone/host-monitor.env`.
+- Template values are `FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS=30` and `FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS=48`.
+- Thresholds are not activated by this local package.
+- Checksum verification visibility remains `UNKNOWN`; backup jobs should verify checksums after successful backup creation and publish durable verification status for the monitor to read in a future package.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:
