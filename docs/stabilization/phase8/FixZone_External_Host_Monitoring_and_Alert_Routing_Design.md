@@ -271,3 +271,12 @@ Approved pilot policy follow-up:
 
 - `docs/stabilization/phase8/FixZone_Pilot_Operational_Monitoring_Backup_and_Alert_Policy.md` records the operator-approved Balanced / Option B pilot policy baseline.
 - Approval covers policy values only; it does not create a systemd timer, activate thresholds, configure alert delivery, create/delete backups, restore data, or mutate production.
+
+Host-local state implementation follow-up:
+
+- `scripts/operations/fixzone_operational_check.sh` now supports host-local machine-readable state through `FIXZONE_MONITOR_STATE_DIR`, defaulting to `/srv/securezone-ops/fixzone/state` for future host use.
+- The monitor owns only `latest-status.json`, `heartbeat.json`, and its own same-directory temporary files while writing those two JSON files.
+- `latest-status.json` records the most recent completed monitor cycle: schema version, timestamp/completedAt, monitor version, environment, overall state, exit code, safe check states/summaries, and deduplicated alert objects.
+- `heartbeat.json` records lastStartedAt immediately at run start, then lastCompletedAt, lastExitCode, lastOverallState, monitor version, and state-specific timestamps only after completion.
+- State writes use a temp-file plus atomic rename pattern. A failed state write emits a local error and does not fake completion; a healthy operational run with state persistence failure exits `WARNING`, while existing non-healthy operational classifications are preserved.
+- This implementation does not create a schedule, systemd unit, threshold activation, alert delivery route, backup, restore, deletion, production repair, or production mutation.

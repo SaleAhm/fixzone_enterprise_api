@@ -55,6 +55,14 @@ Approved pilot policy update:
 - Formal RPO and formal RTO remain not approved.
 - No systemd unit, timer, backup automation, threshold activation, alert delivery, retention deletion, restore, production repair, or production mutation is authorized by this policy documentation update.
 
+Host-local state implementation update:
+
+- `scripts/operations/fixzone_operational_check.sh` now has local review-only support for `latest-status.json` and `heartbeat.json`.
+- State output is configured with `FIXZONE_MONITOR_STATE_DIR`; the host default is `/srv/securezone-ops/fixzone/state`, while tests use temporary fixture directories.
+- The monitor updates `heartbeat.json` at start and writes completed-cycle state only after checks finish.
+- State files are written with same-directory temporary files and atomic replacement.
+- The monitor does not delete unrelated files in the state directory and does not schedule itself, activate thresholds, send alerts, create backups, restore backups, delete backups, or mutate production.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:
@@ -382,6 +390,7 @@ Open Phase 8 items:
 - Backup automation implementation and scheduling.
 - Retention dry-run and later governed enforcement.
 - Alert delivery architecture beyond structured logs and host-local status.
+- Production deployment/versioning of monitor state and heartbeat support.
 - Recurring restore cadence.
 - Rollback rehearsal.
 - Host-level mount monitoring for actual bind source/destination identity.

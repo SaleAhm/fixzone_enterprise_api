@@ -187,6 +187,11 @@ External host monitoring check:
 - It must be reviewed and operator-approved before scheduled production execution.
 - It must compare current host/container values, not the historical `28` file baseline as a permanent expected count.
 - Backup freshness remains `UNKNOWN` when no approved freshness threshold is configured.
+- Local host-state support is implemented for review through `FIXZONE_MONITOR_STATE_DIR`, with a host default of `/srv/securezone-ops/fixzone/state`.
+- The monitor writes only `latest-status.json`, `heartbeat.json`, and its own atomic-write temp files in the configured state directory.
+- `latest-status.json` records the latest completed cycle; `heartbeat.json` records `lastStartedAt` at start and completion metadata only after the run completes.
+- State write failure is reported locally. It changes an otherwise `HEALTHY` run to `WARNING`, but it does not mask an existing `WARNING`, `CRITICAL`, or `UNKNOWN` operational classification.
+- This state support does not create a systemd timer, activate backup freshness thresholds, configure alert delivery, create backups, restore backups, or delete backups.
 
 Application monitoring production verification:
 
@@ -288,7 +293,8 @@ TO VERIFY:
 - Recurring restore cadence.
 - Rollback rehearsal.
 - Operator-approved scheduling and first production evidence for the external host-monitoring script.
-- Host-local state/heartbeat support and first supervised systemd timer run.
+- Production deployment/versioning of host-local state/heartbeat support.
+- First supervised systemd timer run after separate approval.
 
 BLOCKS PILOT:
 

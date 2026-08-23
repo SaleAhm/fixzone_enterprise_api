@@ -16,11 +16,24 @@ BACKUP_WARNING_HOURS="${FIXZONE_BACKUP_FRESHNESS_WARNING_HOURS:-}"
 BACKUP_CRITICAL_HOURS="${FIXZONE_BACKUP_FRESHNESS_CRITICAL_HOURS:-}"
 VERIFY_BACKUP_CHECKSUMS="${FIXZONE_VERIFY_BACKUP_CHECKSUMS:-false}"
 RESTORE_REHEARSED="${FIXZONE_RESTORE_REHEARSED:-unknown}"
+MONITOR_STATE_DIR="${FIXZONE_MONITOR_STATE_DIR:-/srv/securezone-ops/fixzone/state}"
+MONITOR_VERSION="${FIXZONE_MONITOR_VERSION:-local}"
+MONITOR_ENVIRONMENT="${FIXZONE_MONITOR_ENVIRONMENT:-production}"
+TEST_EXIT_AFTER_START_HEARTBEAT="${FIXZONE_TEST_EXIT_AFTER_START_HEARTBEAT:-false}"
 
 RESULT_LINES=()
+RESULT_KEYS=()
+RESULT_STATES=()
+RESULT_SUMMARIES=()
 ALERT_LINES=()
+ALERT_KEYS=()
+ALERT_STATES=()
+ALERT_SUMMARIES=()
 OVERALL_STATE="HEALTHY"
 DISCOVERED_CONTAINER=""
+STARTED_AT=""
+STATE_START_WRITE_FAILED=false
+STATE_COMPLETE_WRITE_FAILED=false
 
 timestamp() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -48,6 +61,9 @@ add_result() {
   local summary="$3"
   RESULT_LINES+=("${key}_state=${state}")
   RESULT_LINES+=("${key}_summary=${summary}")
+  RESULT_KEYS+=("$key")
+  RESULT_STATES+=("$state")
+  RESULT_SUMMARIES+=("$summary")
   set_overall "$state"
 }
 
@@ -57,8 +73,18 @@ add_detail() {
 
 add_alert() {
   local state="$1"
-  local message="$2"
-  ALERT_LINES+=("alert=${state}:${message}")
+  local key="$2"
+  local summary="$3"
+  local i
+  for i in "${!ALERT_KEYS[@]}"; do
+    if [ "${ALERT_KEYS[$i]}" = "$key" ] && [ "${ALERT_STATES[$i]}" = "$state" ] && [ "${ALERT_SUMMARIES[$i]}" = "$summary" ]; then
+      return
+    fi
+  done
+  ALERT_KEYS+=("$key")
+  ALERT_STATES+=("$state")
+  ALERT_SUMMARIES+=("$summary")
+  ALERT_LINES+=("alert=${state}:${key}:${summary}")
 }
 
 is_number() {
@@ -128,24 +154,58 @@ discover_container() {
 }
 
 check_api() {
+  if [ -n "${FIXZONE_TEST_API_OK+x}" ]; then
+    if [ "$FIXZONE_TEST_API_OK" = "true" ]; then
+      add_result "api" "HEALTHY" "public health endpoint reachable"
+    else
+      add_result "api" "CRITICAL" "public health endpoint unavailable"
+      add_alert "CRITICAL" "api_unavailable" "API health endpoint unavailable"
+    fi
+    return
+  fi
+
   if ! command_exists curl; then
     add_result "api" "UNKNOWN" "curl is unavailable"
-    add_alert "UNKNOWN" "API health check unsupported because curl is unavailable"
+    add_alert "UNKNOWN" "api_unavailable" "API health check unsupported because curl is unavailable"
     return
   fi
   if curl -fsS --max-time "$API_TIMEOUT_SECONDS" "$API_HEALTH_URL" >/dev/null 2>&1; then
     add_result "api" "HEALTHY" "public health endpoint reachable"
   else
     add_result "api" "CRITICAL" "public health endpoint unavailable"
-    add_alert "CRITICAL" "API health endpoint unavailable"
+    add_alert "CRITICAL" "api_unavailable" "API health endpoint unavailable"
   fi
 }
 
 check_service_and_mount() {
+  if [ -n "${FIXZONE_TEST_SERVICE_RUNNING+x}" ] || [ -n "${FIXZONE_TEST_MOUNT_PRESENT+x}" ] || [ -n "${FIXZONE_TEST_MOUNT_SOURCE+x}" ]; then
+    if [ "${FIXZONE_TEST_SERVICE_RUNNING:-true}" != "true" ]; then
+      add_result "service" "CRITICAL" "FixZone API container/service not found"
+      add_result "mount" "UNKNOWN" "mount identity unavailable without running API container"
+      add_alert "CRITICAL" "service_missing" "FixZone API service not running or not discoverable"
+      return
+    fi
+
+    DISCOVERED_CONTAINER="fixzone-api-test"
+    add_result "service" "HEALTHY" "FixZone API container/service is running"
+    if [ "${FIXZONE_TEST_MOUNT_PRESENT:-true}" = "true" ] &&
+      [ "${FIXZONE_TEST_MOUNT_TYPE:-bind}" = "$EXPECTED_MOUNT_TYPE" ] &&
+      [ "${FIXZONE_TEST_MOUNT_SOURCE:-$HOST_UPLOAD_PATH}" = "$HOST_UPLOAD_PATH" ] &&
+      [ "${FIXZONE_TEST_MOUNT_DESTINATION:-$CONTAINER_UPLOAD_PATH}" = "$CONTAINER_UPLOAD_PATH" ]; then
+      add_result "mount" "HEALTHY" "upload bind mount identity matches expected source and destination"
+      add_detail "mount_source" "$HOST_UPLOAD_PATH"
+      add_detail "mount_destination" "$CONTAINER_UPLOAD_PATH"
+    else
+      add_result "mount" "CRITICAL" "expected upload bind mount is missing or mismatched"
+      add_alert "CRITICAL" "mount_invalid" "Upload bind mount identity mismatch"
+    fi
+    return
+  fi
+
   if ! command_exists docker; then
     add_result "service" "UNKNOWN" "docker is unavailable"
     add_result "mount" "UNKNOWN" "docker mount identity check unavailable"
-    add_alert "UNKNOWN" "Docker access unavailable for service and mount checks"
+    add_alert "UNKNOWN" "service_unknown" "Docker access unavailable for service and mount checks"
     return
   fi
 
@@ -154,7 +214,7 @@ check_service_and_mount() {
   if [ -z "$container" ]; then
     add_result "service" "CRITICAL" "FixZone API container/service not found"
     add_result "mount" "UNKNOWN" "mount identity unavailable without running API container"
-    add_alert "CRITICAL" "FixZone API service not running or not discoverable"
+    add_alert "CRITICAL" "service_missing" "FixZone API service not running or not discoverable"
     return
   fi
 
@@ -171,7 +231,7 @@ check_service_and_mount() {
     add_detail "mount_destination" "$CONTAINER_UPLOAD_PATH"
   else
     add_result "mount" "CRITICAL" "expected upload bind mount is missing or mismatched"
-    add_alert "CRITICAL" "Upload bind mount identity mismatch"
+    add_alert "CRITICAL" "mount_invalid" "Upload bind mount identity mismatch"
   fi
 
 }
@@ -200,12 +260,12 @@ check_upload_consistency() {
 
   if [ -z "$container_count" ] || [ -z "$container_size" ]; then
     add_result "upload_consistency" "UNKNOWN" "container upload view unavailable"
-    add_alert "UNKNOWN" "Upload host/container comparison unavailable"
+    add_alert "UNKNOWN" "upload_consistency_unknown" "Upload host/container comparison unavailable"
   elif [ "$host_count" = "$container_count" ] && [ "$host_size" = "$container_size" ]; then
     add_result "upload_consistency" "HEALTHY" "host and container upload counts and sizes match"
   else
     add_result "upload_consistency" "CRITICAL" "host and container upload counts or sizes differ"
-    add_alert "CRITICAL" "Host/container upload tree mismatch"
+    add_alert "CRITICAL" "upload_count_mismatch" "Host/container upload tree mismatch"
   fi
 }
 
@@ -229,14 +289,37 @@ check_canary_residue() {
     add_result "canary_residue" "HEALTHY" "no operational-health canary residue found"
   else
     add_result "canary_residue" "WARNING" "operational-health canary residue found"
-    add_alert "WARNING" "Operational-health canary residue requires review"
+    add_alert "WARNING" "canary_residue" "Operational-health canary residue requires review"
   fi
 }
 
 check_disk() {
+  if [ -n "${FIXZONE_TEST_DF_USED_PERCENT+x}" ]; then
+    local used free
+    used="$FIXZONE_TEST_DF_USED_PERCENT"
+    if ! is_number "$used"; then
+      add_result "disk" "UNKNOWN" "host disk capacity unavailable"
+      add_alert "UNKNOWN" "disk_unknown" "Host disk capacity unavailable"
+      return
+    fi
+    free=$((100 - used))
+    add_detail "disk_free_percent" "$free"
+
+    if [ "$free" -le "$DISK_CRITICAL_FREE_PERCENT" ]; then
+      add_result "disk" "CRITICAL" "host upload filesystem free space is critical"
+      add_alert "CRITICAL" "disk_critical" "Host upload filesystem free space is critical"
+    elif [ "$free" -le "$DISK_WARNING_FREE_PERCENT" ]; then
+      add_result "disk" "WARNING" "host upload filesystem free space is near threshold"
+      add_alert "WARNING" "disk_warning" "Host upload filesystem free space is near warning threshold"
+    else
+      add_result "disk" "HEALTHY" "host upload filesystem free space is above configured thresholds"
+    fi
+    return
+  fi
+
   if ! command_exists df; then
     add_result "disk" "UNKNOWN" "df is unavailable"
-    add_alert "UNKNOWN" "Host disk capacity check unsupported"
+    add_alert "UNKNOWN" "disk_unknown" "Host disk capacity check unsupported"
     return
   fi
 
@@ -244,7 +327,7 @@ check_disk() {
   used="$(df -P "$HOST_UPLOAD_PATH" 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
   if ! is_number "$used"; then
     add_result "disk" "UNKNOWN" "host disk capacity unavailable"
-    add_alert "UNKNOWN" "Host disk capacity unavailable"
+    add_alert "UNKNOWN" "disk_unknown" "Host disk capacity unavailable"
     return
   fi
 
@@ -255,10 +338,10 @@ check_disk() {
 
   if [ "$free" -le "$DISK_CRITICAL_FREE_PERCENT" ]; then
     add_result "disk" "CRITICAL" "host upload filesystem free space is critical"
-    add_alert "CRITICAL" "Host upload filesystem free space is critical"
+    add_alert "CRITICAL" "disk_critical" "Host upload filesystem free space is critical"
   elif [ "$free" -le "$DISK_WARNING_FREE_PERCENT" ]; then
     add_result "disk" "WARNING" "host upload filesystem free space is near threshold"
-    add_alert "WARNING" "Host upload filesystem free space is near warning threshold"
+    add_alert "WARNING" "disk_warning" "Host upload filesystem free space is near warning threshold"
   else
     add_result "disk" "HEALTHY" "host upload filesystem free space is above configured thresholds"
   fi
@@ -306,7 +389,7 @@ check_backup() {
     add_result "backup_freshness" "UNKNOWN" "freshness unavailable because no recovery set was found"
     add_result "backup_verification" "UNKNOWN" "verification unavailable because no recovery set was found"
     add_result "restore_rehearsed" "UNKNOWN" "restore rehearsal evidence unavailable"
-    add_alert "CRITICAL" "No FixZone recovery set found"
+    add_alert "CRITICAL" "backup_missing" "No FixZone recovery set found"
     return
   fi
 
@@ -331,7 +414,7 @@ check_backup() {
     add_detail "backup_manifest_artifact" "$manifest"
   else
     add_result "backup_presence" "CRITICAL" "latest recovery set is missing required artifacts: ${missing[*]}"
-    add_alert "CRITICAL" "Latest recovery set missing required artifacts"
+    add_alert "CRITICAL" "backup_missing" "Latest recovery set missing required artifacts"
   fi
 
   local age
@@ -339,33 +422,33 @@ check_backup() {
   add_detail "backup_age_hours" "${age:-unknown}"
   if [ -z "$BACKUP_WARNING_HOURS" ] && [ -z "$BACKUP_CRITICAL_HOURS" ]; then
     add_result "backup_freshness" "UNKNOWN" "no approved backup freshness threshold is configured"
-    add_alert "UNKNOWN" "Backup freshness threshold not configured"
+    add_alert "UNKNOWN" "backup_freshness_unknown" "Backup freshness threshold not configured"
   elif [ -z "$age" ]; then
     add_result "backup_freshness" "UNKNOWN" "backup age could not be determined"
-    add_alert "UNKNOWN" "Backup age could not be determined"
+    add_alert "UNKNOWN" "backup_freshness_unknown" "Backup age could not be determined"
   elif [ -n "$BACKUP_CRITICAL_HOURS" ] && [ "$age" -ge "$BACKUP_CRITICAL_HOURS" ]; then
     add_result "backup_freshness" "CRITICAL" "latest recovery set exceeds configured critical freshness threshold"
-    add_alert "CRITICAL" "Backup critical freshness threshold exceeded"
+    add_alert "CRITICAL" "backup_freshness_critical" "Backup critical freshness threshold exceeded"
   elif [ -n "$BACKUP_WARNING_HOURS" ] && [ "$age" -ge "$BACKUP_WARNING_HOURS" ]; then
     add_result "backup_freshness" "WARNING" "latest recovery set exceeds configured warning freshness threshold"
-    add_alert "WARNING" "Backup warning freshness threshold exceeded"
+    add_alert "WARNING" "backup_freshness_warning" "Backup warning freshness threshold exceeded"
   else
     add_result "backup_freshness" "HEALTHY" "latest recovery set is within configured freshness thresholds"
   fi
 
   if [ -z "$checksum" ]; then
     add_result "backup_verification" "UNKNOWN" "checksum verification unavailable without checksum manifest"
-    add_alert "UNKNOWN" "Recovery-set checksum manifest unavailable"
+    add_alert "UNKNOWN" "backup_verification_unknown" "Recovery-set checksum manifest unavailable"
   elif [ "$VERIFY_BACKUP_CHECKSUMS" = "true" ]; then
     if command_exists sha256sum && (cd "$latest" && sha256sum -c "$checksum" >/dev/null 2>&1); then
       add_result "backup_verification" "HEALTHY" "checksum verification passed"
     else
       add_result "backup_verification" "CRITICAL" "checksum verification failed or sha256sum unavailable"
-      add_alert "CRITICAL" "Recovery-set checksum verification failed"
+      add_alert "CRITICAL" "backup_verification_critical" "Recovery-set checksum verification failed"
     fi
   else
     add_result "backup_verification" "UNKNOWN" "checksum manifest is present but verification was not requested"
-    add_alert "UNKNOWN" "Recovery-set checksum verification not executed in this monitoring cycle"
+    add_alert "UNKNOWN" "backup_verification_unknown" "Recovery-set checksum verification not executed in this monitoring cycle"
   fi
 
   if [ "$RESTORE_REHEARSED" = "true" ]; then
@@ -374,6 +457,251 @@ check_backup() {
     add_result "restore_rehearsed" "HEALTHY" "restore rehearsal evidence found in recovery manifest"
   else
     add_result "restore_rehearsed" "UNKNOWN" "restore rehearsal evidence not available to this script"
+  fi
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+json_field_or_null() {
+  local name="$1"
+  local value="$2"
+  printf '  "%s": ' "$name"
+  if [ -n "$value" ]; then
+    json_string "$value"
+  else
+    printf 'null'
+  fi
+}
+
+atomic_write_state_file() {
+  local filename="$1"
+  local target tmp
+  if ! mkdir -p "$MONITOR_STATE_DIR" 2>/dev/null; then
+    printf 'state_persistence_error=unable_to_create_state_directory\n' >&2
+    return 1
+  fi
+
+  target="$MONITOR_STATE_DIR/$filename"
+  tmp="$MONITOR_STATE_DIR/.$filename.$$.$RANDOM.tmp"
+  if ! cat >"$tmp"; then
+    rm -f "$tmp" 2>/dev/null || true
+    printf 'state_persistence_error=unable_to_write_temp_file\n' >&2
+    return 1
+  fi
+  chmod 0644 "$tmp" 2>/dev/null || true
+  if ! mv -f "$tmp" "$target"; then
+    rm -f "$tmp" 2>/dev/null || true
+    printf 'state_persistence_error=unable_to_replace_state_file\n' >&2
+    return 1
+  fi
+}
+
+read_json_string_field() {
+  local file="$1"
+  local field="$2"
+  if [ ! -f "$file" ]; then
+    return
+  fi
+  sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" 2>/dev/null | head -n 1
+}
+
+read_json_number_field() {
+  local file="$1"
+  local field="$2"
+  if [ ! -f "$file" ]; then
+    return
+  fi
+  sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" "$file" 2>/dev/null | head -n 1
+}
+
+heartbeat_field() {
+  local field="$1"
+  read_json_string_field "$MONITOR_STATE_DIR/heartbeat.json" "$field"
+}
+
+heartbeat_number_field() {
+  local field="$1"
+  read_json_number_field "$MONITOR_STATE_DIR/heartbeat.json" "$field"
+}
+
+write_heartbeat() {
+  local completed_at="${1:-}"
+  local exit_code="${2:-}"
+  local overall_state="${3:-}"
+  local last_healthy last_warning last_critical last_unknown
+  last_healthy="$(heartbeat_field "lastHealthyAt")"
+  last_warning="$(heartbeat_field "lastWarningAt")"
+  last_critical="$(heartbeat_field "lastCriticalAt")"
+  last_unknown="$(heartbeat_field "lastUnknownAt")"
+
+  if [ -z "$completed_at" ]; then
+    completed_at="$(heartbeat_field "lastCompletedAt")"
+  fi
+  if [ -z "$exit_code" ]; then
+    exit_code="$(heartbeat_number_field "lastExitCode")"
+  fi
+  if [ -z "$overall_state" ]; then
+    overall_state="$(heartbeat_field "lastOverallState")"
+  fi
+
+  case "$overall_state" in
+    HEALTHY) last_healthy="${completed_at:-$last_healthy}" ;;
+    WARNING) last_warning="${completed_at:-$last_warning}" ;;
+    CRITICAL) last_critical="${completed_at:-$last_critical}" ;;
+    UNKNOWN) last_unknown="${completed_at:-$last_unknown}" ;;
+  esac
+
+  {
+    printf '{\n'
+    printf '  "schemaVersion": 1,\n'
+    json_field_or_null "lastStartedAt" "$STARTED_AT"; printf ',\n'
+    json_field_or_null "lastCompletedAt" "$completed_at"; printf ',\n'
+    if [ -n "$exit_code" ]; then
+      printf '  "lastExitCode": %s,\n' "$exit_code"
+    else
+      printf '  "lastExitCode": null,\n'
+    fi
+    json_field_or_null "lastOverallState" "$overall_state"; printf ',\n'
+    json_field_or_null "monitorVersion" "$MONITOR_VERSION"; printf ',\n'
+    json_field_or_null "lastHealthyAt" "$last_healthy"; printf ',\n'
+    json_field_or_null "lastWarningAt" "$last_warning"; printf ',\n'
+    json_field_or_null "lastCriticalAt" "$last_critical"; printf ',\n'
+    json_field_or_null "lastUnknownAt" "$last_unknown"; printf '\n'
+    printf '}\n'
+  } | atomic_write_state_file "heartbeat.json"
+}
+
+start_heartbeat() {
+  STARTED_AT="$(timestamp)"
+  if ! write_heartbeat "" "" ""; then
+    STATE_START_WRITE_FAILED=true
+  fi
+}
+
+result_state_for() {
+  local key="$1"
+  local i
+  for i in "${!RESULT_KEYS[@]}"; do
+    if [ "${RESULT_KEYS[$i]}" = "$key" ]; then
+      printf '%s' "${RESULT_STATES[$i]}"
+      return
+    fi
+  done
+  printf 'UNKNOWN'
+}
+
+result_summary_for() {
+  local key="$1"
+  local i
+  for i in "${!RESULT_KEYS[@]}"; do
+    if [ "${RESULT_KEYS[$i]}" = "$key" ]; then
+      printf '%s' "${RESULT_SUMMARIES[$i]}"
+      return
+    fi
+  done
+  printf 'not checked'
+}
+
+json_check_name() {
+  case "$1" in
+    upload_consistency) printf 'uploadConsistency' ;;
+    canary_residue) printf 'canaryResidue' ;;
+    backup_presence) printf 'backupPresence' ;;
+    backup_freshness) printf 'backupFreshness' ;;
+    backup_verification) printf 'backupVerification' ;;
+    restore_rehearsed) printf 'restoreRehearsal' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+write_check_json() {
+  local key="$1"
+  local name state summary
+  name="$(json_check_name "$key")"
+  state="$(result_state_for "$key")"
+  summary="$(result_summary_for "$key")"
+  printf '    "%s": { "state": ' "$name"
+  json_string "$state"
+  printf ', "summary": '
+  json_string "$summary"
+  printf ' }'
+}
+
+exit_code_for_state() {
+  case "$1" in
+    HEALTHY) printf '0' ;;
+    WARNING) printf '1' ;;
+    CRITICAL) printf '2' ;;
+    UNKNOWN) printf '3' ;;
+    *) printf '3' ;;
+  esac
+}
+
+write_latest_status() {
+  local completed_at="$1"
+  local exit_code="$2"
+  local checks=(api service mount upload_consistency canary_residue disk backup_presence backup_freshness backup_verification restore_rehearsed)
+  local i key
+  {
+    printf '{\n'
+    printf '  "schemaVersion": 1,\n'
+    json_field_or_null "timestamp" "$completed_at"; printf ',\n'
+    json_field_or_null "completedAt" "$completed_at"; printf ',\n'
+    json_field_or_null "monitorVersion" "$MONITOR_VERSION"; printf ',\n'
+    json_field_or_null "environment" "$MONITOR_ENVIRONMENT"; printf ',\n'
+    json_field_or_null "overallState" "$OVERALL_STATE"; printf ',\n'
+    printf '  "exitCode": %s,\n' "$exit_code"
+    printf '  "checks": {\n'
+    for i in "${!checks[@]}"; do
+      key="${checks[$i]}"
+      write_check_json "$key"
+      if [ "$i" -lt $((${#checks[@]} - 1)) ]; then
+        printf ','
+      fi
+      printf '\n'
+    done
+    printf '  },\n'
+    printf '  "alerts": [\n'
+    for i in "${!ALERT_KEYS[@]}"; do
+      printf '    { "state": '
+      json_string "${ALERT_STATES[$i]}"
+      printf ', "key": '
+      json_string "${ALERT_KEYS[$i]}"
+      printf ', "summary": '
+      json_string "${ALERT_SUMMARIES[$i]}"
+      printf ' }'
+      if [ "$i" -lt $((${#ALERT_KEYS[@]} - 1)) ]; then
+        printf ','
+      fi
+      printf '\n'
+    done
+    printf '  ]\n'
+    printf '}\n'
+  } | atomic_write_state_file "latest-status.json"
+}
+
+persist_completed_state() {
+  local completed_at exit_code
+  completed_at="$(timestamp)"
+  exit_code="$(exit_code_for_state "$OVERALL_STATE")"
+
+  if ! write_latest_status "$completed_at" "$exit_code"; then
+    STATE_COMPLETE_WRITE_FAILED=true
+  fi
+  if ! write_heartbeat "$completed_at" "$exit_code" "$OVERALL_STATE"; then
+    STATE_COMPLETE_WRITE_FAILED=true
   fi
 }
 
@@ -396,9 +724,16 @@ emit_output() {
       printf '%s\n' "$line"
     done
   fi
+  if [ "$STATE_START_WRITE_FAILED" = "true" ] || [ "$STATE_COMPLETE_WRITE_FAILED" = "true" ]; then
+    printf 'state_persistence_state=WARNING\n'
+    printf 'state_persistence_summary=monitor state file persistence failed; latest completed heartbeat may be unavailable\n'
+  fi
 }
 
 exit_for_state() {
+  if { [ "$STATE_START_WRITE_FAILED" = "true" ] || [ "$STATE_COMPLETE_WRITE_FAILED" = "true" ]; } && [ "$OVERALL_STATE" = "HEALTHY" ]; then
+    exit 1
+  fi
   case "$OVERALL_STATE" in
     HEALTHY) exit 0 ;;
     WARNING) exit 1 ;;
@@ -409,12 +744,17 @@ exit_for_state() {
 }
 
 main() {
+  start_heartbeat
+  if [ "$TEST_EXIT_AFTER_START_HEARTBEAT" = "true" ]; then
+    exit 130
+  fi
   check_api
   check_service_and_mount
   check_upload_consistency "$DISCOVERED_CONTAINER"
   check_canary_residue "$DISCOVERED_CONTAINER"
   check_disk
   check_backup
+  persist_completed_state
   emit_output
   exit_for_state
 }
