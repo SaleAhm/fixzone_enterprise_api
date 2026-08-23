@@ -123,6 +123,18 @@ PostgreSQL container portability preflight update:
 - The FixZone PostgreSQL service uses `postgres:17`; multiple unrelated PostgreSQL services exist, so generic PostgreSQL container discovery is unsafe.
 - Repository portability hardening is required before first supervised backup execution.
 
+First supervised backup attempt update:
+
+- Result: FAILED SAFELY.
+- Capacity preflight passed; exact Swarm service selection passed; PostgreSQL major `17` check passed.
+- The backup stopped at `pg_dump` with role-selection/authentication failure because no explicit PostgreSQL database role was supplied and PostgreSQL defaulted to the container execution user.
+- Classification: database role-selection / configuration defect only; not database corruption, PostgreSQL outage, restore failure, upload failure, backup corruption, or application failure.
+- No successful new-style recovery set exists from this attempt.
+- Protected verified baseline remained present.
+- Production state after failure remained uploads `28/28`, canaries `0/0`, API healthy, and host monitor timer enabled/active.
+- Backup retry was not performed; failed evidence cleanup was not performed.
+- Future production retry requires a safely verified `FIXZONE_POSTGRES_USER` value in `/etc/fixzone/recovery-backup.env`; the role value is not invented by this repository update.
+
 ## 2. Current Backup Inventory
 
 Mechanisms found:

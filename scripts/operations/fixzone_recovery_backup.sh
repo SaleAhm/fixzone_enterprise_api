@@ -12,6 +12,7 @@ PG_RESTORE_BIN="${FIXZONE_PG_RESTORE_BIN:-pg_restore}"
 POSTGRES_MODE="${FIXZONE_POSTGRES_MODE:-host}"
 POSTGRES_SERVICE="${FIXZONE_POSTGRES_SERVICE:-}"
 POSTGRES_DATABASE="${FIXZONE_POSTGRES_DATABASE:-}"
+POSTGRES_USER="${FIXZONE_POSTGRES_USER:-}"
 POSTGRES_EXPECTED_MAJOR="${FIXZONE_POSTGRES_EXPECTED_MAJOR:-}"
 DOCKER_BIN="${FIXZONE_DOCKER_BIN:-docker}"
 TAR_BIN="${FIXZONE_TAR_BIN:-tar}"
@@ -285,6 +286,12 @@ require_supported_postgres_mode() {
   esac
 }
 
+require_docker_swarm_database_role() {
+  if [ "$POSTGRES_MODE" = "docker-swarm" ] && [ -z "$POSTGRES_USER" ]; then
+    die "FIXZONE_POSTGRES_USER is required for docker-swarm PostgreSQL mode"
+  fi
+}
+
 read_command_version() {
   local mode="$1"
   local container="$2"
@@ -350,6 +357,7 @@ resolve_swarm_postgres_container() {
 
 prepare_postgres_execution() {
   require_supported_postgres_mode
+  require_docker_swarm_database_role
   if [ "$POSTGRES_MODE" = "docker-swarm" ]; then
     resolve_swarm_postgres_container
     PG_DUMP_VERSION="$(read_command_version "$POSTGRES_MODE" "$POSTGRES_CONTAINER" "pg_dump")"
@@ -365,9 +373,9 @@ run_pg_dump_to_host_file() {
   local dump_path="$1"
   if [ "$POSTGRES_MODE" = "docker-swarm" ]; then
     if [ -n "$POSTGRES_DATABASE" ]; then
-      "$DOCKER_BIN" exec "$POSTGRES_CONTAINER" /usr/bin/pg_dump --format=custom --dbname "$POSTGRES_DATABASE" >"$dump_path"
+      "$DOCKER_BIN" exec "$POSTGRES_CONTAINER" /usr/bin/pg_dump --username "$POSTGRES_USER" --dbname "$POSTGRES_DATABASE" --format=custom >"$dump_path"
     else
-      "$DOCKER_BIN" exec "$POSTGRES_CONTAINER" /usr/bin/pg_dump --format=custom >"$dump_path"
+      "$DOCKER_BIN" exec "$POSTGRES_CONTAINER" /usr/bin/pg_dump --username "$POSTGRES_USER" --format=custom >"$dump_path"
     fi
     return
   fi
@@ -413,6 +421,7 @@ write_manifest() {
     printf '  "postgresMode": %s,\n' "$(json_string "$POSTGRES_MODE")"
     printf '  "postgresService": %s,\n' "$(json_string "$POSTGRES_SERVICE")"
     printf '  "postgresDatabase": %s,\n' "$(json_string "$POSTGRES_DATABASE")"
+    printf '  "postgresUserConfigured": %s,\n' "$([ -n "$POSTGRES_USER" ] && printf 'true' || printf 'false')"
     printf '  "pgDumpVersion": %s,\n' "$(json_string "$PG_DUMP_VERSION")"
     printf '  "pgRestoreVersion": %s,\n' "$(json_string "$PG_RESTORE_VERSION")"
     printf '  "uploadSource": %s,\n' "$(json_string "$UPLOAD_ROOT")"

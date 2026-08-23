@@ -233,6 +233,21 @@ First backup preflight discovery:
 - The FixZone PostgreSQL service uses `postgres:17`; unrelated PostgreSQL services and restore-check containers are present on the VPS, so generic first-container discovery is unsafe.
 - Portability correction is required before the first supervised production backup.
 
+First supervised backup attempt:
+
+- Result: FAILED SAFELY.
+- Capacity preflight: PASS.
+- Database service selection: PASS for `securezoneinfrastructure-postgres-bhwgzt`.
+- PostgreSQL major check: PASS for `17`.
+- Failure point: `pg_dump` authentication/role selection.
+- Error classification: database role-selection / configuration defect. This is not database corruption, PostgreSQL outage, restore failure, upload failure, backup corruption, or application failure.
+- No successful new-style recovery set was created.
+- Protected verified baseline remained present.
+- Upload state after failure remained `28/28`; canary residue remained `0/0`; API remained healthy.
+- Host monitor timer remained enabled and active.
+- Backup retry was not performed and failed evidence cleanup was not performed.
+- Future production retry requires adding the verified production database role to `/etc/fixzone/recovery-backup.env` as `FIXZONE_POSTGRES_USER=<verified-role>` without exposing `POSTGRES_PASSWORD`, `PGPASSWORD`, or `DATABASE_URL`.
+
 Future monitor integration should read `verification-status.json` from the newest valid recovery set and treat only a real verified `SUCCESS` as healthy checksum evidence. The 15-minute host monitor should not re-hash large recovery artifacts every cycle unless a separate performance and operational review approves that design.
 
 Alert-state model:

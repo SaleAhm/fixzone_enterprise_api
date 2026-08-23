@@ -432,9 +432,10 @@ Local implementation status: `scripts/operations/fixzone_recovery_backup.sh` imp
 PostgreSQL execution portability:
 
 - Host-tool mode remains available through `FIXZONE_POSTGRES_MODE=host`, `FIXZONE_PG_DUMP_BIN`, and `FIXZONE_PG_RESTORE_BIN`.
-- Docker Swarm mode is explicitly configured with `FIXZONE_POSTGRES_MODE=docker-swarm` and `FIXZONE_POSTGRES_SERVICE`; it resolves exactly one running task by `com.docker.swarm.service.name`.
+- Docker Swarm mode is explicitly configured with `FIXZONE_POSTGRES_MODE=docker-swarm`, `FIXZONE_POSTGRES_SERVICE`, and `FIXZONE_POSTGRES_USER`; it resolves exactly one running task by `com.docker.swarm.service.name`.
 - Docker Swarm mode streams `pg_dump` stdout from the resolved task to the host recovery-set dump file and validates TOC by streaming the host dump to container-local `pg_restore --list`.
 - The script fails safely if Docker is unavailable, no matching service task is running, multiple matching tasks are running, or the resolved task label does not match the configured service.
+- The script fails before `pg_dump` if `FIXZONE_POSTGRES_USER` is missing in Docker Swarm mode. The database role is operational configuration; the password remains secret and is not represented in the repository template.
 - The repository template `ops/systemd/recovery-backup.env.example` records non-secret backup runtime knobs without real credentials or production task IDs.
 
 First backup preflight discovery:
@@ -443,7 +444,9 @@ First backup preflight discovery:
 - The stable service identity is `securezoneinfrastructure-postgres-bhwgzt`; transient container IDs/task names must not be hard-coded.
 - Host-level `pg_dump` / `pg_restore` are unavailable on the VPS, while the FixZone PostgreSQL task has `/usr/bin/pg_dump` and `/usr/bin/pg_restore` from `postgres:17`.
 - Multiple unrelated PostgreSQL services are present, so generic PostgreSQL container discovery is unsafe.
-- The first production backup is not yet executed; portability hardening must be reviewed first.
+- First supervised backup attempt result: FAILED SAFELY after capacity preflight PASS, exact database service selection PASS, and PostgreSQL major `17` PASS. The failure point was `pg_dump` database role selection/authentication because no explicit PostgreSQL database role was supplied.
+- No successful new-style recovery set was created; protected baseline remained present; uploads remained `28/28`; canaries remained `0/0`; API remained healthy; host monitor timer remained enabled/active; no retry was performed.
+- Future production retry requires adding the safely verified production database role to `/etc/fixzone/recovery-backup.env` as `FIXZONE_POSTGRES_USER=<verified-role>` without adding password fields.
 
 Retention deletion remains unapproved. A future dry-run-only retention selector may propose preserving `7` daily, `4` weekly, and `3` monthly recovery points while always preserving the newest valid set and latest verified set, but no deletion logic is implemented here.
 

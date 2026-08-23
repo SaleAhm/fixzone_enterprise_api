@@ -145,6 +145,10 @@ case "$cmd" in
           fi
           exit 0
         fi
+        if [ "${FIXZONE_TEST_PG_DUMP_AUTH_FAIL:-false}" = "true" ]; then
+          printf 'pg_dump: error: connection to server failed: FATAL: role authentication failed\n' >&2
+          exit 1
+        fi
         if [ "${FIXZONE_TEST_PG_DUMP_FAIL:-false}" = "true" ]; then
           exit 1
         fi
@@ -191,7 +195,7 @@ chmod +x "$FAKE_BIN/docker"
 assert_contains() {
   local file="$1"
   local text="$2"
-  grep -Fq "$text" "$file" || {
+  grep -Fq -- "$text" "$file" || {
     printf 'Expected to find %s in %s\n' "$text" "$file" >&2
     [ -f "$file" ] && cat "$file" >&2
     exit 1
@@ -201,7 +205,7 @@ assert_contains() {
 assert_not_contains() {
   local file="$1"
   local text="$2"
-  if grep -Fq "$text" "$file"; then
+  if grep -Fq -- "$text" "$file"; then
     printf 'Did not expect to find %s in %s\n' "$text" "$file" >&2
     cat "$file" >&2
     exit 1
@@ -420,59 +424,83 @@ if grep -E 'uploadFileCount[" ]*[:=][" ]*28|row_count|expected_rows' "$SCRIPT"; 
   exit 1
 fi
 
-expect_exit 0 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_DATABASE=fixturedb FIXZONE_POSTGRES_EXPECTED_MAJOR=17
+expect_exit 0 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_DATABASE=fixturedb FIXZONE_POSTGRES_USER=fixture_role FIXZONE_POSTGRES_EXPECTED_MAJOR=17
 SET_DIR="$(final_dir)"
 assert_contains "$SET_DIR/fixzone-postgres.dump" "docker streamed"
 assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresMode" "docker-swarm"
 assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresService" "fixture-postgres"
 assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresDatabase" "fixturedb"
+assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.postgresUserConfigured" "true"
 assert_json_eq "$SET_DIR/recovery-manifest.txt" "data.pgDumpVersion.includes('17.2')" "true"
 assert_not_contains "$SET_DIR/recovery-manifest.txt" "fixture-container-1"
+assert_not_contains "$SET_DIR/recovery-manifest.txt" "fixture_role"
 assert_contains "$TEST_ROOT/docker.log" "ps --filter label=com.docker.swarm.service.name=fixture-postgres"
-assert_contains "$TEST_ROOT/docker.log" "exec fixture-container-1 /usr/bin/pg_dump --format=custom --dbname fixturedb"
+assert_contains "$TEST_ROOT/docker.log" "exec fixture-container-1 /usr/bin/pg_dump --username fixture_role --dbname fixturedb --format=custom"
 assert_contains "$TEST_ROOT/docker.log" "exec -i fixture-container-1 /usr/bin/pg_restore --list"
+assert_not_contains "$TEST_ROOT/docker.log" "exec -i fixture-container-1 /usr/bin/pg_restore --username"
 
-expect_exit 0 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "FIXZONE_POSTGRES_USER is required"
+if [ -f "$TEST_ROOT/docker.log" ] && grep -Fq '/usr/bin/pg_dump' "$TEST_ROOT/docker.log"; then
+  printf 'pg_dump should not run when docker-swarm role is missing\n' >&2
+  exit 1
+fi
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "FIXZONE_POSTGRES_USER is required"
+if [ -f "$TEST_ROOT/docker.log" ] && grep -Fq '/usr/bin/pg_dump' "$TEST_ROOT/docker.log"; then
+  printf 'pg_dump should not run when docker-swarm role is empty\n' >&2
+  exit 1
+fi
+
+expect_exit 0 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role
 assert_not_contains "$TEST_ROOT/docker.log" "generic-postgres"
+assert_not_contains "$TEST_ROOT/docker.log" "--username root"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_SWARM_ZERO=true
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_SWARM_ZERO=true
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "no running PostgreSQL task"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_SWARM_MULTI=true
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_SWARM_MULTI=true
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "multiple running PostgreSQL tasks"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_SWARM_LABEL_MISMATCH=true
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_SWARM_LABEL_MISMATCH=true
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "service-name label mismatch"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=wrong-service
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=wrong-service FIXZONE_POSTGRES_USER=fixture_role
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "no running PostgreSQL task"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_DOCKER_BIN=missing-docker
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_DOCKER_BIN=missing-docker
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "docker is unavailable"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_PG_DUMP_FAIL=true
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_PG_DUMP_AUTH_FAIL=true
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "pg_dump failed"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_ZERO_DUMP=true
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_PG_DUMP_FAIL=true
+test ! -d "$(final_dir)"
+assert_contains "$(failed_dir)/failure-summary.txt" "pg_dump failed"
+
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_ZERO_DUMP=true
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "zero bytes"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_TOC_FAIL=true
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_TOC_FAIL=true
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "TOC"
 
-expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_TEST_POSTGRES_VERSION=16 FIXZONE_POSTGRES_EXPECTED_MAJOR=17
+expect_exit 1 "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role FIXZONE_TEST_POSTGRES_VERSION=16 FIXZONE_POSTGRES_EXPECTED_MAJOR=17
 test ! -d "$(final_dir)"
 assert_contains "$(failed_dir)/failure-summary.txt" "major version mismatch"
 
 prepare_fixture
-if run_backup "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres POSTGRES_PASSWORD=fixture_pg_password PGPASSWORD=fixture_pgpassword DATABASE_URL=fixture_database_url; then actual=0; else actual=$?; fi
+if run_backup "$out" FIXZONE_POSTGRES_MODE=docker-swarm FIXZONE_POSTGRES_SERVICE=fixture-postgres FIXZONE_POSTGRES_USER=fixture_role POSTGRES_PASSWORD=fixture_pg_password PGPASSWORD=fixture_pgpassword DATABASE_URL=fixture_database_url; then actual=0; else actual=$?; fi
 [ "$actual" -eq 0 ]
 if grep -R -E 'fixture_pg_password|fixture_pgpassword|fixture_database_url' "$(final_dir)" "$out" "$TEST_ROOT/docker.log" 2>/dev/null; then
   printf 'Credential fixture values appeared in docker-swarm artifacts, output, or command log\n' >&2
