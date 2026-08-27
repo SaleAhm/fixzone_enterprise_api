@@ -1773,6 +1773,19 @@ describe('Report Workflow (e2e)', () => {
     const urls = completionItems.map((item) => item.imageUrl?.toString() ?? '');
     expect(new Set(urls).size).toBe(3);
 
+    const reviewRes = await request(app.getHttpServer())
+      .get(`/api/report/citizen/${report.id}/completion-review`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(reviewRes.status).toBe(200);
+    const reviewCompletionItems = json(reviewRes).evidenceItems.filter(
+      (item) => item.kind === 'report-completion',
+    );
+    expect(reviewCompletionItems).toHaveLength(3);
+    expect(
+      reviewCompletionItems.map((item) => item.imageUrl?.toString() ?? ''),
+    ).toEqual(urls);
+    expect(json(reviewRes).completion.imageUrl).toBe(urls[0]);
+
     for (const url of urls) {
       const imageRes = await request(app.getHttpServer())
         .get(url)

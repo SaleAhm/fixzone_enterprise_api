@@ -2753,9 +2753,27 @@ export class ReportService {
       throw new ForbiddenException('Not your report');
     }
 
+    const evidenceRecord =
+      this.prismaDelegate<PrismaFindManyDelegate<OptionalEvidenceRecord>>(
+        'evidenceRecord',
+      );
+    const evidenceRecords = evidenceRecord
+      ? await evidenceRecord.findMany({
+          where: {
+            relatedEntityType: EvidenceRelatedEntityType.REPORT,
+            relatedEntityId: report.id,
+          },
+          orderBy: [{ uploadedAt: 'asc' }, { id: 'asc' }],
+        })
+      : [];
+
     const awaitingReview = report.status === ReportStatus.COMPLETED_BY_PROVIDER;
     const protectedReport = this.withProtectedEvidenceUrls(report);
-    const evidenceItems = this.reportEvidenceItems(protectedReport, report);
+    const evidenceItems = this.reportEvidenceItems(
+      protectedReport,
+      report,
+      evidenceRecords,
+    );
     const policy = this.policyForReport(report);
     const reviewState = this.reviewStateFor({
       policy,
