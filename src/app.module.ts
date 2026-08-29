@@ -17,6 +17,7 @@ import { RateLimitModule } from './security/rate-limit.module';
 import { PublicModule } from './public/public.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { GovernanceModule } from './governance/governance.module';
+import { PaymentsModule } from './payments/payments.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -40,6 +41,7 @@ import { AppService } from './app.service';
     PublicModule,
     AnalyticsModule,
     GovernanceModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

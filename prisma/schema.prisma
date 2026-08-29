@@ -94,6 +94,43 @@ enum BillingStatus {
   CANCELLED
 }
 
+enum PaymentProvider {
+  PAYSTACK
+}
+
+enum PaymentEnvironment {
+  TEST
+  LIVE
+}
+
+enum PaymentTransactionStatus {
+  INITIALIZED
+  PENDING
+  PROCESSING
+  PAID
+  VERIFIED
+  FAILED
+  ABANDONED
+  EXPIRED
+  REFUNDED
+  REVIEW_REQUIRED
+}
+
+enum OrganizationSubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentReceiptStatus {
+  ISSUED
+  REFUNDED
+  VOIDED
+}
+
 enum ProviderEngagementType {
   INTERNAL_STAFF
   EXTERNAL_CONTRACTOR
@@ -323,6 +360,9 @@ model Organization {
   evidenceRecords     EvidenceRecord[]
   disputeCases        DisputeCase[]
   complianceAuditLogs ComplianceAuditLog[]
+  paymentTransactions PaymentTransaction[]
+  billingSubscriptions OrganizationSubscription[]
+  paymentReceipts     PaymentReceipt[]
 
   @@index([parentId])
   @@index([type])
@@ -391,6 +431,7 @@ model User {
   reportMessages          ReportMessage[]
   entitlement             UserEntitlement?
   complianceAuditLogs     ComplianceAuditLog[]   @relation("ComplianceAuditActor")
+  requestedPayments       PaymentTransaction[]   @relation("PaymentRequestingUser")
 
   @@index([organizationId])
   @@index([secureZoneId])
@@ -853,6 +894,94 @@ model OrganizationUpgradeRequest {
   @@index([requestedPlan])
   @@index([requestedByUserId])
   @@index([reviewedByUserId])
+}
+
+model PaymentTransaction {
+  id                     String                   @id @default(cuid())
+  organizationId         String
+  requestingUserId       String?
+  provider               PaymentProvider
+  environment            PaymentEnvironment
+  internalReference      String                   @unique
+  providerReference      String?
+  providerAccessCode     String?
+  providerAuthorizationUrl String?
+  planCode               SubscriptionPlan
+  amountMinor            Int
+  currency               String
+  status                 PaymentTransactionStatus @default(INITIALIZED)
+  initializedAt          DateTime                 @default(now())
+  paidAt                 DateTime?
+  verifiedAt             DateTime?
+  failedAt               DateTime?
+  abandonedAt            DateTime?
+  refundedAt             DateTime?
+  providerEventReference String?
+  lastReconciledAt       DateTime?
+  reviewReason           String?
+  sanitizedMetadata      Json?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestingUser User?      @relation("PaymentRequestingUser", fields: [requestingUserId], references: [id], onDelete: SetNull)
+  subscription OrganizationSubscription?
+  receipt      PaymentReceipt?
+
+  @@unique([provider, providerReference])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+  @@index([requestingUserId, createdAt])
+  @@index([provider, environment, status])
+  @@index([planCode])
+}
+
+model OrganizationSubscription {
+  id                    String                         @id @default(cuid())
+  organizationId        String
+  planCode              SubscriptionPlan
+  status                OrganizationSubscriptionStatus @default(ACTIVE)
+  currentPeriodStartAt  DateTime
+  currentPeriodEndAt    DateTime?
+  sourceTransactionId   String?                        @unique
+  externalCustomerRef   String?
+  externalSubscriptionRef String?
+  entitlementAppliedAt  DateTime?
+  cancellationRequestedAt DateTime?
+  cancelledAt           DateTime?
+  createdAt             DateTime                       @default(now())
+  updatedAt             DateTime                       @updatedAt
+
+  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourceTransaction PaymentTransaction? @relation(fields: [sourceTransactionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status])
+  @@index([planCode])
+  @@index([currentPeriodEndAt])
+}
+
+model PaymentReceipt {
+  id                String               @id @default(cuid())
+  transactionId     String               @unique
+  organizationId    String
+  receiptNumber     String               @unique
+  paidAt            DateTime
+  organizationName  String
+  planCode          SubscriptionPlan
+  planNameKey       String
+  amountMinor       Int
+  currency          String
+  provider          PaymentProvider
+  providerReference String?
+  status            PaymentReceiptStatus @default(ISSUED)
+  metadata          Json?
+  createdAt         DateTime             @default(now())
+
+  transaction  PaymentTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, paidAt])
+  @@index([planCode])
 }
 
 model JurisdictionZone {

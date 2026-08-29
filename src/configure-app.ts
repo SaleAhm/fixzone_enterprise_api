@@ -7,7 +7,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import * as express from 'express';
-import { Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 
 @Catch()
 class JsonExceptionFilter implements ExceptionFilter {
@@ -42,14 +42,24 @@ class JsonExceptionFilter implements ExceptionFilter {
 }
 
 export function configureApp(app: INestApplication) {
+  const expressApp = app.getHttpAdapter().getInstance() as express.Express;
   if (process.env.TRUST_PROXY === 'true') {
-    app.getHttpAdapter().getInstance().set('trust proxy', 1);
+    expressApp.set('trust proxy', 1);
   }
 
-  app.use(express.json({ limit: '8mb' }));
+  app.use(
+    express.json({
+      limit: '8mb',
+      verify: (req: Request & { rawBody?: Buffer }, _res, buf) => {
+        if (req.originalUrl?.includes('/payments/webhooks/paystack')) {
+          req.rawBody = Buffer.from(buf);
+        }
+      },
+    }),
+  );
   app.use(express.urlencoded({ extended: true, limit: '8mb' }));
 
-  app.use((_req, res, next) => {
+  app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('X-FixZone-Api', 'fixzone-enterprise-api');
     next();
   });
