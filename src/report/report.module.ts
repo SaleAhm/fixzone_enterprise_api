@@ -6,6 +6,7 @@ import { TrustModule } from '../trust/trust.module';
 import { ReportController } from './report.controller';
 import { ReportService } from './report.service';
 import { DispatchAiService } from './services/dispatch-ai.service';
+import { GeoTrustService } from './services/geo-trust.service';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { DispatchAiService } from './services/dispatch-ai.service';
     UploadSecurityModule,
   ],
   controllers: [ReportController],
-  providers: [ReportService, DispatchAiService],
+  providers: [ReportService, DispatchAiService, GeoTrustService],
   exports: [ReportService, DispatchAiService],
 })
 export class ReportModule {}

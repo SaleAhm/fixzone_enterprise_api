@@ -10,6 +10,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { GeoLocationMetadataDto } from './geo-location.dto';
 
 export class CompletionEvidenceImageDto {
   @IsOptional()
@@ -34,6 +35,11 @@ export class CompletionEvidenceImageDto {
   @IsInt()
   @Min(0)
   order?: number;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => GeoLocationMetadataDto)
+  geoMetadata?: GeoLocationMetadataDto;
 }
 
 export class UploadCompletionEvidenceDto extends CompletionEvidenceImageDto {
@@ -43,4 +49,11 @@ export class UploadCompletionEvidenceDto extends CompletionEvidenceImageDto {
   @ValidateNested({ each: true })
   @Type(() => CompletionEvidenceImageDto)
   images?: CompletionEvidenceImageDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => GeoLocationMetadataDto)
+  imageGeoMetadata?: GeoLocationMetadataDto[];
 }

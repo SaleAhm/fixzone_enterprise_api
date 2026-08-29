@@ -88,6 +88,23 @@ type ProviderResponseMetric = {
   reason: string | null;
 };
 
+type EvidenceRecordCreateArgs = {
+  data: {
+    geoLatitude?: number | null;
+    geoTrustOutcome?: string | null;
+    metadata: { order?: number | null };
+  };
+};
+
+type ComplianceAuditCreateArgs = {
+  data: {
+    action: string;
+    metadata: {
+      reasons?: string[];
+    };
+  };
+};
+
 type ProviderResponseReport = {
   status: string;
   assignedAt?: Date | null;
@@ -1814,6 +1831,9 @@ describe('ReportService evidence persistence hardening', () => {
     evidenceImageUrl: null,
     completionImagePath: null,
     completionImageUrl: null,
+    latitude: 9.0765,
+    longitude: 7.4938,
+    locationAccuracy: 15,
   };
 
   function listFiles(path: string): string[] {
@@ -1944,6 +1964,175 @@ describe('ReportService evidence persistence hardening', () => {
 
     expect(prisma.evidenceRecord.create).toHaveBeenCalledTimes(1);
     expect(existsSync(join(uploadRoot, result.completionImagePath))).toBe(true);
+  });
+
+  it('stores per-image geo metadata with the matching completion EvidenceRecord', async () => {
+    const createEvidenceRecord = jest.fn().mockResolvedValue({});
+    const prisma = createPrismaMock({ createEvidenceRecord });
+    const service = createService(prisma);
+
+    const result = await service.uploadCompletionEvidence(
+      report.id,
+      {
+        images: [
+          {
+            contentType: 'image/png',
+            imageBase64: onePixelPngBase64,
+            classification: 'during',
+            order: 0,
+            geoMetadata: {
+              latitude: 9.0766,
+              longitude: 7.4938,
+              accuracyMeters: 12,
+              source: 'DEVICE_GPS',
+              permissionState: 'GRANTED',
+            },
+          },
+          {
+            contentType: 'image/png',
+            imageBase64: onePixelPngBase64,
+            classification: 'after',
+            order: 1,
+            geoMetadata: {
+              latitude: 9.09,
+              longitude: 7.4938,
+              accuracyMeters: 8,
+              source: 'BROWSER_GEOLOCATION',
+              captureMethod: 'BROWSER_API',
+              permissionState: 'GRANTED',
+            },
+          },
+        ],
+      },
+      provider,
+    );
+
+    expect(createEvidenceRecord).toHaveBeenCalledTimes(2);
+    const calls = createEvidenceRecord.mock.calls as [
+      [EvidenceRecordCreateArgs],
+      [EvidenceRecordCreateArgs],
+    ];
+    const first = calls[0][0].data;
+    const second = calls[1][0].data;
+    expect(first.geoLatitude).toBe(9.0766);
+    expect(first.geoTrustOutcome).toBe('CONSISTENT');
+    expect(first.metadata.order).toBe(0);
+    expect(second.geoLatitude).toBe(9.09);
+    expect(second.geoTrustOutcome).toBe('REVIEW_RECOMMENDED');
+    expect(second.metadata.order).toBe(1);
+    expect(result.evidenceItems).toHaveLength(2);
+    expect(result.evidenceItems[0].geoTrust?.trustOutcome).toBe('CONSISTENT');
+    expect(result.evidenceItems[1].geoTrust?.trustOutcome).toBe(
+      'REVIEW_RECOMMENDED',
+    );
+  });
+
+  it('rejects mismatched top-level geo metadata and image arrays before saving files', async () => {
+    const saveBase64Image = jest.fn();
+    const uploadSecurity = {
+      saveBase64Image,
+    } as unknown as UploadSecurityService;
+    const prisma = createPrismaMock();
+    const service = createService(prisma, uploadSecurity);
+
+    await expect(
+      service.uploadCompletionEvidence(
+        report.id,
+        {
+          images: [
+            { contentType: 'image/png', imageBase64: onePixelPngBase64 },
+            { contentType: 'image/png', imageBase64: onePixelPngBase64 },
+          ],
+          imageGeoMetadata: [
+            {
+              latitude: 9.0765,
+              longitude: 7.4938,
+            },
+          ],
+        },
+        provider,
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'GEO_METADATA_IMAGE_COUNT_MISMATCH' },
+    });
+
+    expect(saveBase64Image).not.toHaveBeenCalled();
+    expect(prisma.evidenceRecord.create).not.toHaveBeenCalled();
+    const auditCalls = prisma.complianceAuditLog.create.mock.calls as [
+      [ComplianceAuditCreateArgs],
+    ];
+    expect(auditCalls[0][0].data.action).toBe(
+      'COMPLETION_GEO_METADATA_REJECTED',
+    );
+    expect(auditCalls[0][0].data.metadata.reasons).toEqual([
+      'GEO_METADATA_IMAGE_COUNT_MISMATCH',
+    ]);
+  });
+
+  it('rejects invalid completion geo coordinates before saving files', async () => {
+    const saveBase64Image = jest.fn();
+    const uploadSecurity = {
+      saveBase64Image,
+    } as unknown as UploadSecurityService;
+    const prisma = createPrismaMock();
+    const service = createService(prisma, uploadSecurity);
+
+    await expect(
+      service.uploadCompletionEvidence(
+        report.id,
+        {
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          geoMetadata: {
+            latitude: 91,
+            longitude: 7.4938,
+          },
+        },
+        provider,
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_GEO_METADATA' },
+    });
+
+    expect(saveBase64Image).not.toHaveBeenCalled();
+    expect(prisma.evidenceRecord.create).not.toHaveBeenCalled();
+    const auditCalls = prisma.complianceAuditLog.create.mock.calls as [
+      [ComplianceAuditCreateArgs],
+    ];
+    expect(auditCalls[0][0].data.action).toBe(
+      'COMPLETION_GEO_METADATA_REJECTED',
+    );
+    expect(auditCalls[0][0].data.metadata.reasons).toEqual([
+      'INVALID_GEO_METADATA',
+    ]);
+  });
+
+  it('removes unpersisted completion evidence after geo-backed persistence failure', async () => {
+    const dbError = new Error('EvidenceRecord insert failed');
+    const prisma = createPrismaMock({
+      createEvidenceRecord: jest.fn().mockRejectedValue(dbError),
+    });
+    const service = createService(prisma);
+
+    await expect(
+      service.uploadCompletionEvidence(
+        report.id,
+        {
+          contentType: 'image/png',
+          imageBase64: onePixelPngBase64,
+          geoMetadata: {
+            latitude: 9.0766,
+            longitude: 7.4938,
+            source: 'DEVICE_GPS',
+          },
+        },
+        provider,
+      ),
+    ).rejects.toBe(dbError);
+
+    expect(listFiles(join(uploadRoot, 'report-completion', report.id))).toEqual(
+      [],
+    );
   });
 
   it('removes only unpersisted provider completion evidence after a later EvidenceRecord failure', async () => {

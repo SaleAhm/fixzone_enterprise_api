@@ -447,18 +447,30 @@ model LoginHistory {
 }
 
 model EvidenceRecord {
-  id                String                    @id @default(cuid())
-  ownerUserId       String?
-  organizationId    String?
-  relatedEntityType EvidenceRelatedEntityType
-  relatedEntityId   String
-  fileUrl           String
-  fileType          String?
-  uploadedById      String?
-  uploadedAt        DateTime                  @default(now())
-  description       String?
-  metadata          Json?
-  checksum          String?
+  id                   String                    @id @default(cuid())
+  ownerUserId          String?
+  organizationId       String?
+  relatedEntityType    EvidenceRelatedEntityType
+  relatedEntityId      String
+  fileUrl              String
+  fileType             String?
+  uploadedById         String?
+  uploadedAt           DateTime                  @default(now())
+  description          String?
+  metadata             Json?
+  checksum             String?
+  geoLatitude          Float?
+  geoLongitude         Float?
+  geoAccuracyMeters    Float?
+  geoCapturedAt        DateTime?
+  geoReceivedAt        DateTime?
+  geoSource            String?
+  geoCaptureMethod     String?
+  geoPermissionState   String?
+  geoValidationOutcome String?
+  geoDistanceMeters    Float?
+  geoTrustOutcome      String?
+  geoSchemaVersion     Int                       @default(1)
 
   ownerUser    User?         @relation("EvidenceOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   uploadedBy   User?         @relation("EvidenceUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
@@ -468,6 +480,8 @@ model EvidenceRecord {
   @@index([organizationId, uploadedAt])
   @@index([relatedEntityType, relatedEntityId])
   @@index([uploadedById])
+  @@index([geoLatitude, geoLongitude])
+  @@index([geoTrustOutcome])
 }
 
 model DisputeCase {
@@ -989,7 +1003,11 @@ model Report {
   longitude                         Float?
   locationAccuracy                  Float?
   locationCapturedAt                DateTime?
+  locationReceivedAt                DateTime?
   locationSource                    String?
+  locationPermissionState           String?
+  locationValidationOutcome         String?
+  locationSchemaVersion             Int                 @default(1)
   status                            ReportStatus        @default(PENDING)
   organizationId                    String
   citizenId                         String

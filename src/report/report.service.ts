@@ -64,6 +64,11 @@ import {
   routingLocationText,
   type RoutingJurisdictionMatch,
 } from '../organization/routing-jurisdiction';
+import {
+  GeoTrustService,
+  type GeoInput,
+  type NormalizedGeoMetadata,
+} from './services/geo-trust.service';
 
 type JwtUser = {
   id?: string;
@@ -77,7 +82,26 @@ type JwtUser = {
 };
 
 type EvidenceKind = 'report-evidence' | 'report-completion';
-type SavedEvidenceFile = { imagePath: string; imageUrl: string };
+type EvidenceGeoTrustPayload = {
+  schemaVersion: number;
+  source: string;
+  captureMethod: string;
+  permissionState: string;
+  validationOutcome: string;
+  trustOutcome: string;
+  distanceMeters: number | null;
+  accuracyMeters: number | null;
+  capturedAt: Date | string | null;
+  receivedAt: Date | string | null;
+  warnings: unknown[];
+  validationReasons: unknown[];
+  coordinates: { latitude: number; longitude: number } | null;
+} | null;
+type SavedEvidenceFile = {
+  imagePath: string;
+  imageUrl: string;
+  geoTrust?: EvidenceGeoTrustPayload;
+};
 
 type CompletionPolicyResolution = {
   policy: CompletionPolicy;
@@ -274,6 +298,18 @@ type OptionalEvidenceRecord = {
   fileType?: string | null;
   uploadedAt?: Date | string | null;
   metadata?: unknown;
+  geoLatitude?: number | null;
+  geoLongitude?: number | null;
+  geoAccuracyMeters?: number | null;
+  geoCapturedAt?: Date | string | null;
+  geoReceivedAt?: Date | string | null;
+  geoSource?: string | null;
+  geoCaptureMethod?: string | null;
+  geoPermissionState?: string | null;
+  geoValidationOutcome?: string | null;
+  geoDistanceMeters?: number | null;
+  geoTrustOutcome?: string | null;
+  geoSchemaVersion?: number | null;
 };
 
 type PotentialAssetRecord = {
@@ -338,6 +374,13 @@ type EnterpriseReportWithEvidence = ReportWithEvidence & {
   locationLandmark?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  locationAccuracy?: number | null;
+  locationCapturedAt?: Date | string | null;
+  locationReceivedAt?: Date | string | null;
+  locationSource?: string | null;
+  locationPermissionState?: string | null;
+  locationValidationOutcome?: string | null;
+  locationSchemaVersion?: number | null;
   completionNote?: string | null;
   completedByProviderAt?: Date | string | null;
   completionLatitude?: number | null;
@@ -434,6 +477,9 @@ export class ReportService {
     @Optional()
     @Inject(UploadSecurityService)
     private readonly uploadSecurity?: UploadSecurityService,
+    @Optional()
+    @Inject(GeoTrustService)
+    private readonly geoTrustService?: GeoTrustService,
   ) {}
 
   private prismaDelegate<T>(name: string): T | undefined {
@@ -452,6 +498,14 @@ export class ReportService {
 
   async createReport(user: JwtUser, dto: CreateReportDto) {
     const userId = this.getUserId(user);
+    const reportLocation = this.geoTrust().normalizeReportLocation({
+      latitude: dto.latitude,
+      longitude: dto.longitude,
+      accuracyMeters: dto.locationAccuracy,
+      capturedAt: dto.locationCapturedAt,
+      source: dto.locationSource,
+      permissionState: dto.locationPermissionState,
+    });
 
     if (user.role !== UserRole.CITIZEN) {
       throw new ForbiddenException('Only citizens can create reports');
@@ -475,10 +529,12 @@ export class ReportService {
     const report = await this.prisma.report.create({
       data: {
         ...dto,
-        locationCapturedAt: dto.locationCapturedAt
-          ? new Date(dto.locationCapturedAt)
-          : undefined,
-        locationSource: dto.locationSource ?? this.locationSourceFor(dto),
+        locationCapturedAt: reportLocation.capturedAt ?? undefined,
+        locationReceivedAt: reportLocation.receivedAt,
+        locationSource: dto.locationSource ?? reportLocation.source,
+        locationPermissionState: reportLocation.permissionState,
+        locationValidationOutcome: reportLocation.validationOutcome,
+        locationSchemaVersion: reportLocation.schemaVersion,
         status: routedToOrganization
           ? ReportStatus.ORG_REVIEW
           : ReportStatus.TRIAGE,
@@ -512,6 +568,16 @@ export class ReportService {
       firebaseUid: user.firebaseUid,
       organizationId: report.organizationId,
       assignedOrganizationId: report.assignedOrganizationId,
+      locationSupplied: Boolean(
+        report.latitude != null && report.longitude != null,
+      ),
+    });
+
+    await this.recordGeoAudit(report.id, 'REPORT_GEO_METADATA_RECEIVED', user, {
+      organizationId: report.organizationId,
+      outcome: reportLocation.validationOutcome,
+      trustOutcome: reportLocation.trustOutcome,
+      reasons: reportLocation.validationReasons,
     });
 
     await this.audit('Report Created', user, {
@@ -2208,7 +2274,23 @@ export class ReportService {
       );
     }
 
-    const images = this.completionEvidencePayloads(dto);
+    let images: ReturnType<ReportService['completionEvidencePayloads']>;
+    try {
+      images = this.completionEvidencePayloads(dto);
+    } catch (error) {
+      await this.recordGeoAudit(
+        reportId,
+        'COMPLETION_GEO_METADATA_REJECTED',
+        user,
+        {
+          organizationId: report.organizationId,
+          outcome: 'INVALID_METADATA',
+          validationOutcome: 'INVALID_METADATA',
+          reasons: this.geoRejectionReasons(error),
+        },
+      );
+      throw error;
+    }
     await this.assertEvidenceLimit(
       reportId,
       'report-completion',
@@ -2219,6 +2301,30 @@ export class ReportService {
     const unpersistedFiles = new Set<SavedEvidenceFile>();
     try {
       for (const [index, image] of images.entries()) {
+        let geo: NormalizedGeoMetadata;
+        try {
+          geo = this.geoTrust().assessCompletion(
+            (image.geoMetadata ?? {}) as GeoInput,
+            {
+              latitude: report.latitude,
+              longitude: report.longitude,
+              accuracyMeters: report.locationAccuracy,
+            },
+          );
+        } catch (error) {
+          await this.recordGeoAudit(
+            reportId,
+            'COMPLETION_GEO_METADATA_REJECTED',
+            user,
+            {
+              organizationId: report.organizationId,
+              outcome: 'INVALID_METADATA',
+              validationOutcome: 'INVALID_METADATA',
+              reasons: this.geoRejectionReasons(error),
+            },
+          );
+          throw error;
+        }
         const saved = await this.getUploadSecurity().saveBase64Image({
           imageBase64: image.imageBase64,
           contentType: image.contentType,
@@ -2243,11 +2349,59 @@ export class ReportService {
             classification: image.classification ?? 'after',
             order: image.order ?? index,
             sizeBytes: Buffer.from(image.imageBase64, 'base64').length,
+            geoTrust: this.geoMetadataForStorage(geo),
           },
+          geo,
         });
         unpersistedFiles.delete(saved);
 
-        savedItems.push(saved);
+        await this.recordGeoAudit(
+          reportId,
+          'COMPLETION_GEO_COMPARISON_COMPLETED',
+          user,
+          {
+            organizationId: report.organizationId,
+            evidencePath: saved.imagePath,
+            outcome: geo.trustOutcome,
+            validationOutcome: geo.validationOutcome,
+            reasons: geo.validationReasons,
+            warnings: geo.warnings,
+            distanceMeters: geo.distanceMeters,
+          },
+        );
+        if (geo.trustOutcome === 'REVIEW_RECOMMENDED') {
+          await this.recordGeoAudit(
+            reportId,
+            'COMPLETION_GEO_REVIEW_RECOMMENDED',
+            user,
+            {
+              organizationId: report.organizationId,
+              evidencePath: saved.imagePath,
+              reasons: geo.validationReasons,
+              warnings: geo.warnings,
+              distanceMeters: geo.distanceMeters,
+            },
+          );
+        }
+
+        savedItems.push({
+          ...saved,
+          geoTrust: this.evidenceGeoTrustPayload({
+            geoLatitude: geo.latitude,
+            geoLongitude: geo.longitude,
+            geoAccuracyMeters: geo.accuracyMeters,
+            geoCapturedAt: geo.capturedAt,
+            geoReceivedAt: geo.receivedAt,
+            geoSource: geo.source,
+            geoCaptureMethod: geo.captureMethod,
+            geoPermissionState: geo.permissionState,
+            geoValidationOutcome: geo.validationOutcome,
+            geoDistanceMeters: geo.distanceMeters,
+            geoTrustOutcome: geo.trustOutcome,
+            geoSchemaVersion: geo.schemaVersion,
+            metadata: { geoTrust: this.geoMetadataForStorage(geo) },
+          }),
+        });
       }
     } catch (error) {
       await this.cleanupUnpersistedEvidenceFiles(unpersistedFiles);
@@ -2308,6 +2462,7 @@ export class ReportService {
             'report-completion',
             item.imagePath,
           ) ?? item.imageUrl,
+        geoTrust: item.geoTrust,
       })),
     };
   }
@@ -5896,8 +6051,10 @@ export class ReportService {
       protectedReport,
       responsibilityResolution,
     );
+    const locationTrust = this.reportLocationTrustPayload(protectedReport);
     return {
       ...protectedReport,
+      locationTrust,
       responsibilityReason: routingReason,
       resolverConfidence: this.responsibilityResolverConfidence(
         responsibilityResolution,
@@ -5917,6 +6074,7 @@ export class ReportService {
         originalEvidence: {
           imageUrl: protectedReport.evidenceImageUrl ?? null,
           imagePath: protectedReport.evidenceImagePath ?? null,
+          locationTrust,
         },
         completionEvidence: {
           note: protectedReport.completionNote ?? null,
@@ -5924,6 +6082,10 @@ export class ReportService {
           imagePath: protectedReport.completionImagePath ?? null,
           submittedAt: protectedReport.completedByProviderAt ?? null,
           location: this.completionLocationMetadata(protectedReport),
+          geoTrust: evidenceItems
+            .filter((item) => item.kind === 'report-completion')
+            .map((item) => item.geoTrust)
+            .filter(Boolean),
         },
         citizenReview: {
           rating: protectedReport.citizenRating ?? null,
@@ -6346,7 +6508,20 @@ export class ReportService {
 
   private completionEvidencePayloads(dto: UploadCompletionEvidenceDto) {
     const images = dto.images?.length ? dto.images : [dto];
-    return images.map((image) => {
+    const metadata = dto.images?.length
+      ? (dto.imageGeoMetadata ?? images.map((image) => image.geoMetadata))
+      : [dto.geoMetadata];
+    if (
+      dto.images?.length &&
+      dto.imageGeoMetadata &&
+      dto.imageGeoMetadata.length !== images.length
+    ) {
+      throw new BadRequestException({
+        code: 'GEO_METADATA_IMAGE_COUNT_MISMATCH',
+        message: 'Completion geo metadata must match the image count.',
+      });
+    }
+    return images.map((image, index) => {
       if (!image.contentType || !image.imageBase64) {
         throw new BadRequestException('Completion evidence image is required');
       }
@@ -6355,6 +6530,7 @@ export class ReportService {
         imageBase64: image.imageBase64,
         classification: image.classification,
         order: image.order,
+        geoMetadata: metadata[index],
       };
     });
   }
@@ -6413,6 +6589,7 @@ export class ReportService {
     contentType: string;
     description: string;
     metadata: Record<string, unknown>;
+    geo?: NormalizedGeoMetadata | null;
   }) {
     return this.prisma.evidenceRecord.create({
       data: {
@@ -6425,6 +6602,18 @@ export class ReportService {
         uploadedById: input.uploadedById,
         description: input.description,
         metadata: input.metadata as Prisma.InputJsonValue,
+        geoLatitude: input.geo?.latitude ?? null,
+        geoLongitude: input.geo?.longitude ?? null,
+        geoAccuracyMeters: input.geo?.accuracyMeters ?? null,
+        geoCapturedAt: input.geo?.capturedAt ?? null,
+        geoReceivedAt: input.geo?.receivedAt ?? null,
+        geoSource: input.geo?.source ?? null,
+        geoCaptureMethod: input.geo?.captureMethod ?? null,
+        geoPermissionState: input.geo?.permissionState ?? null,
+        geoValidationOutcome: input.geo?.validationOutcome ?? null,
+        geoDistanceMeters: input.geo?.distanceMeters ?? null,
+        geoTrustOutcome: input.geo?.trustOutcome ?? null,
+        geoSchemaVersion: input.geo?.schemaVersion ?? 1,
       },
     });
   }
@@ -6477,6 +6666,7 @@ export class ReportService {
       uploadedByRole: UserRole;
       classification?: string | null;
       order?: number | null;
+      geoTrust?: ReturnType<ReportService['evidenceGeoTrustPayload']>;
     }> = [];
     const seen = new Set<string>();
     const add = (
@@ -6489,6 +6679,7 @@ export class ReportService {
       storedImageUrl?: string | null,
       classification: string | null = null,
       order: number | null = null,
+      geoTrust?: EvidenceGeoTrustPayload,
     ) => {
       const url = imageUrl?.trim();
       const path =
@@ -6517,6 +6708,7 @@ export class ReportService {
         uploadedByRole,
         classification,
         order,
+        geoTrust,
       });
     };
 
@@ -6545,6 +6737,7 @@ export class ReportService {
           ? metadata.classification
           : null,
         typeof metadata.order === 'number' ? metadata.order : null,
+        this.evidenceGeoTrustPayload(record),
       );
     }
 
@@ -6567,6 +6760,142 @@ export class ReportService {
       storedReport.completionImageUrl,
     );
     return items;
+  }
+
+  private evidenceGeoTrustPayload(record: {
+    geoLatitude?: number | null;
+    geoLongitude?: number | null;
+    geoAccuracyMeters?: number | null;
+    geoCapturedAt?: Date | string | null;
+    geoReceivedAt?: Date | string | null;
+    geoSource?: string | null;
+    geoCaptureMethod?: string | null;
+    geoPermissionState?: string | null;
+    geoValidationOutcome?: string | null;
+    geoDistanceMeters?: number | null;
+    geoTrustOutcome?: string | null;
+    geoSchemaVersion?: number | null;
+    metadata?: unknown;
+  }): EvidenceGeoTrustPayload {
+    if (!record.geoTrustOutcome && !record.geoValidationOutcome) return null;
+    const metadata = this.recordObject(record.metadata);
+    const geoMetadata = this.recordObject(metadata?.geoTrust);
+    return {
+      schemaVersion: record.geoSchemaVersion ?? 1,
+      source: record.geoSource ?? 'UNAVAILABLE',
+      captureMethod: record.geoCaptureMethod ?? 'NOT_PROVIDED',
+      permissionState: record.geoPermissionState ?? 'UNKNOWN',
+      validationOutcome:
+        record.geoValidationOutcome ?? 'INSUFFICIENT_LOCATION_DATA',
+      trustOutcome: record.geoTrustOutcome ?? 'INSUFFICIENT_LOCATION_DATA',
+      distanceMeters: record.geoDistanceMeters ?? null,
+      accuracyMeters: record.geoAccuracyMeters ?? null,
+      capturedAt: record.geoCapturedAt ?? null,
+      receivedAt: record.geoReceivedAt ?? null,
+      warnings: Array.isArray(geoMetadata?.warnings)
+        ? geoMetadata.warnings
+        : [],
+      validationReasons: Array.isArray(geoMetadata?.validationReasons)
+        ? geoMetadata.validationReasons
+        : [],
+      coordinates:
+        record.geoLatitude != null && record.geoLongitude != null
+          ? {
+              latitude: record.geoLatitude,
+              longitude: record.geoLongitude,
+            }
+          : null,
+    };
+  }
+
+  private geoMetadataForStorage(geo: NormalizedGeoMetadata) {
+    return {
+      schemaVersion: geo.schemaVersion,
+      source: geo.source,
+      captureMethod: geo.captureMethod,
+      permissionState: geo.permissionState,
+      validationOutcome: geo.validationOutcome,
+      trustOutcome: geo.trustOutcome,
+      distanceMeters: geo.distanceMeters,
+      accuracyMeters: geo.accuracyMeters,
+      capturedAt: geo.capturedAt?.toISOString() ?? null,
+      receivedAt: geo.receivedAt.toISOString(),
+      warnings: geo.warnings,
+      validationReasons: geo.validationReasons,
+      exif: geo.exif
+        ? {
+            latitude: geo.exif.latitude,
+            longitude: geo.exif.longitude,
+            capturedAt: geo.exif.capturedAt?.toISOString() ?? null,
+          }
+        : null,
+    };
+  }
+
+  private geoRejectionReasons(error: unknown) {
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      if (typeof response === 'object' && response && 'code' in response) {
+        const code = (response as { code?: unknown }).code;
+        return [typeof code === 'string' ? code : 'INVALID_GEO_METADATA'];
+      }
+    }
+    return ['INVALID_GEO_METADATA'];
+  }
+
+  private reportLocationTrustPayload(report: EnterpriseReportWithEvidence) {
+    return {
+      schemaVersion: report.locationSchemaVersion ?? 1,
+      source: report.locationSource ?? 'UNAVAILABLE',
+      permissionState: report.locationPermissionState ?? 'UNKNOWN',
+      validationOutcome:
+        report.locationValidationOutcome ?? 'INSUFFICIENT_LOCATION_DATA',
+      accuracyMeters: report.locationAccuracy ?? null,
+      capturedAt: report.locationCapturedAt ?? null,
+      receivedAt: report.locationReceivedAt ?? null,
+      coordinates:
+        report.latitude != null && report.longitude != null
+          ? {
+              latitude: report.latitude,
+              longitude: report.longitude,
+            }
+          : null,
+      nonClaim:
+        'Client-supplied coordinates are compared for consistency and are not independent proof of authenticity.',
+    };
+  }
+
+  private geoTrust() {
+    return this.geoTrustService ?? new GeoTrustService();
+  }
+
+  private async recordGeoAudit(
+    reportId: string,
+    action: string,
+    user: JwtUser,
+    metadata: {
+      organizationId: string;
+      evidencePath?: string;
+      outcome?: string;
+      validationOutcome?: string;
+      trustOutcome?: string;
+      reasons?: string[];
+      warnings?: string[];
+      distanceMeters?: number | null;
+    },
+  ) {
+    await this.audit(action, user, {
+      targetType: 'Report',
+      targetId: reportId,
+      organizationId: metadata.organizationId,
+      evidencePath: metadata.evidencePath,
+      outcome: metadata.outcome,
+      validationOutcome: metadata.validationOutcome,
+      trustOutcome: metadata.trustOutcome,
+      reasons: metadata.reasons,
+      warnings: metadata.warnings,
+      distanceMeters: metadata.distanceMeters,
+    });
   }
 
   private async assertCanAccessEvidence(
@@ -6624,6 +6953,9 @@ export class ReportService {
     return {
       ...report,
       priority: report.priority ?? this.resolveReportPriority(report),
+      locationTrust: this.reportLocationTrustPayload(
+        report as EnterpriseReportWithEvidence,
+      ),
       evidenceImageUrl:
         this.protectedEvidenceUrl(
           report.id,
