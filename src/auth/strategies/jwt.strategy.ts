@@ -4,6 +4,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getJwtAccessSecret } from '../jwt-secret';
+import { preferredLocaleFromProfile } from '../../localization/supported-locales';
 
 type JwtPayload = {
   sub: string;
@@ -81,6 +82,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       serviceCategories: user.serviceCategories,
       coverageAreas: user.coverageAreas,
       profileData: user.profileData,
+      preferredLocale: preferredLocaleFromProfile(user.profileData),
       subscriptionPlan: user.subscriptionPlan,
       identityVerificationStatus: user.identityVerificationStatus,
       identityVerificationLevel: user.identityVerificationLevel,

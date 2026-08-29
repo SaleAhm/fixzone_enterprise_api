@@ -12,6 +12,10 @@ import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { getJwtAccessSecret } from './jwt-secret';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import {
+  assertSupportedLocale,
+  preferredLocaleFromProfile,
+} from '../localization/supported-locales';
 
 type AuthUser = Pick<
   User,
@@ -273,17 +277,20 @@ export class AuthService {
     }
 
     const profileData: Record<string, unknown> = {};
-    for (const key of [
-      'address',
-      'state',
-      'lga',
-      'preferredLanguage',
-      'emergencyContact',
-    ]) {
+    for (const key of ['address', 'state', 'lga', 'emergencyContact']) {
       const value = dto[key];
       if (typeof value === 'string') {
         profileData[key] = value.trim() || null;
       }
+    }
+
+    if (
+      dto.preferredLanguage !== undefined ||
+      dto.preferredLocale !== undefined
+    ) {
+      profileData.preferredLanguage = assertSupportedLocale(
+        dto.preferredLocale ?? dto.preferredLanguage,
+      );
     }
 
     const notificationPreferences = dto.notificationPreferences;
@@ -374,6 +381,7 @@ export class AuthService {
       serviceCategories: updated.serviceCategories,
       coverageAreas: updated.coverageAreas,
       profileData: updated.profileData,
+      preferredLocale: preferredLocaleFromProfile(updated.profileData),
       subscriptionPlan: updated.subscriptionPlan,
       identityVerificationStatus: updated.identityVerificationStatus,
       identityVerificationLevel: updated.identityVerificationLevel,
