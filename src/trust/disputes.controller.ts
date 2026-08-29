@@ -12,6 +12,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { RequireEnterpriseFeature } from '../enterprise-features/enterprise-feature.decorator';
+import { EnterpriseFeatureGuard } from '../enterprise-features/enterprise-feature.guard';
 import { CreateDisputeDto } from './dto/create-dispute.dto';
 import { CreateDisputeMessageDto } from './dto/create-dispute-message.dto';
 import { UpdateDisputeStatusDto } from './dto/update-dispute-status.dto';
@@ -24,7 +26,8 @@ import { TrustService } from './trust.service';
 import type { TrustUser } from './trust.service';
 
 @Controller()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@RequireEnterpriseFeature('investigation')
+@UseGuards(JwtAuthGuard, RolesGuard, EnterpriseFeatureGuard)
 export class DisputesController {
   constructor(private readonly trust: TrustService) {}
 

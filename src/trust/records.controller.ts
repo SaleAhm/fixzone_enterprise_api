@@ -4,6 +4,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { RequireEnterpriseFeature } from '../enterprise-features/enterprise-feature.decorator';
+import { EnterpriseFeatureGuard } from '../enterprise-features/enterprise-feature.guard';
 import { CreateEvidenceDto } from './dto/create-evidence.dto';
 import {
   EnterpriseRateLimit,
@@ -13,7 +15,8 @@ import { TrustService } from './trust.service';
 import type { TrustUser } from './trust.service';
 
 @Controller('records')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@RequireEnterpriseFeature('evidence_export')
+@UseGuards(JwtAuthGuard, RolesGuard, EnterpriseFeatureGuard)
 export class RecordsController {
   constructor(private readonly trust: TrustService) {}
 

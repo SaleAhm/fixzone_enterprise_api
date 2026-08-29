@@ -23,8 +23,20 @@ describe('Trust & Identity Foundation (e2e)', () => {
   let citizenId: string;
   let adminId: string;
   let providerId: string;
+  let previousEnterpriseFoundations: string | undefined;
+  let previousInvestigation: string | undefined;
+  let previousEvidenceExport: string | undefined;
 
   beforeAll(async () => {
+    previousEnterpriseFoundations =
+      process.env.SECUREZONE_ENTERPRISE_FOUNDATIONS_ENABLED;
+    previousInvestigation = process.env.SECUREZONE_INVESTIGATION_ENABLED;
+    previousEvidenceExport =
+      process.env.SECUREZONE_EVIDENCE_EXPORT_WORKFLOWS_ENABLED;
+    process.env.SECUREZONE_ENTERPRISE_FOUNDATIONS_ENABLED = 'true';
+    process.env.SECUREZONE_INVESTIGATION_ENABLED = 'true';
+    process.env.SECUREZONE_EVIDENCE_EXPORT_WORKFLOWS_ENABLED = 'true';
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
@@ -37,10 +49,16 @@ describe('Trust & Identity Foundation (e2e)', () => {
 
     await cleanup();
     const org = await prisma.organization.create({
-      data: { name: 'Trust Test Organization' },
+      data: {
+        name: 'Trust Test Organization',
+        enabledModules: ['maintenance', 'investigation', 'evidence_export'],
+      },
     });
     const otherOrg = await prisma.organization.create({
-      data: { name: 'Trust Other Organization' },
+      data: {
+        name: 'Trust Other Organization',
+        enabledModules: ['maintenance', 'investigation', 'evidence_export'],
+      },
     });
     organizationId = org.id;
     otherOrganizationId = otherOrg.id;
@@ -83,6 +101,15 @@ describe('Trust & Identity Foundation (e2e)', () => {
   afterAll(async () => {
     await cleanup();
     await app.close();
+    restoreEnv(
+      'SECUREZONE_ENTERPRISE_FOUNDATIONS_ENABLED',
+      previousEnterpriseFoundations,
+    );
+    restoreEnv('SECUREZONE_INVESTIGATION_ENABLED', previousInvestigation);
+    restoreEnv(
+      'SECUREZONE_EVIDENCE_EXPORT_WORKFLOWS_ENABLED',
+      previousEvidenceExport,
+    );
   });
 
   async function createUser(data: {
@@ -186,6 +213,14 @@ describe('Trust & Identity Foundation (e2e)', () => {
         name: { in: ['Trust Test Organization', 'Trust Other Organization'] },
       },
     });
+  }
+
+  function restoreEnv(name: string, value: string | undefined) {
+    if (value === undefined) {
+      delete process.env[name];
+      return;
+    }
+    process.env[name] = value;
   }
 
   it('returns and backfills SecureZone identity for the current user', async () => {

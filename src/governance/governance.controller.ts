@@ -14,6 +14,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { RequireEnterpriseFeature } from '../enterprise-features/enterprise-feature.decorator';
+import { EnterpriseFeatureGuard } from '../enterprise-features/enterprise-feature.guard';
 import {
   EnterpriseRateLimit,
   RateLimitTier,
@@ -45,7 +47,8 @@ const governanceRoles = [
 ];
 
 @Controller('governance')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@RequireEnterpriseFeature('enterprise_governance')
+@UseGuards(JwtAuthGuard, RolesGuard, EnterpriseFeatureGuard)
 export class GovernanceController {
   constructor(private readonly governanceService: GovernanceService) {}
 
@@ -161,6 +164,7 @@ export class GovernanceController {
   }
 
   @Post('regulatory/cases')
+  @RequireEnterpriseFeature('regulatory_governance')
   @Roles(...governanceRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   createRegulatoryCase(
@@ -176,6 +180,7 @@ export class GovernanceController {
   }
 
   @Post('evidence/packages')
+  @RequireEnterpriseFeature('evidence_export')
   @Roles(...governanceRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   createEvidencePackage(
@@ -191,6 +196,7 @@ export class GovernanceController {
   }
 
   @Post('evidence/access-log')
+  @RequireEnterpriseFeature('evidence_export')
   @Roles(...governanceRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   logEvidenceAccess(
@@ -206,6 +212,7 @@ export class GovernanceController {
   }
 
   @Post('assets/claims')
+  @RequireEnterpriseFeature('asset_intelligence')
   @Roles(...governanceRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   createAssetClaim(
@@ -221,6 +228,7 @@ export class GovernanceController {
   }
 
   @Post('assets/ownership-recommendations')
+  @RequireEnterpriseFeature('asset_intelligence')
   @Roles(...governanceRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   createOwnershipRecommendation(
