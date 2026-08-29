@@ -24,6 +24,21 @@ import { RequestUser } from './payment.types';
 
 type RawBodyRequest = Request & { rawBody?: Buffer };
 
+const paymentReadRoles = [
+  UserRole.SUPER_ADMIN,
+  UserRole.PLATFORM_SUPER_ADMIN,
+  UserRole.FINANCE_BILLING_ADMIN,
+  UserRole.BILLING_ADMIN,
+  UserRole.ORG_ADMIN,
+];
+
+const paymentReconciliationRoles = [
+  UserRole.SUPER_ADMIN,
+  UserRole.PLATFORM_SUPER_ADMIN,
+  UserRole.FINANCE_BILLING_ADMIN,
+  UserRole.BILLING_ADMIN,
+];
+
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
@@ -36,7 +51,7 @@ export class PaymentsController {
 
   @Post('organization/:organizationId/initialize')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.BILLING_ADMIN)
+  @Roles(...paymentReadRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   initialize(
     @Param('organizationId') organizationId: string,
@@ -52,7 +67,7 @@ export class PaymentsController {
 
   @Get('organization/:organizationId/subscription')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.BILLING_ADMIN)
+  @Roles(...paymentReadRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
   subscription(
     @Param('organizationId') organizationId: string,
@@ -66,7 +81,7 @@ export class PaymentsController {
 
   @Get('organization/:organizationId/history')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.BILLING_ADMIN)
+  @Roles(...paymentReadRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
   history(
     @Param('organizationId') organizationId: string,
@@ -80,7 +95,7 @@ export class PaymentsController {
 
   @Get('organization/:organizationId/transactions/:reference')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.BILLING_ADMIN)
+  @Roles(...paymentReadRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
   status(
     @Param('organizationId') organizationId: string,
@@ -96,7 +111,7 @@ export class PaymentsController {
 
   @Post('organization/:organizationId/transactions/:reference/verify')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.BILLING_ADMIN)
+  @Roles(...paymentReadRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   verify(
     @Param('organizationId') organizationId: string,
@@ -112,7 +127,7 @@ export class PaymentsController {
 
   @Get('organization/:organizationId/receipts/:receiptNumber')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, UserRole.BILLING_ADMIN)
+  @Roles(...paymentReadRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminRead)
   receipt(
     @Param('organizationId') organizationId: string,
@@ -139,7 +154,7 @@ export class PaymentsController {
 
   @Post('admin/reconcile')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.SUPER_ADMIN)
+  @Roles(...paymentReconciliationRoles)
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
   reconcile(@Body() dto: ReconcilePaymentsDto, @Req() req: Request) {
     return this.payments.reconcilePending(req.user as RequestUser, dto.limit);

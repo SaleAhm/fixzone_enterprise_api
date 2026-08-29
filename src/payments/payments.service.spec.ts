@@ -58,7 +58,11 @@ describe('PaymentsService', () => {
       },
     });
     const provider = mockProvider();
-    const service = new PaymentsService(prisma as never, provider as never);
+    const service = new PaymentsService(
+      prisma as never,
+      provider as never,
+      mockInternalAdmin() as never,
+    );
 
     const response = await service.initializeOrganizationPayment(
       'org-1',
@@ -91,6 +95,7 @@ describe('PaymentsService', () => {
     const service = new PaymentsService(
       mockPrisma() as never,
       mockProvider() as never,
+      mockInternalAdmin() as never,
     );
 
     await expect(
@@ -114,7 +119,11 @@ describe('PaymentsService', () => {
     };
     const prisma = mockPrisma({ reusable });
     const provider = mockProvider();
-    const service = new PaymentsService(prisma as never, provider as never);
+    const service = new PaymentsService(
+      prisma as never,
+      provider as never,
+      mockInternalAdmin() as never,
+    );
 
     const response = await service.initializeOrganizationPayment(
       'org-1',
@@ -157,6 +166,7 @@ describe('PaymentsService', () => {
     const service = new PaymentsService(
       prisma as never,
       mockProvider() as never,
+      mockInternalAdmin() as never,
     );
 
     const result = await service.processTrustedProviderTransaction({
@@ -172,6 +182,50 @@ describe('PaymentsService', () => {
 
     expect(result.status).toBe(PaymentTransactionStatus.REVIEW_REQUIRED);
     expect(prisma.organization.update).not.toHaveBeenCalled();
+  });
+
+  it('allows finance billing administrators to reconcile through explicit permission', async () => {
+    const prisma = mockPrisma();
+    prisma.paymentTransaction.findMany = jest.fn().mockResolvedValue([]);
+    const internalAdmin = mockInternalAdmin({
+      permission: 'payment.reconciliation_manage',
+      allowed: true,
+    });
+    const service = new PaymentsService(
+      prisma as never,
+      mockProvider() as never,
+      internalAdmin as never,
+    );
+
+    const result = await service.reconcilePending({
+      sub: 'finance-1',
+      role: UserRole.FINANCE_BILLING_ADMIN,
+    });
+
+    expect(result.scanned).toBe(0);
+    expect(internalAdmin.assertPermission).toHaveBeenCalledWith(
+      expect.objectContaining({ role: UserRole.FINANCE_BILLING_ADMIN }),
+      'payment.reconciliation_manage',
+    );
+  });
+
+  it('denies platform payment history without transaction-read permission', async () => {
+    const internalAdmin = mockInternalAdmin({
+      permission: 'payment.transaction_read',
+      allowed: false,
+    });
+    const service = new PaymentsService(
+      mockPrisma() as never,
+      mockProvider() as never,
+      internalAdmin as never,
+    );
+
+    await expect(
+      service.listPaymentHistory('org-1', {
+        sub: 'support-1',
+        role: UserRole.SUPPORT_ADMIN,
+      }),
+    ).rejects.toThrow(ForbiddenException);
   });
 });
 
@@ -228,6 +282,7 @@ function mockPrisma(options: Record<string, unknown> = {}) {
         .mockResolvedValue(options.reusable ?? options.existing ?? null),
       create: jest.fn().mockResolvedValue(options.created),
       update: jest.fn().mockResolvedValue(options.updated),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     organizationSubscription: { findFirst: jest.fn() },
     paymentReceipt: { findFirst: jest.fn() },
@@ -235,5 +290,26 @@ function mockPrisma(options: Record<string, unknown> = {}) {
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
       callback(tx),
     ),
+  };
+}
+
+function mockInternalAdmin(
+  options: { permission?: string; allowed?: boolean } = {},
+) {
+  return {
+    hasPermission: jest.fn().mockImplementation((_user, permission) => {
+      if (options.permission && options.permission === permission) {
+        return Promise.resolve(Boolean(options.allowed));
+      }
+      return Promise.resolve(false);
+    }),
+    assertPermission: jest.fn().mockImplementation((_user, permission) => {
+      if (options.permission && options.permission === permission) {
+        return options.allowed
+          ? Promise.resolve()
+          : Promise.reject(new ForbiddenException('Permission required'));
+      }
+      return Promise.reject(new ForbiddenException('Permission required'));
+    }),
   };
 }

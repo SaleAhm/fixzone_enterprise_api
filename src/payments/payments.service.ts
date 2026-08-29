@@ -20,6 +20,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { InternalAdminService } from '../internal-admin/internal-admin.service';
 import { PaystackPaymentAdapter } from './paystack.adapter';
 import { paymentPlanCatalog, resolvePaymentPlan } from './plan-catalog';
 import {
@@ -37,6 +38,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly paystack: PaystackPaymentAdapter,
+    private readonly internalAdmin: InternalAdminService,
   ) {}
 
   listPlans() {
@@ -54,7 +56,7 @@ export class PaymentsService {
     planCode: string,
     user: RequestUser,
   ) {
-    this.assertBillingAuthority(organizationId, user);
+    await this.assertBillingAuthority(organizationId, user);
     const plan = this.resolveActivePlan(planCode);
     this.assertPlanUsableInEnvironment(plan);
     this.provider.assertReady();
@@ -159,7 +161,7 @@ export class PaymentsService {
   }
 
   async getOrganizationSubscription(organizationId: string, user: RequestUser) {
-    this.assertBillingReader(organizationId, user);
+    await this.assertBillingReader(organizationId, user);
     const organization = await this.prisma.organization.findUnique({
       where: { id: organizationId },
       select: {
@@ -200,7 +202,7 @@ export class PaymentsService {
     reference: string,
     user: RequestUser,
   ) {
-    this.assertBillingReader(organizationId, user);
+    await this.assertBillingReader(organizationId, user);
     const transaction = await this.prisma.paymentTransaction.findFirst({
       where: { organizationId, internalReference: reference },
     });
@@ -209,7 +211,7 @@ export class PaymentsService {
   }
 
   async listPaymentHistory(organizationId: string, user: RequestUser) {
-    this.assertBillingReader(organizationId, user);
+    await this.assertBillingReader(organizationId, user);
     const transactions = await this.prisma.paymentTransaction.findMany({
       where: { organizationId },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -223,7 +225,7 @@ export class PaymentsService {
     receiptNumber: string,
     user: RequestUser,
   ) {
-    this.assertBillingReader(organizationId, user);
+    await this.assertBillingReader(organizationId, user);
     const receipt = await this.prisma.paymentReceipt.findFirst({
       where: { organizationId, receiptNumber },
     });
@@ -270,7 +272,7 @@ export class PaymentsService {
     reference: string,
     user: RequestUser,
   ) {
-    this.assertBillingReader(organizationId, user);
+    await this.assertBillingReader(organizationId, user);
     const transaction = await this.prisma.paymentTransaction.findFirst({
       where: { organizationId, internalReference: reference },
     });
@@ -283,7 +285,10 @@ export class PaymentsService {
   }
 
   async reconcilePending(user: RequestUser, limit?: number) {
-    this.assertSuperAdmin(user);
+    await this.internalAdmin.assertPermission(
+      user,
+      'payment.reconciliation_manage',
+    );
     const batchSize = Math.min(
       Math.max(
         1,
@@ -668,28 +673,58 @@ export class PaymentsService {
     return { key, fallbackLocale: 'en', fallbackMessage: fallback[status] };
   }
 
-  private assertBillingAuthority(organizationId: string, user: RequestUser) {
-    this.assertBillingReader(organizationId, user);
+  private async assertBillingAuthority(
+    organizationId: string,
+    user: RequestUser,
+  ) {
+    await this.assertBillingReader(organizationId, user);
     if (
-      user.role !== UserRole.SUPER_ADMIN &&
-      user.role !== UserRole.ORG_ADMIN &&
-      user.role !== UserRole.BILLING_ADMIN
+      (user.role === UserRole.ORG_ADMIN ||
+        user.role === UserRole.BILLING_ADMIN) &&
+      user.organizationId === organizationId
     ) {
-      throw new ForbiddenException('Unauthorized billing action');
+      return;
     }
+    if (
+      await this.internalAdmin.hasPermission(
+        user,
+        'payment.plan_read',
+        organizationId,
+      )
+    ) {
+      return;
+    }
+    await this.audit('Payment Authorization Denied', user, {
+      organizationId,
+      reason: 'payment_initialization_permission_denied',
+      permission: 'payment.plan_read',
+    });
+    throw new ForbiddenException('Unauthorized billing action');
   }
 
-  private assertBillingReader(organizationId: string, user: RequestUser) {
-    if (user.role === UserRole.SUPER_ADMIN) return;
-    if (!user.organizationId || user.organizationId !== organizationId) {
-      throw new ForbiddenException('Access denied');
+  private async assertBillingReader(organizationId: string, user: RequestUser) {
+    if (
+      (user.role === UserRole.ORG_ADMIN ||
+        user.role === UserRole.BILLING_ADMIN) &&
+      user.organizationId === organizationId
+    ) {
+      return;
     }
-  }
-
-  private assertSuperAdmin(user: RequestUser | null) {
-    if (user?.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException('Super Admin access required');
+    if (
+      await this.internalAdmin.hasPermission(
+        user,
+        'payment.transaction_read',
+        organizationId,
+      )
+    ) {
+      return;
     }
+    await this.audit('Payment Authorization Denied', user, {
+      organizationId,
+      reason: 'payment_read_permission_denied',
+      permission: 'payment.transaction_read',
+    });
+    throw new ForbiddenException('Access denied');
   }
 
   private resolveActivePlan(planCode: string) {

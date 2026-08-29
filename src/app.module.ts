@@ -18,6 +18,7 @@ import { PublicModule } from './public/public.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { GovernanceModule } from './governance/governance.module';
 import { PaymentsModule } from './payments/payments.module';
+import { InternalAdminModule } from './internal-admin/internal-admin.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -41,6 +42,7 @@ import { AppService } from './app.service';
     PublicModule,
     AnalyticsModule,
     GovernanceModule,
+    InternalAdminModule,
     PaymentsModule,
   ],
   controllers: [AppController],

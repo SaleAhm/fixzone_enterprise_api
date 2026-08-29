@@ -7,15 +7,26 @@ datasource db {
 }
 
 enum UserRole {
+  PLATFORM_SUPER_ADMIN
   PLATFORM_OWNER
   EXECUTIVE_SUPER_ADMIN
   TECHNICAL_ADMIN
+  OPERATIONS_ADMIN
+  ORGANIZATION_ONBOARDING_ADMIN
+  PROVIDER_ADMIN
+  FINANCE_BILLING_ADMIN
   BILLING_ADMIN
   LEGAL_ADMIN
   ASSIGNMENT_ADMIN
   ASSET_ADMIN
+  ASSET_INTELLIGENCE_ADMIN
   COMPLIANCE_ADMIN
+  COMPLIANCE_AUDIT_ADMIN
   REGULATORY_ADMIN
+  SECURITY_ADMIN
+  INVESTIGATION_ADMIN
+  RELEASE_OPERATIONS_ADMIN
+  BACKUP_RECOVERY_ADMIN
   SUPPORT_ADMIN
   SUPER_ADMIN
   ORG_ADMIN
@@ -260,6 +271,38 @@ enum DelegatedAuthorityStatus {
   EXPIRED
 }
 
+enum InternalRoleAssignmentStatus {
+  ACTIVE
+  INACTIVE
+  REVOKED
+  EXPIRED
+  PENDING_APPROVAL
+}
+
+enum InternalScopeType {
+  PLATFORM
+  MODULE
+  ORGANIZATION
+  JURISDICTION
+}
+
+enum PrivilegedApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXECUTION_BLOCKED
+}
+
+enum PrivilegedOperationType {
+  PLATFORM_SUPER_ADMIN_GRANT
+  ROLE_DEFINITION_CHANGE
+  PRODUCTION_RESTORE_AUTHORIZATION
+  ENTERPRISE_FEATURE_ENABLEMENT
+  PAYMENT_CONFIGURATION_CHANGE
+  HIGH_VALUE_REFUND_APPROVAL
+}
+
 enum RegulatoryCaseStatus {
   DRAFT
   OPEN
@@ -349,20 +392,20 @@ model Organization {
   createdBySuperAdminId  String?
   createdAt              DateTime           @default(now())
 
-  users               User[]
-  reports             Report[]
-  parent              Organization?                @relation("OrganizationHierarchy", fields: [parentId], references: [id])
-  children            Organization[]               @relation("OrganizationHierarchy")
-  providerLinks       ProviderOrganization[]
-  invitations         Invitation[]
-  assignedReports     Report[]                     @relation("AssignedOrganizationReports")
-  upgradeRequests     OrganizationUpgradeRequest[]
-  evidenceRecords     EvidenceRecord[]
-  disputeCases        DisputeCase[]
-  complianceAuditLogs ComplianceAuditLog[]
-  paymentTransactions PaymentTransaction[]
+  users                User[]
+  reports              Report[]
+  parent               Organization?                @relation("OrganizationHierarchy", fields: [parentId], references: [id])
+  children             Organization[]               @relation("OrganizationHierarchy")
+  providerLinks        ProviderOrganization[]
+  invitations          Invitation[]
+  assignedReports      Report[]                     @relation("AssignedOrganizationReports")
+  upgradeRequests      OrganizationUpgradeRequest[]
+  evidenceRecords      EvidenceRecord[]
+  disputeCases         DisputeCase[]
+  complianceAuditLogs  ComplianceAuditLog[]
+  paymentTransactions  PaymentTransaction[]
   billingSubscriptions OrganizationSubscription[]
-  paymentReceipts     PaymentReceipt[]
+  paymentReceipts      PaymentReceipt[]
 
   @@index([parentId])
   @@index([type])
@@ -413,25 +456,30 @@ model User {
 
   organization Organization? @relation(fields: [organizationId], references: [id])
 
-  citizenReports          Report[]               @relation("CitizenReports")
-  assignedReports         Report[]               @relation("AssignedProviderReports")
+  citizenReports          Report[]                    @relation("CitizenReports")
+  assignedReports         Report[]                    @relation("AssignedProviderReports")
   notifications           Notification[]
   providerOrganizations   ProviderOrganization[]
-  sentInvitations         Invitation[]           @relation("InvitationInviter")
-  acceptedInvitations     Invitation[]           @relation("InvitationAcceptedUser")
-  kycSubmissions          KycSubmission[]        @relation("KycSubmissionUser")
-  reviewedKycSubmissions  KycSubmission[]        @relation("KycSubmissionReviewer")
+  sentInvitations         Invitation[]                @relation("InvitationInviter")
+  acceptedInvitations     Invitation[]                @relation("InvitationAcceptedUser")
+  kycSubmissions          KycSubmission[]             @relation("KycSubmissionUser")
+  reviewedKycSubmissions  KycSubmission[]             @relation("KycSubmissionReviewer")
   loginHistory            LoginHistory[]
-  ownedEvidenceRecords    EvidenceRecord[]       @relation("EvidenceOwner")
-  uploadedEvidenceRecords EvidenceRecord[]       @relation("EvidenceUploader")
-  openedDisputes          DisputeCase[]          @relation("DisputeOpenedBy")
-  disputesAgainst         DisputeCase[]          @relation("DisputeAgainstUser")
-  reviewedDisputes        DisputeCase[]          @relation("DisputeClosedBy")
+  ownedEvidenceRecords    EvidenceRecord[]            @relation("EvidenceOwner")
+  uploadedEvidenceRecords EvidenceRecord[]            @relation("EvidenceUploader")
+  openedDisputes          DisputeCase[]               @relation("DisputeOpenedBy")
+  disputesAgainst         DisputeCase[]               @relation("DisputeAgainstUser")
+  reviewedDisputes        DisputeCase[]               @relation("DisputeClosedBy")
   disputeMessages         DisputeMessage[]
   reportMessages          ReportMessage[]
   entitlement             UserEntitlement?
-  complianceAuditLogs     ComplianceAuditLog[]   @relation("ComplianceAuditActor")
-  requestedPayments       PaymentTransaction[]   @relation("PaymentRequestingUser")
+  complianceAuditLogs     ComplianceAuditLog[]        @relation("ComplianceAuditActor")
+  requestedPayments       PaymentTransaction[]        @relation("PaymentRequestingUser")
+  internalRoleAssignments InternalRoleAssignment[]    @relation("InternalRoleAssignmentUser")
+  assignedInternalRoles   InternalRoleAssignment[]    @relation("InternalRoleAssignmentAssignedBy")
+  revokedInternalRoles    InternalRoleAssignment[]    @relation("InternalRoleAssignmentRevokedBy")
+  requestedApprovals      PrivilegedApprovalRequest[] @relation("PrivilegedApprovalRequester")
+  decidedApprovals        PrivilegedApprovalRequest[] @relation("PrivilegedApprovalDecider")
 
   @@index([organizationId])
   @@index([secureZoneId])
@@ -679,6 +727,70 @@ model DelegatedAuthority {
   @@index([role])
 }
 
+model InternalRoleAssignment {
+  id                    String                       @id @default(cuid())
+  userId                String
+  role                  UserRole
+  status                InternalRoleAssignmentStatus @default(ACTIVE)
+  scopeType             InternalScopeType            @default(PLATFORM)
+  scopeRef              String?
+  organizationId        String?
+  moduleKey             String?
+  jurisdiction          Json?
+  permissionsSnapshot   Json
+  roleDefinitionVersion Int                          @default(1)
+  assignedById          String
+  reason                String?
+  startsAt              DateTime                     @default(now())
+  expiresAt             DateTime?
+  revokedAt             DateTime?
+  revokedById           String?
+  revocationReason      String?
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+
+  user       User  @relation("InternalRoleAssignmentUser", fields: [userId], references: [id], onDelete: Cascade)
+  assignedBy User  @relation("InternalRoleAssignmentAssignedBy", fields: [assignedById], references: [id], onDelete: Restrict)
+  revokedBy  User? @relation("InternalRoleAssignmentRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([role, status])
+  @@index([scopeType, scopeRef])
+  @@index([organizationId])
+  @@index([moduleKey])
+  @@index([assignedById])
+  @@index([expiresAt])
+}
+
+model PrivilegedApprovalRequest {
+  id               String                   @id @default(cuid())
+  operationType    PrivilegedOperationType
+  status           PrivilegedApprovalStatus @default(PENDING)
+  requesterId      String
+  approverId       String?
+  targetUserId     String?
+  organizationId   String?
+  requestedRole    UserRole?
+  requestedScope   Json?
+  payload          Json?
+  reason           String?
+  decisionReason   String?
+  requestedAt      DateTime                 @default(now())
+  decidedAt        DateTime?
+  executionBlocked Boolean                  @default(true)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  requester User  @relation("PrivilegedApprovalRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  approver  User? @relation("PrivilegedApprovalDecider", fields: [approverId], references: [id], onDelete: SetNull)
+
+  @@index([operationType, status])
+  @@index([requesterId, requestedAt])
+  @@index([approverId, decidedAt])
+  @@index([targetUserId])
+  @@index([organizationId])
+}
+
 model RegulatoryCase {
   id             String               @id @default(cuid())
   caseNumber     String               @unique
@@ -897,36 +1009,36 @@ model OrganizationUpgradeRequest {
 }
 
 model PaymentTransaction {
-  id                     String                   @id @default(cuid())
-  organizationId         String
-  requestingUserId       String?
-  provider               PaymentProvider
-  environment            PaymentEnvironment
-  internalReference      String                   @unique
-  providerReference      String?
-  providerAccessCode     String?
+  id                       String                   @id @default(cuid())
+  organizationId           String
+  requestingUserId         String?
+  provider                 PaymentProvider
+  environment              PaymentEnvironment
+  internalReference        String                   @unique
+  providerReference        String?
+  providerAccessCode       String?
   providerAuthorizationUrl String?
-  planCode               SubscriptionPlan
-  amountMinor            Int
-  currency               String
-  status                 PaymentTransactionStatus @default(INITIALIZED)
-  initializedAt          DateTime                 @default(now())
-  paidAt                 DateTime?
-  verifiedAt             DateTime?
-  failedAt               DateTime?
-  abandonedAt            DateTime?
-  refundedAt             DateTime?
-  providerEventReference String?
-  lastReconciledAt       DateTime?
-  reviewReason           String?
-  sanitizedMetadata      Json?
-  createdAt              DateTime                 @default(now())
-  updatedAt              DateTime                 @updatedAt
+  planCode                 SubscriptionPlan
+  amountMinor              Int
+  currency                 String
+  status                   PaymentTransactionStatus @default(INITIALIZED)
+  initializedAt            DateTime                 @default(now())
+  paidAt                   DateTime?
+  verifiedAt               DateTime?
+  failedAt                 DateTime?
+  abandonedAt              DateTime?
+  refundedAt               DateTime?
+  providerEventReference   String?
+  lastReconciledAt         DateTime?
+  reviewReason             String?
+  sanitizedMetadata        Json?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  requestingUser User?      @relation("PaymentRequestingUser", fields: [requestingUserId], references: [id], onDelete: SetNull)
-  subscription OrganizationSubscription?
-  receipt      PaymentReceipt?
+  organization   Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestingUser User?                     @relation("PaymentRequestingUser", fields: [requestingUserId], references: [id], onDelete: SetNull)
+  subscription   OrganizationSubscription?
+  receipt        PaymentReceipt?
 
   @@unique([provider, providerReference])
   @@index([organizationId, status])
@@ -937,20 +1049,20 @@ model PaymentTransaction {
 }
 
 model OrganizationSubscription {
-  id                    String                         @id @default(cuid())
-  organizationId        String
-  planCode              SubscriptionPlan
-  status                OrganizationSubscriptionStatus @default(ACTIVE)
-  currentPeriodStartAt  DateTime
-  currentPeriodEndAt    DateTime?
-  sourceTransactionId   String?                        @unique
-  externalCustomerRef   String?
+  id                      String                         @id @default(cuid())
+  organizationId          String
+  planCode                SubscriptionPlan
+  status                  OrganizationSubscriptionStatus @default(ACTIVE)
+  currentPeriodStartAt    DateTime
+  currentPeriodEndAt      DateTime?
+  sourceTransactionId     String?                        @unique
+  externalCustomerRef     String?
   externalSubscriptionRef String?
-  entitlementAppliedAt  DateTime?
+  entitlementAppliedAt    DateTime?
   cancellationRequestedAt DateTime?
-  cancelledAt           DateTime?
-  createdAt             DateTime                       @default(now())
-  updatedAt             DateTime                       @updatedAt
+  cancelledAt             DateTime?
+  createdAt               DateTime                       @default(now())
+  updatedAt               DateTime                       @updatedAt
 
   organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sourceTransaction PaymentTransaction? @relation(fields: [sourceTransactionId], references: [id], onDelete: SetNull)
