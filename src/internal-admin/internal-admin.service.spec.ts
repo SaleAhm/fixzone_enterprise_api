@@ -283,6 +283,314 @@ describe('InternalAdminService', () => {
       ),
     ).rejects.toThrow(ForbiddenException);
   });
+
+  it('lists internal invitations with pagination and omits token material', async () => {
+    const prisma = mockPrisma();
+    prisma.invitation.count.mockResolvedValue(1);
+    prisma.invitation.findMany.mockResolvedValue([
+      {
+        id: 'invite-queue-1',
+        email: 'delegate@example.test',
+        fullName: 'Delegate Admin',
+        role: UserRole.SUPPORT_ADMIN,
+        status: InvitationStatus.PENDING,
+        organizationId: null,
+        invitedById: 'super-1',
+        acceptedUserId: null,
+        metadata: {
+          source: 'internal_admin_delegation',
+          scope: { type: InternalScopeType.PLATFORM },
+          localization: { key: 'internal_admin.invitation_pending' },
+        },
+        expiresAt: new Date(Date.now() + 60_000),
+        acceptedAt: null,
+        declinedAt: null,
+        revokedAt: null,
+        createdAt: new Date('2026-08-29T12:00:00Z'),
+        updatedAt: new Date('2026-08-29T12:00:00Z'),
+        invitedBy: {
+          id: 'super-1',
+          fullName: 'Super Admin',
+          email: 'owner@example.test',
+          role: UserRole.SUPER_ADMIN,
+        },
+      },
+    ]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listInvitations(
+      { page: 1, pageSize: 10, status: InvitationStatus.PENDING },
+      superAdmin,
+    );
+
+    expect(result).toMatchObject({
+      page: 1,
+      pageSize: 10,
+      total: 1,
+      totalPages: 1,
+    });
+    expect(result.items[0]).toMatchObject({
+      id: 'invite-queue-1',
+      email: 'de******@example.test',
+      status: InvitationStatus.PENDING,
+      availability: 'available',
+      reasonCode: 'pending',
+    });
+    expect(JSON.stringify(result)).not.toContain('inviteCode');
+    expect(JSON.stringify(result)).not.toContain('tokenHash');
+    expect(JSON.stringify(result)).not.toContain('temporaryPasswordHash');
+    expect(prisma.invitation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 0,
+        take: 10,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
+    );
+  });
+
+  it('derives expired internal invitation state without mutating records', async () => {
+    const prisma = mockPrisma();
+    prisma.invitation.findUnique.mockResolvedValue({
+      id: 'invite-expired',
+      email: 'old@example.test',
+      fullName: 'Expired Admin',
+      role: UserRole.SUPPORT_ADMIN,
+      status: InvitationStatus.PENDING,
+      organizationId: null,
+      invitedById: 'super-1',
+      acceptedUserId: null,
+      metadata: {
+        source: 'internal_admin_delegation',
+        scope: { type: InternalScopeType.PLATFORM },
+      },
+      expiresAt: new Date('2026-01-01T00:00:00Z'),
+      acceptedAt: null,
+      declinedAt: null,
+      revokedAt: null,
+      createdAt: new Date('2025-12-25T00:00:00Z'),
+      updatedAt: new Date('2025-12-25T00:00:00Z'),
+      invitedBy: {
+        id: 'super-1',
+        fullName: 'Super Admin',
+        email: 'owner@example.test',
+        role: UserRole.SUPER_ADMIN,
+      },
+    });
+
+    const service = new InternalAdminService(prisma as never);
+    const detail = await service.invitationDetail('invite-expired', superAdmin);
+
+    expect(detail.status).toBe(InvitationStatus.EXPIRED);
+    expect(detail.reasonCode).toBe('expired');
+    expect(prisma.invitation.update).not.toHaveBeenCalled();
+  });
+
+  it('denies out-of-scope invitation detail and audits the attempt', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['internal_admin.read'],
+      },
+    ]);
+    prisma.invitation.findUnique.mockResolvedValue({
+      id: 'invite-org-2',
+      email: 'other@example.test',
+      fullName: 'Other Admin',
+      role: UserRole.SUPPORT_ADMIN,
+      status: InvitationStatus.PENDING,
+      organizationId: 'org-2',
+      invitedById: 'super-1',
+      acceptedUserId: null,
+      metadata: {
+        source: 'internal_admin_delegation',
+        scope: {
+          type: InternalScopeType.ORGANIZATION,
+          organizationId: 'org-2',
+        },
+      },
+      expiresAt: null,
+      acceptedAt: null,
+      declinedAt: null,
+      revokedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      invitedBy: {
+        id: 'super-1',
+        fullName: 'Super Admin',
+        email: 'owner@example.test',
+        role: UserRole.SUPER_ADMIN,
+      },
+    });
+
+    const service = new InternalAdminService(prisma as never);
+    await expect(
+      service.invitationDetail('invite-org-2', {
+        sub: 'scoped-1',
+        role: UserRole.CITIZEN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      }),
+    ).rejects.toThrow('Invitation not found');
+    expect(prisma.complianceAuditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'Internal Admin Privilege Denied',
+          metadata: expect.objectContaining({
+            reason: 'invitation_scope_bypass_denied',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('lists privileged approvals with finance-limited visibility and blocked execution state', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.PLATFORM,
+        scopeRef: null,
+        organizationId: null,
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['payment.configuration_manage'],
+      },
+    ]);
+    prisma.privilegedApprovalRequest.count.mockResolvedValue(1);
+    prisma.privilegedApprovalRequest.findMany.mockResolvedValue([
+      {
+        id: 'approval-finance-1',
+        operationType: PrivilegedOperationType.PAYMENT_CONFIGURATION_CHANGE,
+        status: PrivilegedApprovalStatus.PENDING,
+        requesterId: 'requester-1',
+        approverId: null,
+        targetUserId: null,
+        organizationId: null,
+        requestedRole: null,
+        requestedScope: { organizationId: null },
+        payload: {
+          blockedReason: 'Payment configuration change requires review.',
+          paystackSecret: 'must-not-return',
+        },
+        reason: 'Rotate public metadata',
+        decisionReason: null,
+        requestedAt: new Date('2026-08-29T12:00:00Z'),
+        decidedAt: null,
+        executionBlocked: true,
+        createdAt: new Date('2026-08-29T12:00:00Z'),
+        updatedAt: new Date('2026-08-29T12:00:00Z'),
+        requester: {
+          id: 'requester-1',
+          fullName: 'Requester',
+          email: 'requester@example.test',
+          role: UserRole.FINANCE_BILLING_ADMIN,
+        },
+        approver: null,
+      },
+    ]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listPrivilegedApprovals(
+      {
+        operationType: PrivilegedOperationType.PAYMENT_CONFIGURATION_CHANGE,
+        canDecide: 'true',
+      },
+      {
+        sub: 'finance-1',
+        role: UserRole.FINANCE_BILLING_ADMIN,
+        accountStatus: AccountStatus.ACTIVE,
+      },
+    );
+
+    expect(result.items[0]).toMatchObject({
+      id: 'approval-finance-1',
+      operationType: PrivilegedOperationType.PAYMENT_CONFIGURATION_CHANGE,
+      canDecide: true,
+      executionState: 'PENDING',
+      fallbackMessage: 'Payment configuration change requires review.',
+    });
+    expect(JSON.stringify(result)).not.toContain('paystackSecret');
+    expect(prisma.privilegedApprovalRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationType: PrivilegedOperationType.PAYMENT_CONFIGURATION_CHANGE,
+          requesterId: { not: 'finance-1' },
+          status: PrivilegedApprovalStatus.PENDING,
+        }),
+      }),
+    );
+  });
+
+  it('marks requester self-approval as prohibited in approval detail', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.PLATFORM,
+        scopeRef: null,
+        organizationId: null,
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['payment.configuration_manage'],
+      },
+    ]);
+    prisma.privilegedApprovalRequest.findUnique.mockResolvedValue({
+      id: 'approval-self',
+      operationType: PrivilegedOperationType.PAYMENT_CONFIGURATION_CHANGE,
+      status: PrivilegedApprovalStatus.PENDING,
+      requesterId: 'finance-1',
+      approverId: null,
+      targetUserId: null,
+      organizationId: null,
+      requestedRole: null,
+      requestedScope: {},
+      payload: {},
+      reason: 'self check',
+      decisionReason: null,
+      requestedAt: new Date(),
+      decidedAt: null,
+      executionBlocked: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      requester: {
+        id: 'finance-1',
+        fullName: 'Finance',
+        email: 'finance@example.test',
+        role: UserRole.FINANCE_BILLING_ADMIN,
+      },
+      approver: null,
+    });
+
+    const service = new InternalAdminService(prisma as never);
+    const detail = await service.privilegedApprovalDetail('approval-self', {
+      sub: 'finance-1',
+      role: UserRole.FINANCE_BILLING_ADMIN,
+      accountStatus: AccountStatus.ACTIVE,
+    });
+
+    expect(detail.canDecide).toBe(false);
+    expect(detail.selfApprovalConflict).toBe(true);
+    expect(detail.decisionProhibitedReason).toBe('self_approval_denied');
+  });
+
+  it('denies suspended internal administrators from queue visibility', async () => {
+    const prisma = mockPrisma();
+    const service = new InternalAdminService(prisma as never);
+
+    await expect(
+      service.listPrivilegedApprovals(
+        {},
+        {
+          sub: 'security-1',
+          role: UserRole.SECURITY_ADMIN,
+          accountStatus: AccountStatus.SUSPENDED,
+        },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
 });
 
 function mockPrisma() {
@@ -308,6 +616,8 @@ function mockPrisma() {
       }),
     },
     invitation: {
+      count: jest.fn().mockResolvedValue(0),
+      findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn(),
       findFirst: jest.fn(),
       findUnique: jest.fn(),
@@ -324,6 +634,8 @@ function mockPrisma() {
       update: jest.fn().mockResolvedValue({ id: 'assignment-1' }),
     },
     privilegedApprovalRequest: {
+      count: jest.fn().mockResolvedValue(0),
+      findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),

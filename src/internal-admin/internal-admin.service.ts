@@ -38,6 +38,11 @@ import {
   CreatePrivilegedApprovalDto,
   DecidePrivilegedApprovalDto,
 } from './dto/privileged-approval.dto';
+import {
+  InternalAdminPaginationQueryDto,
+  InternalInvitationQueueQueryDto,
+  PrivilegedApprovalQueueQueryDto,
+} from './dto/internal-admin-queue-query.dto';
 
 @Injectable()
 export class InternalAdminService {
@@ -83,6 +88,81 @@ export class InternalAdminService {
   async viewEffectiveAccess(targetUserId: string, user: InternalAdminUser) {
     await this.assertPermission(user, 'internal_admin.read');
     return this.effectivePermissionsForUser(targetUserId);
+  }
+
+  async listInvitations(
+    query: InternalInvitationQueueQueryDto,
+    user: InternalAdminUser,
+    context?: RequestContext,
+  ) {
+    await this.assertPermission(user, 'internal_admin.read', null, context);
+    const effective = await this.effectivePermissions(user);
+    const scopeWhere = await this.invitationScopeWhere(
+      effective,
+      user,
+      context,
+    );
+    const pagination = this.pagination(query);
+    const where: Prisma.InvitationWhereInput = {
+      ...scopeWhere,
+      role: { in: this.internalRoleValues() },
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.role ? { role: query.role } : {}),
+      ...(query.organizationId ? { organizationId: query.organizationId } : {}),
+      ...(query.inviterId ? { invitedById: query.inviterId } : {}),
+      ...(query.search
+        ? {
+            OR: [
+              { fullName: { contains: query.search, mode: 'insensitive' } },
+              { email: { contains: query.search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...this.createdAtWhere(query),
+      ...this.invitationExpiryWhere(query),
+      ...this.invitationMetadataScopeWhere(query),
+    };
+    const orderBy = this.invitationOrderBy(query);
+    const [total, items] = await Promise.all([
+      this.prisma.invitation.count({ where }),
+      this.prisma.invitation.findMany({
+        where,
+        select: this.invitationQueueSelect(),
+        orderBy,
+        skip: pagination.skip,
+        take: pagination.pageSize,
+      }),
+    ]);
+    return this.pageEnvelope(
+      items.map((item) => this.safeInvitationQueueItem(item)),
+      pagination.page,
+      pagination.pageSize,
+      total,
+    );
+  }
+
+  async invitationDetail(
+    invitationId: string,
+    user: InternalAdminUser,
+    context?: RequestContext,
+  ) {
+    await this.assertPermission(user, 'internal_admin.read', null, context);
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { id: invitationId },
+      select: this.invitationQueueSelect(),
+    });
+    if (!invitation || !this.isInternalInvitation(invitation.role)) {
+      throw new NotFoundException('Invitation not found');
+    }
+    const effective = await this.effectivePermissions(user);
+    if (!this.canViewOrganizationScope(effective, invitation.organizationId)) {
+      await this.auditDenied(user, context, 'invitation_scope_bypass_denied', {
+        invitationId,
+        organizationId: invitation.organizationId,
+      });
+      throw new NotFoundException('Invitation not found');
+    }
+    return this.safeInvitationQueueItem(invitation, true);
   }
 
   async inviteAdministrator(
@@ -454,6 +534,101 @@ export class InternalAdminService {
     });
   }
 
+  async listPrivilegedApprovals(
+    query: PrivilegedApprovalQueueQueryDto,
+    user: InternalAdminUser,
+    context?: RequestContext,
+  ) {
+    const effective = await this.effectivePermissions(user);
+    const readableOperations = this.readableApprovalOperations(user, effective);
+    if (!readableOperations.length) {
+      await this.auditDenied(user, context, 'approval_queue_read_denied', {
+        requestedOperationType: query.operationType ?? null,
+      });
+      throw new ForbiddenException('Approval queue visibility denied.');
+    }
+    const pagination = this.pagination(query);
+    const where: Prisma.PrivilegedApprovalRequestWhereInput = {
+      operationType: { in: readableOperations },
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.operationType ? { operationType: query.operationType } : {}),
+      ...(query.requesterId ? { requesterId: query.requesterId } : {}),
+      ...(query.targetUserId ? { targetUserId: query.targetUserId } : {}),
+      ...(query.organizationId
+        ? { organizationId: query.organizationId }
+        : this.approvalScopeWhere(effective)),
+      ...(query.search
+        ? {
+            OR: [
+              { reason: { contains: query.search, mode: 'insensitive' } },
+              { requesterId: { contains: query.search, mode: 'insensitive' } },
+              { targetUserId: { contains: query.search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...this.approvalDateWhere(query),
+      ...this.approvalExpiryWhere(),
+    };
+    if (query.canDecide === 'true' || query.attention === 'true') {
+      where.status = PrivilegedApprovalStatus.PENDING;
+      where.requesterId = { not: this.actorId(user) };
+    } else if (query.canDecide === 'false') {
+      where.OR = [
+        ...(Array.isArray(where.OR) ? where.OR : []),
+        { requesterId: this.actorId(user) },
+        { status: { not: PrivilegedApprovalStatus.PENDING } },
+      ];
+    }
+
+    const orderBy = this.approvalOrderBy(query);
+    const [total, items] = await Promise.all([
+      this.prisma.privilegedApprovalRequest.count({ where }),
+      this.prisma.privilegedApprovalRequest.findMany({
+        where,
+        select: this.approvalQueueSelect(),
+        orderBy,
+        skip: pagination.skip,
+        take: pagination.pageSize,
+      }),
+    ]);
+    return this.pageEnvelope(
+      items.map((item) => this.safeApprovalQueueItem(item, user, effective)),
+      pagination.page,
+      pagination.pageSize,
+      total,
+    );
+  }
+
+  async privilegedApprovalDetail(
+    approvalId: string,
+    user: InternalAdminUser,
+    context?: RequestContext,
+  ) {
+    const effective = await this.effectivePermissions(user);
+    const readableOperations = this.readableApprovalOperations(user, effective);
+    if (!readableOperations.length) {
+      await this.auditDenied(user, context, 'approval_detail_read_denied', {
+        approvalId,
+      });
+      throw new ForbiddenException('Approval detail visibility denied.');
+    }
+    const request = await this.prisma.privilegedApprovalRequest.findUnique({
+      where: { id: approvalId },
+      select: this.approvalQueueSelect(),
+    });
+    if (
+      !request ||
+      !readableOperations.includes(request.operationType) ||
+      !this.canViewOrganizationScope(effective, request.organizationId)
+    ) {
+      await this.auditDenied(user, context, 'approval_detail_scope_denied', {
+        approvalId,
+      });
+      throw new NotFoundException('Approval request not found');
+    }
+    return this.safeApprovalQueueItem(request, user, effective, true);
+  }
+
   async createApprovalRequest(
     dto: CreatePrivilegedApprovalDto,
     user: InternalAdminUser,
@@ -587,9 +762,10 @@ export class InternalAdminService {
     user: InternalAdminUser,
     permission: InternalPermissionKey,
     organizationId?: string | null,
+    context?: RequestContext,
   ) {
     if (!(await this.hasPermission(user, permission, organizationId))) {
-      await this.auditDenied(user, undefined, 'permission_denied', {
+      await this.auditDenied(user, context, 'permission_denied', {
         permission,
         organizationId: organizationId ?? null,
       });
@@ -867,6 +1043,199 @@ export class InternalAdminService {
     };
   }
 
+  private invitationQueueSelect() {
+    return {
+      id: true,
+      email: true,
+      fullName: true,
+      role: true,
+      status: true,
+      organizationId: true,
+      invitedById: true,
+      acceptedUserId: true,
+      metadata: true,
+      expiresAt: true,
+      acceptedAt: true,
+      declinedAt: true,
+      revokedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      invitedBy: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+        },
+      },
+    } as const;
+  }
+
+  private safeInvitationQueueItem(
+    invitation: {
+      id: string;
+      email: string | null;
+      fullName: string;
+      role: UserRole;
+      status: InvitationStatus;
+      organizationId: string | null;
+      invitedById: string;
+      acceptedUserId: string | null;
+      metadata: Prisma.JsonValue | null;
+      expiresAt: Date | null;
+      acceptedAt: Date | null;
+      declinedAt: Date | null;
+      revokedAt: Date | null;
+      createdAt: Date;
+      updatedAt: Date;
+      invitedBy: {
+        id: string;
+        fullName: string;
+        email: string | null;
+        role: UserRole;
+      };
+    },
+    detail = false,
+  ) {
+    const metadata = this.objectRecord(invitation.metadata);
+    const scope = this.scopeFromMetadata(metadata);
+    const derived = this.deriveInvitationState(invitation);
+    return {
+      id: invitation.id,
+      fullName: invitation.fullName,
+      email: this.maskEmail(invitation.email),
+      recipientEmail: this.maskEmail(invitation.email),
+      role: invitation.role,
+      status: derived.status,
+      storedStatus: invitation.status,
+      availability: derived.availability,
+      reasonCode: derived.reasonCode,
+      scope,
+      organizationId: invitation.organizationId,
+      inviter: this.safeActor(invitation.invitedBy),
+      invitedById: invitation.invitedById,
+      acceptedUserId: detail ? invitation.acceptedUserId : undefined,
+      createdAt: invitation.createdAt,
+      updatedAt: invitation.updatedAt,
+      expiresAt: invitation.expiresAt,
+      acceptedAt: invitation.acceptedAt,
+      declinedAt: invitation.declinedAt,
+      revokedAt: invitation.revokedAt,
+      mfa: this.mfaReadiness(),
+      localization: this.safeLocalization(metadata),
+    };
+  }
+
+  private approvalQueueSelect() {
+    return {
+      id: true,
+      operationType: true,
+      status: true,
+      requesterId: true,
+      approverId: true,
+      targetUserId: true,
+      organizationId: true,
+      requestedRole: true,
+      requestedScope: true,
+      payload: true,
+      reason: true,
+      decisionReason: true,
+      requestedAt: true,
+      decidedAt: true,
+      executionBlocked: true,
+      createdAt: true,
+      updatedAt: true,
+      requester: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+        },
+      },
+      approver: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+        },
+      },
+    } as const;
+  }
+
+  private safeApprovalQueueItem(
+    request: {
+      id: string;
+      operationType: PrivilegedOperationType;
+      status: PrivilegedApprovalStatus;
+      requesterId: string;
+      approverId: string | null;
+      targetUserId: string | null;
+      organizationId: string | null;
+      requestedRole: UserRole | null;
+      requestedScope: Prisma.JsonValue | null;
+      payload: Prisma.JsonValue | null;
+      reason: string | null;
+      decisionReason: string | null;
+      requestedAt: Date;
+      decidedAt: Date | null;
+      executionBlocked: boolean;
+      createdAt: Date;
+      updatedAt: Date;
+      requester: {
+        id: string;
+        fullName: string;
+        email: string | null;
+        role: UserRole;
+      };
+      approver: {
+        id: string;
+        fullName: string;
+        email: string | null;
+        role: UserRole;
+      } | null;
+    },
+    user: InternalAdminUser,
+    effective: EffectivePermissionResult,
+    detail = false,
+  ) {
+    const eligibility = this.approvalDecisionEligibility(
+      request,
+      user,
+      effective,
+    );
+    return {
+      id: request.id,
+      operationType: request.operationType,
+      requester: this.safeActor(request.requester),
+      requesterId: request.requesterId,
+      targetUserId: request.targetUserId,
+      organizationId: request.organizationId,
+      requestedRole: request.requestedRole,
+      requestedScope: this.safeRequestedScope(request.requestedScope),
+      reason: this.sanitizeReason(request.reason),
+      status: request.status,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt,
+      requestedAt: request.requestedAt,
+      decidedAt: request.decidedAt,
+      approver: request.approver ? this.safeActor(request.approver) : null,
+      approverId: request.approverId,
+      decisionReason: detail
+        ? this.sanitizeReason(request.decisionReason)
+        : undefined,
+      canDecide: eligibility.canDecide,
+      decisionProhibitedReason: eligibility.reasonCode,
+      selfApprovalConflict: request.requesterId === this.actorId(user),
+      requiredApprovalCount: 1,
+      currentApprovalCount: request.approverId ? 1 : 0,
+      executionBlocked: request.executionBlocked,
+      executionState: this.executionState(request),
+      fallbackMessage: this.safeBlockedReason(request.payload),
+    };
+  }
+
   private adminSelect() {
     return {
       id: true,
@@ -1019,5 +1388,315 @@ export class InternalAdminService {
     value: Record<string, unknown> | null | undefined,
   ): Prisma.InputJsonValue | undefined {
     return value ? this.safeJson(value) : undefined;
+  }
+
+  private pagination(query: InternalAdminPaginationQueryDto) {
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25));
+    return { page, pageSize, skip: (page - 1) * pageSize };
+  }
+
+  private pageEnvelope<T>(
+    items: T[],
+    page: number,
+    pageSize: number,
+    total: number,
+  ) {
+    return {
+      items,
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
+
+  private createdAtWhere(query: InternalAdminPaginationQueryDto) {
+    if (!query.createdFrom && !query.createdTo) return {};
+    return {
+      createdAt: {
+        ...(query.createdFrom ? { gte: new Date(query.createdFrom) } : {}),
+        ...(query.createdTo ? { lte: new Date(query.createdTo) } : {}),
+      },
+    };
+  }
+
+  private approvalDateWhere(query: InternalAdminPaginationQueryDto) {
+    if (!query.createdFrom && !query.createdTo) return {};
+    return {
+      requestedAt: {
+        ...(query.createdFrom ? { gte: new Date(query.createdFrom) } : {}),
+        ...(query.createdTo ? { lte: new Date(query.createdTo) } : {}),
+      },
+    };
+  }
+
+  private invitationExpiryWhere(query: InternalAdminPaginationQueryDto) {
+    const now = new Date();
+    if (query.expiryState === 'expired') {
+      return { expiresAt: { not: null, lte: now } };
+    }
+    if (query.expiryState === 'active') {
+      return { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] };
+    }
+    return {};
+  }
+
+  private approvalExpiryWhere() {
+    return {};
+  }
+
+  private invitationMetadataScopeWhere(query: InternalInvitationQueueQueryDto) {
+    const filters: Prisma.InvitationWhereInput[] = [];
+    if (query.scopeType) {
+      filters.push({
+        metadata: { path: ['scope', 'type'], equals: query.scopeType },
+      });
+    }
+    if (query.moduleKey) {
+      filters.push({
+        metadata: { path: ['scope', 'moduleKey'], equals: query.moduleKey },
+      });
+    }
+    return filters.length ? { AND: filters } : {};
+  }
+
+  private invitationOrderBy(
+    query: InternalAdminPaginationQueryDto,
+  ): Prisma.InvitationOrderByWithRelationInput[] {
+    const direction = query.sortDirection ?? 'desc';
+    if (query.sortBy === 'expiresAt') {
+      return [{ expiresAt: direction }, { id: direction }];
+    }
+    if (query.sortBy === 'status') {
+      return [{ status: direction }, { createdAt: 'desc' }];
+    }
+    if (query.sortBy === 'role') {
+      return [{ role: direction }, { createdAt: 'desc' }];
+    }
+    return [{ createdAt: direction }, { id: direction }];
+  }
+
+  private approvalOrderBy(
+    query: InternalAdminPaginationQueryDto,
+  ): Prisma.PrivilegedApprovalRequestOrderByWithRelationInput[] {
+    const direction = query.sortDirection ?? 'desc';
+    if (query.sortBy === 'status') {
+      return [{ status: direction }, { requestedAt: 'desc' }];
+    }
+    if (query.sortBy === 'operationType') {
+      return [{ operationType: direction }, { requestedAt: 'desc' }];
+    }
+    return [{ requestedAt: direction }, { id: direction }];
+  }
+
+  private async invitationScopeWhere(
+    effective: EffectivePermissionResult,
+    user: InternalAdminUser,
+    context?: RequestContext,
+  ): Promise<Prisma.InvitationWhereInput> {
+    if (this.hasPlatformScope(effective)) return {};
+    const organizationIds = this.organizationScopeIds(effective, user);
+    if (!organizationIds.length) {
+      await this.auditDenied(user, context, 'invitation_visibility_denied', {
+        reason: 'no_authorized_scope',
+      });
+      throw new ForbiddenException('Invitation visibility denied.');
+    }
+    return { organizationId: { in: organizationIds } };
+  }
+
+  private approvalScopeWhere(
+    effective: EffectivePermissionResult,
+  ): Prisma.PrivilegedApprovalRequestWhereInput {
+    if (this.hasPlatformScope(effective)) return {};
+    const organizationIds = effective.scopes
+      .map((scope) => scope.organizationId ?? scope.ref)
+      .filter((item): item is string => Boolean(item));
+    return organizationIds.length
+      ? { organizationId: { in: organizationIds } }
+      : { organizationId: '__no_authorized_scope__' };
+  }
+
+  private canViewOrganizationScope(
+    effective: EffectivePermissionResult,
+    organizationId: string | null,
+  ) {
+    if (this.hasPlatformScope(effective)) return true;
+    if (!organizationId) return false;
+    return effective.scopes.some(
+      (scope) =>
+        scope.organizationId === organizationId || scope.ref === organizationId,
+    );
+  }
+
+  private hasPlatformScope(effective: EffectivePermissionResult) {
+    return effective.scopes.some(
+      (scope) => scope.type === InternalScopeType.PLATFORM,
+    );
+  }
+
+  private organizationScopeIds(
+    effective: EffectivePermissionResult,
+    user: InternalAdminUser,
+  ) {
+    return [
+      ...new Set(
+        [
+          user.organizationId ?? null,
+          ...effective.scopes.map((scope) => scope.organizationId ?? scope.ref),
+        ].filter((item): item is string => Boolean(item)),
+      ),
+    ];
+  }
+
+  private readableApprovalOperations(
+    user: InternalAdminUser,
+    effective: EffectivePermissionResult,
+  ) {
+    if (
+      user.role === UserRole.SUPER_ADMIN ||
+      user.role === UserRole.PLATFORM_SUPER_ADMIN ||
+      effective.permissions.includes('internal_admin.view_audit')
+    ) {
+      return Object.values(PrivilegedOperationType);
+    }
+    return Object.values(PrivilegedOperationType).filter((operationType) =>
+      effective.permissions.includes(
+        highRiskOperationPermissions[operationType],
+      ),
+    );
+  }
+
+  private approvalDecisionEligibility(
+    request: {
+      operationType: PrivilegedOperationType;
+      status: PrivilegedApprovalStatus;
+      requesterId: string;
+    },
+    user: InternalAdminUser,
+    effective: EffectivePermissionResult,
+  ) {
+    if (request.status !== PrivilegedApprovalStatus.PENDING) {
+      return { canDecide: false, reasonCode: 'not_pending' };
+    }
+    if (request.requesterId === this.actorId(user)) {
+      return { canDecide: false, reasonCode: 'self_approval_denied' };
+    }
+    const required = highRiskOperationPermissions[request.operationType];
+    if (!effective.permissions.includes(required)) {
+      return { canDecide: false, reasonCode: 'permission_denied' };
+    }
+    return { canDecide: true, reasonCode: null };
+  }
+
+  private executionState(request: {
+    status: PrivilegedApprovalStatus;
+    executionBlocked: boolean;
+  }) {
+    if (request.status === PrivilegedApprovalStatus.PENDING) return 'PENDING';
+    if (
+      request.status === PrivilegedApprovalStatus.REJECTED ||
+      request.status === PrivilegedApprovalStatus.CANCELLED
+    ) {
+      return 'NOT_APPLICABLE';
+    }
+    if (request.executionBlocked) return 'BLOCKED';
+    return 'BLOCKED';
+  }
+
+  private safeActor(actor: {
+    id: string;
+    fullName: string;
+    email: string | null;
+    role: UserRole;
+  }) {
+    return {
+      id: actor.id,
+      fullName: actor.fullName,
+      email: this.maskEmail(actor.email),
+      role: actor.role,
+    };
+  }
+
+  private deriveInvitationState(invitation: {
+    status: InvitationStatus;
+    expiresAt: Date | null;
+    acceptedAt: Date | null;
+    revokedAt: Date | null;
+    declinedAt: Date | null;
+  }) {
+    const expired =
+      invitation.status === InvitationStatus.PENDING &&
+      invitation.expiresAt !== null &&
+      invitation.expiresAt.getTime() <= Date.now();
+    if (expired) {
+      return {
+        status: InvitationStatus.EXPIRED,
+        availability: 'unavailable',
+        reasonCode: 'expired',
+      };
+    }
+    if (invitation.status !== InvitationStatus.PENDING) {
+      return {
+        status: invitation.status,
+        availability: 'unavailable',
+        reasonCode: invitation.status.toLowerCase(),
+      };
+    }
+    return {
+      status: invitation.status,
+      availability: 'available',
+      reasonCode: 'pending',
+    };
+  }
+
+  private isInternalInvitation(role: UserRole) {
+    return this.internalRoleValues().includes(role);
+  }
+
+  private safeRequestedScope(raw: Prisma.JsonValue | null) {
+    const scope = this.objectRecord(raw);
+    return {
+      organizationId: this.normalizeText(scope.organizationId),
+      moduleKey: this.normalizeText(scope.moduleKey),
+      scopeRef: this.normalizeText(scope.scopeRef ?? scope.ref),
+      scopeType: this.normalizeText(scope.scopeType ?? scope.type),
+    };
+  }
+
+  private safeBlockedReason(raw: Prisma.JsonValue | null) {
+    const payload = this.objectRecord(raw);
+    const reason = this.normalizeText(payload.blockedReason);
+    return reason ?? 'Execution remains blocked until explicitly implemented.';
+  }
+
+  private safeLocalization(metadata: Record<string, unknown>) {
+    const localization = this.objectRecord(metadata.localization);
+    return {
+      key: this.normalizeText(localization.key),
+      fallbackLocale: this.normalizeText(localization.fallbackLocale) ?? 'en',
+      fallbackMessage: this.normalizeText(localization.fallbackMessage),
+    };
+  }
+
+  private sanitizeReason(value: string | null) {
+    if (!value) return null;
+    return [...value]
+      .map((char) => {
+        const code = char.charCodeAt(0);
+        return code < 32 || code === 127 ? ' ' : char;
+      })
+      .join('')
+      .slice(0, 500)
+      .trim();
+  }
+
+  private maskEmail(value: string | null) {
+    if (!value) return null;
+    const [local, domain] = value.split('@');
+    if (!local || !domain) return 'hidden';
+    const prefix = local.slice(0, Math.min(2, local.length));
+    return `${prefix}${'*'.repeat(Math.max(2, local.length - prefix.length))}@${domain}`;
   }
 }

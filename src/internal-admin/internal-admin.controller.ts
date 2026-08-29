@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -25,6 +26,10 @@ import {
   CreatePrivilegedApprovalDto,
   DecidePrivilegedApprovalDto,
 } from './dto/privileged-approval.dto';
+import {
+  InternalInvitationQueueQueryDto,
+  PrivilegedApprovalQueueQueryDto,
+} from './dto/internal-admin-queue-query.dto';
 import { InternalAdminService } from './internal-admin.service';
 import type { InternalAdminUser } from './internal-admin.types';
 
@@ -88,6 +93,26 @@ export class InternalAdminController {
     @Req() req: Request,
   ) {
     return this.internalAdmin.inviteAdministrator(dto, user, this.context(req));
+  }
+
+  @Get('invitations')
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  listInvitations(
+    @Query() query: InternalInvitationQueueQueryDto,
+    @CurrentUser() user: InternalAdminUser,
+    @Req() req: Request,
+  ) {
+    return this.internalAdmin.listInvitations(query, user, this.context(req));
+  }
+
+  @Get('invitations/:id')
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  invitationDetail(
+    @Param('id') id: string,
+    @CurrentUser() user: InternalAdminUser,
+    @Req() req: Request,
+  ) {
+    return this.internalAdmin.invitationDetail(id, user, this.context(req));
   }
 
   @Post('invitations/:id/accept')
@@ -180,6 +205,34 @@ export class InternalAdminController {
   ) {
     return this.internalAdmin.createApprovalRequest(
       dto,
+      user,
+      this.context(req),
+    );
+  }
+
+  @Get('privileged-approvals')
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  listApprovals(
+    @Query() query: PrivilegedApprovalQueueQueryDto,
+    @CurrentUser() user: InternalAdminUser,
+    @Req() req: Request,
+  ) {
+    return this.internalAdmin.listPrivilegedApprovals(
+      query,
+      user,
+      this.context(req),
+    );
+  }
+
+  @Get('privileged-approvals/:id')
+  @EnterpriseRateLimit(RateLimitTier.AdminRead)
+  approvalDetail(
+    @Param('id') id: string,
+    @CurrentUser() user: InternalAdminUser,
+    @Req() req: Request,
+  ) {
+    return this.internalAdmin.privilegedApprovalDetail(
+      id,
       user,
       this.context(req),
     );
