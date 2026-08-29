@@ -28,7 +28,7 @@ type CurrentAuthUser = {
   sub?: string;
   email?: string | null;
   fullName?: string | null;
-  role?: UserRole | string;
+  role?: UserRole;
   organizationId?: string | null;
 };
 

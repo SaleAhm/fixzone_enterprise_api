@@ -8,6 +8,46 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { PlatformEntitlementPlan, UserRole } from '@prisma/client';
 import { TrustService } from '../src/trust/trust.service';
 
+type LoginResponse = { accessToken: string };
+type IdentityResponse = {
+  secureZoneId: string;
+  identityVerificationStatus: string;
+  identityVerificationLevel?: number;
+  trustScore?: number;
+  entitlement: { plan: string };
+};
+type KycResponse = {
+  id: string;
+  status: string;
+  rejectionReason?: string;
+};
+type AuditItem = { action: string };
+type EvidenceItem = {
+  relatedEntityId: string;
+  metadata?: { source?: string };
+};
+type EntitlementsResponse = {
+  canOpenDispute: boolean;
+  guardPreview: { allowed: boolean };
+};
+type DisputeResponse = {
+  id: string;
+  caseNumber: string;
+  status: string;
+  assignedAdminId?: string | null;
+  messages?: { message: string }[];
+};
+type NotificationItem = { type: string };
+type LoginHistoryItem = { success: boolean; deviceLabel?: string | null };
+type EnforcementSettingsResponse = {
+  requireVerifiedIdentityForDisputes: boolean;
+};
+type TrustSummaryResponse = {
+  pendingKyc: number;
+  rejectedKyc: number;
+  recentComplianceEvents: number;
+};
+
 describe('Trust & Identity Foundation (e2e)', () => {
   jest.setTimeout(30000);
 
@@ -127,11 +167,11 @@ describe('Trust & Identity Foundation (e2e)', () => {
   }
 
   async function login(email: string) {
-    const res = await request(app.getHttpServer())
+    const res = await request(httpServer())
       .post('/api/auth/login')
       .send({ email, password: 'Password123!' });
     expect(res.status).toBe(201);
-    return res.body.accessToken as string;
+    return responseBody<LoginResponse>(res).accessToken;
   }
 
   async function cleanup() {
@@ -223,58 +263,71 @@ describe('Trust & Identity Foundation (e2e)', () => {
     process.env[name] = value;
   }
 
+  function httpServer(): Parameters<typeof request>[0] {
+    return app.getHttpServer() as Parameters<typeof request>[0];
+  }
+
+  function responseBody<T>(res: request.Response): T {
+    return res.body as T;
+  }
+
   it('returns and backfills SecureZone identity for the current user', async () => {
-    const res = await request(app.getHttpServer())
+    const res = await request(httpServer())
       .get('/api/identity/me')
       .set('Authorization', `Bearer ${citizenToken}`);
 
+    const body = responseBody<IdentityResponse>(res);
     expect(res.status).toBe(200);
-    expect(res.body.secureZoneId).toMatch(/^SZ-\d{4}-\d{6}$/);
-    expect(res.body.identityVerificationStatus).toBe('UNVERIFIED');
-    expect(res.body.entitlement.plan).toBe('FREE');
+    expect(body.secureZoneId).toMatch(/^SZ-\d{4}-\d{6}$/);
+    expect(body.identityVerificationStatus).toBe('UNVERIFIED');
+    expect(body.entitlement.plan).toBe('FREE');
   });
 
   it('submits KYC and allows same-organization admin review', async () => {
-    const submit = await request(app.getHttpServer())
+    const submit = await request(httpServer())
       .post('/api/identity/kyc/submit')
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({
         submissionType: 'GOVERNMENT_ID',
         documentUrl: 'https://records.securezone.test/id.png',
       });
+    const submitBody = responseBody<KycResponse>(submit);
 
     expect(submit.status).toBe(201);
-    expect(submit.body.status).toBe('SUBMITTED');
+    expect(submitBody.status).toBe('SUBMITTED');
 
-    const blocked = await request(app.getHttpServer())
-      .post(`/api/admin/identity/kyc-submissions/${submit.body.id}/review`)
+    const blocked = await request(httpServer())
+      .post(`/api/admin/identity/kyc-submissions/${submitBody.id}/review`)
       .set('Authorization', `Bearer ${otherAdminToken}`)
       .send({ status: 'APPROVED' });
     expect(blocked.status).toBe(403);
 
-    const approved = await request(app.getHttpServer())
-      .post(`/api/admin/identity/kyc-submissions/${submit.body.id}/review`)
+    const approved = await request(httpServer())
+      .post(`/api/admin/identity/kyc-submissions/${submitBody.id}/review`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ status: 'APPROVED' });
+    const approvedBody = responseBody<KycResponse>(approved);
     expect(approved.status).toBe(201);
-    expect(approved.body.status).toBe('APPROVED');
+    expect(approvedBody.status).toBe('APPROVED');
 
     const identity = await prisma.user.findUnique({ where: { id: citizenId } });
     expect(identity?.identityVerificationStatus).toBe('ID_VERIFIED');
     expect(identity?.identityVerificationLevel).toBeGreaterThanOrEqual(3);
     expect(identity?.trustScore).toBeGreaterThanOrEqual(10);
 
-    const audit = await request(app.getHttpServer())
+    const audit = await request(httpServer())
       .get('/api/admin/audit/compliance?action=KYC')
       .set('Authorization', `Bearer ${adminToken}`);
     expect(audit.status).toBe(200);
-    expect(audit.body.some((item: any) => item.action === 'KYC Reviewed')).toBe(
-      true,
-    );
+    expect(
+      responseBody<AuditItem[]>(audit).some(
+        (item) => item.action === 'KYC Reviewed',
+      ),
+    ).toBe(true);
   });
 
   it('shows KYC rejection reason to the submitting user', async () => {
-    const submit = await request(app.getHttpServer())
+    const submit = await request(httpServer())
       .post('/api/identity/kyc/submit')
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({
@@ -282,26 +335,28 @@ describe('Trust & Identity Foundation (e2e)', () => {
         documentUrl: 'https://records.securezone.test/address.png',
       });
     expect(submit.status).toBe(201);
+    const submitBody = responseBody<KycResponse>(submit);
 
-    const rejected = await request(app.getHttpServer())
-      .post(`/api/admin/identity/kyc-submissions/${submit.body.id}/review`)
+    const rejected = await request(httpServer())
+      .post(`/api/admin/identity/kyc-submissions/${submitBody.id}/review`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         status: 'REJECTED',
         rejectionReason: 'Address document is unreadable.',
       });
+    const rejectedBody = responseBody<KycResponse>(rejected);
     expect(rejected.status).toBe(201);
-    expect(rejected.body.rejectionReason).toBe(
+    expect(rejectedBody.rejectionReason).toBe(
       'Address document is unreadable.',
     );
 
-    const mine = await request(app.getHttpServer())
+    const mine = await request(httpServer())
       .get('/api/identity/kyc/my-submissions')
       .set('Authorization', `Bearer ${citizenToken}`);
     expect(mine.status).toBe(200);
     expect(
-      mine.body.some(
-        (item: any) =>
+      responseBody<KycResponse[]>(mine).some(
+        (item) =>
           item.status === 'REJECTED' &&
           item.rejectionReason === 'Address document is unreadable.',
       ),
@@ -309,7 +364,7 @@ describe('Trust & Identity Foundation (e2e)', () => {
   });
 
   it('creates scoped evidence records and entitlements', async () => {
-    const evidence = await request(app.getHttpServer())
+    const evidence = await request(httpServer())
       .post('/api/records/evidence')
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({
@@ -321,18 +376,19 @@ describe('Trust & Identity Foundation (e2e)', () => {
       });
     expect(evidence.status).toBe(201);
 
-    const list = await request(app.getHttpServer())
+    const list = await request(httpServer())
       .get('/api/records/evidence')
       .set('Authorization', `Bearer ${citizenToken}`);
     expect(list.status).toBe(200);
-    expect(list.body.length).toBeGreaterThanOrEqual(1);
+    expect(responseBody<EvidenceItem[]>(list).length).toBeGreaterThanOrEqual(1);
 
-    const entitlements = await request(app.getHttpServer())
+    const entitlements = await request(httpServer())
       .get('/api/entitlements/me')
       .set('Authorization', `Bearer ${citizenToken}`);
+    const entitlementsBody = responseBody<EntitlementsResponse>(entitlements);
     expect(entitlements.status).toBe(200);
-    expect(entitlements.body.canOpenDispute).toBe(true);
-    expect(entitlements.body.guardPreview.allowed).toBe(true);
+    expect(entitlementsBody.canOpenDispute).toBe(true);
+    expect(entitlementsBody.guardPreview.allowed).toBe(true);
   });
 
   it('connects report evidence to the Records Vault and protects private records', async () => {
@@ -350,19 +406,19 @@ describe('Trust & Identity Foundation (e2e)', () => {
       },
     });
 
-    const linkedEvidence = await request(app.getHttpServer())
+    const linkedEvidence = await request(httpServer())
       .get('/api/records/evidence')
       .set('Authorization', `Bearer ${citizenToken}`);
     expect(linkedEvidence.status).toBe(200);
     expect(
-      linkedEvidence.body.some(
-        (item: any) =>
+      responseBody<EvidenceItem[]>(linkedEvidence).some(
+        (item) =>
           item.relatedEntityId === report.id &&
           item.metadata?.source === 'report.evidenceImageUrl',
       ),
     ).toBe(true);
 
-    const blocked = await request(app.getHttpServer())
+    const blocked = await request(httpServer())
       .post('/api/records/evidence')
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({
@@ -374,7 +430,7 @@ describe('Trust & Identity Foundation (e2e)', () => {
   });
 
   it('opens disputes, supports messages, and records login history', async () => {
-    const dispute = await request(app.getHttpServer())
+    const dispute = await request(httpServer())
       .post('/api/disputes')
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({
@@ -385,34 +441,36 @@ describe('Trust & Identity Foundation (e2e)', () => {
           'The completed work requires additional administrative review.',
       });
 
+    const disputeBody = responseBody<DisputeResponse>(dispute);
     expect(dispute.status).toBe(201);
-    expect(dispute.body.caseNumber).toMatch(/^SZ-CASE-/);
+    expect(disputeBody.caseNumber).toMatch(/^SZ-CASE-/);
 
-    const citizenNotifications = await request(app.getHttpServer())
+    const citizenNotifications = await request(httpServer())
       .get('/api/notifications')
       .set('Authorization', `Bearer ${citizenToken}`);
     expect(citizenNotifications.status).toBe(200);
     expect(
-      citizenNotifications.body.some(
-        (item: any) => item.type === 'dispute_opened',
+      responseBody<NotificationItem[]>(citizenNotifications).some(
+        (item) => item.type === 'dispute_opened',
       ),
     ).toBe(true);
 
-    const message = await request(app.getHttpServer())
-      .post(`/api/disputes/${dispute.body.id}/message`)
+    const message = await request(httpServer())
+      .post(`/api/disputes/${disputeBody.id}/message`)
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({ message: 'Adding supporting context for the review.' });
     expect(message.status).toBe(201);
 
-    const history = await request(app.getHttpServer())
+    const history = await request(httpServer())
       .get('/api/security/me/login-history')
       .set('Authorization', `Bearer ${citizenToken}`);
+    const historyBody = responseBody<LoginHistoryItem[]>(history);
     expect(history.status).toBe(200);
-    expect(history.body.some((item: any) => item.success === true)).toBe(true);
-    expect(history.body[0].deviceLabel).toBeDefined();
+    expect(historyBody.some((item) => item.success === true)).toBe(true);
+    expect(historyBody[0].deviceLabel).toBeDefined();
 
-    const update = await request(app.getHttpServer())
-      .post(`/api/admin/disputes/${dispute.body.id}/status`)
+    const update = await request(httpServer())
+      .post(`/api/admin/disputes/${disputeBody.id}/status`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         status: 'UNDER_REVIEW',
@@ -420,64 +478,69 @@ describe('Trust & Identity Foundation (e2e)', () => {
       });
     expect(update.status).toBe(201);
 
-    const assignBlocked = await request(app.getHttpServer())
-      .post(`/api/admin/disputes/${dispute.body.id}/assign`)
+    const assignBlocked = await request(httpServer())
+      .post(`/api/admin/disputes/${disputeBody.id}/assign`)
       .set('Authorization', `Bearer ${otherAdminToken}`)
       .send({ assignedAdminId: adminId });
     expect(assignBlocked.status).toBe(403);
 
-    const assigned = await request(app.getHttpServer())
-      .post(`/api/admin/disputes/${dispute.body.id}/assign`)
+    const assigned = await request(httpServer())
+      .post(`/api/admin/disputes/${disputeBody.id}/assign`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         assignedAdminId: adminId,
         note: 'Assigned to Trust Admin for review.',
       });
+    const assignedBody = responseBody<DisputeResponse>(assigned);
     expect(assigned.status).toBe(201);
-    expect(assigned.body.assignedAdminId).toBe(adminId);
+    expect(assignedBody.assignedAdminId).toBe(adminId);
 
-    const escalated = await request(app.getHttpServer())
-      .post(`/api/admin/disputes/${dispute.body.id}/escalate`)
+    const escalated = await request(httpServer())
+      .post(`/api/admin/disputes/${disputeBody.id}/escalate`)
       .set('Authorization', `Bearer ${adminToken}`);
+    const escalatedBody = responseBody<DisputeResponse>(escalated);
     expect(escalated.status).toBe(201);
-    expect(escalated.body.status).toBe('ESCALATED');
+    expect(escalatedBody.status).toBe('ESCALATED');
 
-    const assignedFilter = await request(app.getHttpServer())
+    const assignedFilter = await request(httpServer())
       .get('/api/admin/disputes?assigned=assigned&search=Service')
       .set('Authorization', `Bearer ${adminToken}`);
     expect(assignedFilter.status).toBe(200);
     expect(
-      assignedFilter.body.some((item: any) => item.id === dispute.body.id),
-    ).toBe(true);
-
-    const detail = await request(app.getHttpServer())
-      .get(`/api/disputes/${dispute.body.id}`)
-      .set('Authorization', `Bearer ${citizenToken}`);
-    expect(
-      detail.body.messages.some(
-        (item: any) => item.message === 'Admin has started formal review.',
+      responseBody<DisputeResponse[]>(assignedFilter).some(
+        (item) => item.id === disputeBody.id,
       ),
     ).toBe(true);
 
-    const adminNotifications = await request(app.getHttpServer())
+    const detail = await request(httpServer())
+      .get(`/api/disputes/${disputeBody.id}`)
+      .set('Authorization', `Bearer ${citizenToken}`);
+    expect(
+      responseBody<DisputeResponse>(detail).messages?.some(
+        (item) => item.message === 'Admin has started formal review.',
+      ),
+    ).toBe(true);
+
+    const adminNotifications = await request(httpServer())
       .get('/api/notifications')
       .set('Authorization', `Bearer ${adminToken}`);
     expect(
-      adminNotifications.body.some(
-        (item: any) =>
+      responseBody<NotificationItem[]>(adminNotifications).some(
+        (item) =>
           item.type === 'dispute_assigned' || item.type === 'dispute_update',
       ),
     ).toBe(true);
   });
 
   it('applies enforcement toggles without breaking default workflows', async () => {
-    const defaults = await request(app.getHttpServer())
+    const defaults = await request(httpServer())
       .get('/api/admin/trust/enforcement-settings')
       .set('Authorization', `Bearer ${adminToken}`);
+    const defaultsBody = responseBody<EnforcementSettingsResponse>(defaults);
     expect(defaults.status).toBe(200);
-    expect(defaults.body.requireVerifiedIdentityForDisputes).toBe(false);
+    expect(defaultsBody.requireVerifiedIdentityForDisputes).toBe(false);
 
-    const updated = await request(app.getHttpServer())
+    const updated = await request(httpServer())
       .post('/api/admin/trust/enforcement-settings')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
@@ -487,10 +550,11 @@ describe('Trust & Identity Foundation (e2e)', () => {
         requireEntitlementPlanForPriorityWorkflows: true,
         requiredPriorityPlan: 'ENTERPRISE',
       });
+    const updatedBody = responseBody<EnforcementSettingsResponse>(updated);
     expect(updated.status).toBe(201);
-    expect(updated.body.requireVerifiedIdentityForDisputes).toBe(true);
+    expect(updatedBody.requireVerifiedIdentityForDisputes).toBe(true);
 
-    const blockedDispute = await request(app.getHttpServer())
+    const blockedDispute = await request(httpServer())
       .post('/api/disputes')
       .set('Authorization', `Bearer ${providerToken}`)
       .send({
@@ -502,7 +566,7 @@ describe('Trust & Identity Foundation (e2e)', () => {
       });
     expect(blockedDispute.status).toBe(403);
 
-    const blockedEvidence = await request(app.getHttpServer())
+    const blockedEvidence = await request(httpServer())
       .post('/api/records/evidence')
       .set('Authorization', `Bearer ${providerToken}`)
       .send({
@@ -512,7 +576,7 @@ describe('Trust & Identity Foundation (e2e)', () => {
       });
     expect(blockedEvidence.status).toBe(403);
 
-    await request(app.getHttpServer())
+    await request(httpServer())
       .post('/api/admin/trust/enforcement-settings')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
@@ -526,19 +590,20 @@ describe('Trust & Identity Foundation (e2e)', () => {
   });
 
   it('summarizes admin trust operations and prepares entitlement checks', async () => {
-    await request(app.getHttpServer())
+    await request(httpServer())
       .post('/api/auth/login')
       .set('User-Agent', 'Mozilla/5.0 Windows Chrome/120')
       .send({ email: 'trust-citizen@test.com', password: 'bad-password' })
       .expect(401);
 
-    const summary = await request(app.getHttpServer())
+    const summary = await request(httpServer())
       .get('/api/admin/trust/summary')
       .set('Authorization', `Bearer ${adminToken}`);
+    const summaryBody = responseBody<TrustSummaryResponse>(summary);
     expect(summary.status).toBe(200);
-    expect(summary.body.pendingKyc).toBeGreaterThanOrEqual(0);
-    expect(summary.body.rejectedKyc).toBeGreaterThanOrEqual(1);
-    expect(summary.body.recentComplianceEvents).toBeGreaterThanOrEqual(1);
+    expect(summaryBody.pendingKyc).toBeGreaterThanOrEqual(0);
+    expect(summaryBody.rejectedKyc).toBeGreaterThanOrEqual(1);
+    expect(summaryBody.recentComplianceEvents).toBeGreaterThanOrEqual(1);
 
     const allowed = await trustService.checkAccessRequirements(
       {
