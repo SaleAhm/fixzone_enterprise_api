@@ -102,13 +102,17 @@ export class InternalAdminService {
       user,
       context,
     );
+    if (this.requestedInvitationScopeOutsideAccess(query, effective, user)) {
+      await this.auditDenied(user, context, 'invitation_scope_filter_denied', {
+        requestedScopeType: query.scopeType ?? null,
+        requestedOrganizationId: query.organizationId ?? null,
+      });
+    }
     const pagination = this.pagination(query);
     const where: Prisma.InvitationWhereInput = {
-      ...scopeWhere,
       role: { in: this.internalRoleValues() },
       ...(query.status ? { status: query.status } : {}),
       ...(query.role ? { role: query.role } : {}),
-      ...(query.organizationId ? { organizationId: query.organizationId } : {}),
       ...(query.inviterId ? { invitedById: query.inviterId } : {}),
       ...(query.search
         ? {
@@ -120,7 +124,13 @@ export class InternalAdminService {
         : {}),
       ...this.createdAtWhere(query),
       ...this.invitationExpiryWhere(query),
-      ...this.invitationMetadataScopeWhere(query),
+      ...this.andWhere<Prisma.InvitationWhereInput>([
+        scopeWhere,
+        query.organizationId
+          ? { organizationId: query.organizationId }
+          : undefined,
+        this.invitationMetadataScopeWhere(query),
+      ]),
     };
     const orderBy = this.invitationOrderBy(query);
     const [total, items] = await Promise.all([
@@ -155,7 +165,9 @@ export class InternalAdminService {
       throw new NotFoundException('Invitation not found');
     }
     const effective = await this.effectivePermissions(user);
-    if (!this.canViewOrganizationScope(effective, invitation.organizationId)) {
+    if (
+      !this.canViewOrganizationScope(effective, user, invitation.organizationId)
+    ) {
       await this.auditDenied(user, context, 'invitation_scope_bypass_denied', {
         invitationId,
         organizationId: invitation.organizationId,
@@ -554,9 +566,6 @@ export class InternalAdminService {
       ...(query.operationType ? { operationType: query.operationType } : {}),
       ...(query.requesterId ? { requesterId: query.requesterId } : {}),
       ...(query.targetUserId ? { targetUserId: query.targetUserId } : {}),
-      ...(query.organizationId
-        ? { organizationId: query.organizationId }
-        : this.approvalScopeWhere(effective)),
       ...(query.search
         ? {
             OR: [
@@ -568,6 +577,12 @@ export class InternalAdminService {
         : {}),
       ...this.approvalDateWhere(query),
       ...this.approvalExpiryWhere(),
+      ...this.andWhere<Prisma.PrivilegedApprovalRequestWhereInput>([
+        this.approvalScopeWhere(effective, user),
+        query.organizationId
+          ? { organizationId: query.organizationId }
+          : undefined,
+      ]),
     };
     if (query.canDecide === 'true' || query.attention === 'true') {
       where.status = PrivilegedApprovalStatus.PENDING;
@@ -619,7 +634,7 @@ export class InternalAdminService {
     if (
       !request ||
       !readableOperations.includes(request.operationType) ||
-      !this.canViewOrganizationScope(effective, request.organizationId)
+      !this.canViewOrganizationScope(effective, user, request.organizationId)
     ) {
       await this.auditDenied(user, context, 'approval_detail_scope_denied', {
         approvalId,
@@ -1461,6 +1476,20 @@ export class InternalAdminService {
     return filters.length ? { AND: filters } : {};
   }
 
+  private andWhere<T extends { AND?: T | T[] }>(
+    clauses: (T | undefined)[],
+  ): { AND: T[] } | Record<string, never> {
+    const present = clauses.flatMap((clause) => {
+      if (!clause || Object.keys(clause as object).length === 0) return [];
+      const keys = Object.keys(clause as object);
+      if (keys.length === 1 && clause.AND) {
+        return Array.isArray(clause.AND) ? clause.AND : [clause.AND];
+      }
+      return [clause];
+    });
+    return present.length ? { AND: present } : {};
+  }
+
   private invitationOrderBy(
     query: InternalAdminPaginationQueryDto,
   ): Prisma.InvitationOrderByWithRelationInput[] {
@@ -1495,7 +1524,7 @@ export class InternalAdminService {
     user: InternalAdminUser,
     context?: RequestContext,
   ): Promise<Prisma.InvitationWhereInput> {
-    if (this.hasPlatformScope(effective)) return {};
+    if (this.canUsePlatformQueueScope(effective, user)) return {};
     const organizationIds = this.organizationScopeIds(effective, user);
     if (!organizationIds.length) {
       await this.auditDenied(user, context, 'invitation_visibility_denied', {
@@ -1508,11 +1537,10 @@ export class InternalAdminService {
 
   private approvalScopeWhere(
     effective: EffectivePermissionResult,
+    user: InternalAdminUser,
   ): Prisma.PrivilegedApprovalRequestWhereInput {
-    if (this.hasPlatformScope(effective)) return {};
-    const organizationIds = effective.scopes
-      .map((scope) => scope.organizationId ?? scope.ref)
-      .filter((item): item is string => Boolean(item));
+    if (this.canUsePlatformQueueScope(effective, user)) return {};
+    const organizationIds = this.organizationScopeIds(effective, user);
     return organizationIds.length
       ? { organizationId: { in: organizationIds } }
       : { organizationId: '__no_authorized_scope__' };
@@ -1520,9 +1548,10 @@ export class InternalAdminService {
 
   private canViewOrganizationScope(
     effective: EffectivePermissionResult,
+    user: InternalAdminUser,
     organizationId: string | null,
   ) {
-    if (this.hasPlatformScope(effective)) return true;
+    if (this.canUsePlatformQueueScope(effective, user)) return true;
     if (!organizationId) return false;
     return effective.scopes.some(
       (scope) =>
@@ -1533,6 +1562,39 @@ export class InternalAdminService {
   private hasPlatformScope(effective: EffectivePermissionResult) {
     return effective.scopes.some(
       (scope) => scope.type === InternalScopeType.PLATFORM,
+    );
+  }
+
+  private canUsePlatformQueueScope(
+    effective: EffectivePermissionResult,
+    user: InternalAdminUser,
+  ) {
+    if (
+      user.role === UserRole.SUPER_ADMIN ||
+      user.role === UserRole.PLATFORM_SUPER_ADMIN
+    ) {
+      return true;
+    }
+    const hasOrganizationConstraint =
+      Boolean(user.organizationId) &&
+      effective.scopes.some(
+        (scope) =>
+          scope.type === InternalScopeType.ORGANIZATION &&
+          Boolean(scope.organizationId ?? scope.ref),
+      );
+    return this.hasPlatformScope(effective) && !hasOrganizationConstraint;
+  }
+
+  private requestedInvitationScopeOutsideAccess(
+    query: InternalInvitationQueueQueryDto,
+    effective: EffectivePermissionResult,
+    user: InternalAdminUser,
+  ) {
+    if (this.canUsePlatformQueueScope(effective, user)) return false;
+    if (query.scopeType === InternalScopeType.PLATFORM) return true;
+    if (!query.organizationId) return false;
+    return !this.organizationScopeIds(effective, user).includes(
+      query.organizationId,
     );
   }
 

@@ -108,6 +108,7 @@ type DemoReportTemplate = {
 export class DemoDataService {
   private readonly logger = new Logger(DemoDataService.name);
   private readonly demoPassword = 'Password123!';
+  private readonly demoEnvironmentBatchPrefix = 'demo-';
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -463,6 +464,7 @@ export class DemoDataService {
   async previewPurge(user: JwtUser) {
     const superAdminId = this.requireSuperAdmin(user);
     const systemMode = this.systemMode();
+    const demoWhere = this.demoEnvironmentWhere();
     const [
       organizations,
       users,
@@ -476,18 +478,18 @@ export class DemoDataService {
       uncertainReports,
       purgeLock,
     ] = await Promise.all([
-      this.prisma.organization.count({ where: { isDemo: true } }),
-      this.prisma.user.count({ where: { isDemo: true } }),
+      this.prisma.organization.count({ where: demoWhere }),
+      this.prisma.user.count({ where: demoWhere }),
       this.prisma.user.count({
-        where: { isDemo: true, role: UserRole.PROVIDER },
+        where: { ...demoWhere, role: UserRole.PROVIDER },
       }),
       this.prisma.invitation.count({
-        where: { organization: { isDemo: true } },
+        where: { organization: demoWhere },
       }),
-      this.prisma.report.count({ where: { isDemo: true } }),
-      this.prisma.notification.count({ where: { isDemo: true } }),
+      this.prisma.report.count({ where: demoWhere }),
+      this.prisma.notification.count({ where: demoWhere }),
       this.prisma.demoAuditLog.count({
-        where: { action: { contains: 'Demo' } },
+        where: this.demoEnvironmentAuditWhere(),
       }),
       this.prisma.organization.count({
         where: { isDemo: false, demoBatchId: { not: null } },
@@ -518,7 +520,7 @@ export class DemoDataService {
       actor: superAdminId,
       deterministicClassification: {
         marker: 'isDemo=true',
-        batchMarker: 'demoBatchId',
+        batchMarker: `${this.demoEnvironmentBatchPrefix} demoBatchId prefix`,
         uncertainRecords,
       },
       deleteCounts: {
@@ -651,13 +653,40 @@ export class DemoDataService {
     });
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const notifications = await tx.notification.deleteMany({
-        where: { isDemo: true },
+      const demoWhere = this.demoEnvironmentWhere();
+      const demoUsers = await tx.user.findMany({
+        where: demoWhere,
+        select: { id: true },
       });
-      const reports = await tx.report.deleteMany({ where: { isDemo: true } });
-      const users = await tx.user.deleteMany({ where: { isDemo: true } });
+      const demoUserIds = demoUsers.map((demoUser) => demoUser.id);
+      const demoOrganizations = await tx.organization.findMany({
+        where: demoWhere,
+        select: { id: true },
+      });
+      const demoOrganizationIds = demoOrganizations.map(
+        (organization) => organization.id,
+      );
+      const notifications = await tx.notification.deleteMany({
+        where: demoWhere,
+      });
+      const reports = await tx.report.deleteMany({
+        where: demoWhere,
+      });
+      const roleAssignments = demoUserIds.length
+        ? await tx.internalRoleAssignment.deleteMany({
+            where: {
+              OR: [
+                { userId: { in: demoUserIds } },
+                { assignedById: { in: demoUserIds } },
+              ],
+            },
+          })
+        : { count: 0 };
+      const users = await tx.user.deleteMany({
+        where: { id: { in: demoUserIds } },
+      });
       const organizations = await tx.organization.deleteMany({
-        where: { isDemo: true },
+        where: { id: { in: demoOrganizationIds } },
       });
 
       return {
@@ -666,7 +695,7 @@ export class DemoDataService {
         users: users.count,
         organizations: organizations.count,
         images: 0,
-        assignments: reports.count,
+        assignments: roleAssignments.count,
       };
     });
 
@@ -736,6 +765,7 @@ export class DemoDataService {
 
   async statistics(user: JwtUser) {
     this.requireSuperAdmin(user);
+    const demoWhere = this.demoEnvironmentWhere();
 
     const [
       users,
@@ -751,29 +781,29 @@ export class DemoDataService {
       latestAudit,
       latestGenerationAudit,
     ] = await Promise.all([
-      this.prisma.user.count({ where: { isDemo: true } }),
-      this.prisma.report.count({ where: { isDemo: true } }),
+      this.prisma.user.count({ where: demoWhere }),
+      this.prisma.report.count({ where: demoWhere }),
       this.prisma.user.count({
-        where: { isDemo: true, role: UserRole.PROVIDER },
+        where: { ...demoWhere, role: UserRole.PROVIDER },
       }),
-      this.prisma.notification.count({ where: { isDemo: true } }),
-      this.prisma.organization.count({ where: { isDemo: true } }),
+      this.prisma.notification.count({ where: demoWhere }),
+      this.prisma.organization.count({ where: demoWhere }),
       this.prisma.notification.count({
-        where: { isDemo: true, read: false },
+        where: { ...demoWhere, read: false },
       }),
       this.prisma.report.count({
-        where: { isDemo: true, status: ReportStatus.COMPLETED_BY_PROVIDER },
+        where: { ...demoWhere, status: ReportStatus.COMPLETED_BY_PROVIDER },
       }),
       this.prisma.report.count({
-        where: { isDemo: true, status: ReportStatus.CLOSED },
+        where: { ...demoWhere, status: ReportStatus.CLOSED },
       }),
       this.prisma.report.groupBy({
         by: ['category'],
-        where: { isDemo: true },
+        where: demoWhere,
         _count: { category: true },
       }),
       this.prisma.report.findFirst({
-        where: { isDemo: true },
+        where: demoWhere,
         orderBy: { demoGeneratedAt: 'desc' },
         select: {
           demoBatchId: true,
@@ -785,7 +815,10 @@ export class DemoDataService {
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.demoAuditLog.findFirst({
-        where: { action: 'Generated Demo Completed' },
+        where: {
+          action: 'Generated Demo Completed',
+          demoBatchId: { startsWith: this.demoEnvironmentBatchPrefix },
+        },
         orderBy: { createdAt: 'desc' },
       }),
     ]);
@@ -1101,6 +1134,19 @@ export class DemoDataService {
       .slice(-8)
       .toUpperCase();
     return `DEMO-PRV-${batchSuffix}-${String(index).padStart(3, '0')}`;
+  }
+
+  private demoEnvironmentWhere() {
+    return {
+      isDemo: true,
+      demoBatchId: { startsWith: this.demoEnvironmentBatchPrefix },
+    };
+  }
+
+  private demoEnvironmentAuditWhere(): Prisma.DemoAuditLogWhereInput {
+    return {
+      demoBatchId: { startsWith: this.demoEnvironmentBatchPrefix },
+    };
   }
 
   private async audit(

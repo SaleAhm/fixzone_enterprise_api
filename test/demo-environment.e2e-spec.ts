@@ -1,7 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test, TestingModule } from '@nestjs/testing';
-import { UserRole } from '@prisma/client';
+import { InternalScopeType, UserRole } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
@@ -50,15 +50,23 @@ type DemoPurgeBody = {
     users: number;
   };
 };
+type RetainedFixtureCounts = {
+  users: number;
+  assignments: number;
+};
 
 function body<T>(response: request.Response): T {
   return response.body as T;
 }
 
 describe('Demo Environment Platform Tools (e2e)', () => {
+  const demoBatchPrefix = 'demo-';
+  const retainedInternalAdminUatBatch = 'internal-admin-uat-20260829-v1';
+
   let app: TestApplication;
   let prisma: PrismaService;
   let jwtService: JwtService;
+  let retainedFixtureCounts: RetainedFixtureCounts;
 
   const createdProductionOrgIds: string[] = [];
   const createdProductionUserIds: string[] = [];
@@ -74,6 +82,7 @@ describe('Demo Environment Platform Tools (e2e)', () => {
 
     prisma = moduleFixture.get(PrismaService);
     jwtService = moduleFixture.get(JwtService);
+    retainedFixtureCounts = await countRetainedInternalAdminFixtures();
   });
 
   beforeEach(async () => {
@@ -82,6 +91,7 @@ describe('Demo Environment Platform Tools (e2e)', () => {
 
   afterEach(async () => {
     await cleanupDemoData();
+    await expectRetainedInternalAdminFixturesUnchanged();
 
     if (createdProductionUserIds.length > 0) {
       await prisma.user.deleteMany({
@@ -100,22 +110,73 @@ describe('Demo Environment Platform Tools (e2e)', () => {
 
   afterAll(async () => {
     await cleanupDemoData();
+    await expectRetainedInternalAdminFixturesUnchanged();
     await prisma.$disconnect();
     await app.close();
   }, 15000);
 
   async function cleanupDemoData() {
-    await prisma.notification.deleteMany({ where: { isDemo: true } });
-    await prisma.report.deleteMany({ where: { isDemo: true } });
-    await prisma.user.deleteMany({ where: { isDemo: true } });
-    await prisma.organization.deleteMany({ where: { isDemo: true } });
-    await prisma.demoAuditLog.deleteMany({
-      where: {
-        action: {
-          contains: 'Demo',
-        },
-      },
+    const demoWhere = {
+      isDemo: true,
+      demoBatchId: { startsWith: demoBatchPrefix },
+    };
+    await prisma.$transaction(async (tx) => {
+      const [demoUsers, demoOrganizations] = await Promise.all([
+        tx.user.findMany({ where: demoWhere, select: { id: true } }),
+        tx.organization.findMany({ where: demoWhere, select: { id: true } }),
+      ]);
+      const demoUserIds = demoUsers.map((user) => user.id);
+      const demoOrganizationIds = demoOrganizations.map(
+        (organization) => organization.id,
+      );
+
+      await tx.notification.deleteMany({ where: demoWhere });
+      await tx.report.deleteMany({ where: demoWhere });
+      if (demoUserIds.length > 0) {
+        await tx.internalRoleAssignment.deleteMany({
+          where: {
+            OR: [
+              { userId: { in: demoUserIds } },
+              { assignedById: { in: demoUserIds } },
+            ],
+          },
+        });
+      }
+      await tx.user.deleteMany({ where: { id: { in: demoUserIds } } });
+      await tx.organization.deleteMany({
+        where: { id: { in: demoOrganizationIds } },
+      });
+      await tx.demoAuditLog.deleteMany({
+        where: { demoBatchId: { startsWith: demoBatchPrefix } },
+      });
     });
+  }
+
+  async function countRetainedInternalAdminFixtures() {
+    const users = await prisma.user.findMany({
+      where: { demoBatchId: retainedInternalAdminUatBatch },
+      select: { id: true },
+    });
+    const userIds = users.map((user) => user.id);
+    const assignments = userIds.length
+      ? await prisma.internalRoleAssignment.count({
+          where: {
+            OR: [
+              { userId: { in: userIds } },
+              { assignedById: { in: userIds } },
+            ],
+          },
+        })
+      : 0;
+
+    return { users: users.length, assignments };
+  }
+
+  async function expectRetainedInternalAdminFixturesUnchanged() {
+    if (retainedFixtureCounts.users === 0) return;
+    await expect(countRetainedInternalAdminFixtures()).resolves.toEqual(
+      retainedFixtureCounts,
+    );
   }
 
   async function createUser(role: UserRole) {
@@ -145,6 +206,70 @@ describe('Demo Environment Platform Tools (e2e)', () => {
       organizationId: user.organizationId,
     });
   }
+
+  it('cleans demo-environment role assignments before demo users', async () => {
+    const batchId = `${demoBatchPrefix}cleanup-regression`;
+    const demoAssigner = await prisma.user.create({
+      data: {
+        email: 'demo.cleanup.assigner@test.com',
+        fullName: 'Demo Cleanup Assigner',
+        role: UserRole.SUPER_ADMIN,
+        isDemo: true,
+        demoBatchId: batchId,
+      },
+    });
+    const demoSubject = await prisma.user.create({
+      data: {
+        email: 'demo.cleanup.subject@test.com',
+        fullName: 'Demo Cleanup Subject',
+        role: UserRole.SUPPORT_ADMIN,
+        isDemo: true,
+        demoBatchId: batchId,
+      },
+    });
+    const productionSubject = await createUser(UserRole.SUPPORT_ADMIN);
+
+    await prisma.internalRoleAssignment.createMany({
+      data: [
+        {
+          userId: demoSubject.id,
+          assignedById: demoAssigner.id,
+          role: UserRole.SUPPORT_ADMIN,
+          scopeType: InternalScopeType.PLATFORM,
+          permissionsSnapshot: ['internal_admin.read'],
+        },
+        {
+          userId: productionSubject.id,
+          assignedById: demoAssigner.id,
+          role: UserRole.SUPPORT_ADMIN,
+          scopeType: InternalScopeType.PLATFORM,
+          permissionsSnapshot: ['internal_admin.read'],
+        },
+      ],
+    });
+
+    await cleanupDemoData();
+
+    await expect(
+      prisma.user.count({
+        where: { id: { in: [demoAssigner.id, demoSubject.id] } },
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: productionSubject.id } }),
+    ).resolves.toBeTruthy();
+    await expect(
+      prisma.internalRoleAssignment.count({
+        where: {
+          OR: [
+            { userId: { in: [demoAssigner.id, demoSubject.id] } },
+            { assignedById: { in: [demoAssigner.id, demoSubject.id] } },
+          ],
+        },
+      }),
+    ).resolves.toBe(0);
+    await expectRetainedInternalAdminFixturesUnchanged();
+  });
 
   it('generates, reports statistics, and purges only tagged demo data', async () => {
     const superAdmin = await createUser(UserRole.SUPER_ADMIN);
@@ -286,7 +411,10 @@ describe('Demo Environment Platform Tools (e2e)', () => {
     );
 
     const phones = await prisma.user.findMany({
-      where: { isDemo: true },
+      where: {
+        isDemo: true,
+        demoBatchId: { startsWith: demoBatchPrefix },
+      },
       select: { phone: true },
     });
     expect(new Set(phones.map((user) => user.phone)).size).toBe(phones.length);
@@ -302,9 +430,14 @@ describe('Demo Environment Platform Tools (e2e)', () => {
         reason: 'Clean repeated demo generation fixtures',
       });
     expect([200, 201]).toContain(purgeRes.status);
-    await expect(prisma.user.count({ where: { isDemo: true } })).resolves.toBe(
-      0,
-    );
+    await expect(
+      prisma.user.count({
+        where: {
+          isDemo: true,
+          demoBatchId: { startsWith: demoBatchPrefix },
+        },
+      }),
+    ).resolves.toBe(0);
   });
 
   it('rejects non-super-admin access', async () => {

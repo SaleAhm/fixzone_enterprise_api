@@ -348,6 +348,280 @@ describe('InternalAdminService', () => {
     );
   });
 
+  it('does not allow organization-scoped internal readers to widen invitation queue filters to platform scope', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['internal_admin.read'],
+      },
+    ]);
+    prisma.invitation.count.mockResolvedValue(0);
+    prisma.invitation.findMany.mockResolvedValue([]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listInvitations(
+      { page: 1, pageSize: 10, scopeType: InternalScopeType.PLATFORM },
+      {
+        sub: 'scoped-1',
+        role: UserRole.SUPPORT_ADMIN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      },
+    );
+
+    expect(result.items).toEqual([]);
+    expect(prisma.invitation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            { organizationId: { in: ['org-1'] } },
+            {
+              metadata: {
+                path: ['scope', 'type'],
+                equals: InternalScopeType.PLATFORM,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(prisma.invitation.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([{ organizationId: { in: ['org-1'] } }]),
+        }),
+      }),
+    );
+    expect(prisma.complianceAuditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'Internal Admin Privilege Denied',
+          metadata: expect.objectContaining({
+            reason: 'invitation_scope_filter_denied',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('keeps organization-scoped invitation list totals constrained without filters', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['internal_admin.read'],
+      },
+    ]);
+    prisma.invitation.count.mockResolvedValue(1);
+    prisma.invitation.findMany.mockResolvedValue([
+      {
+        id: 'invite-org-1',
+        email: 'delegate@example.test',
+        fullName: 'Delegate Admin',
+        role: UserRole.SUPPORT_ADMIN,
+        status: InvitationStatus.REVOKED,
+        organizationId: 'org-1',
+        invitedById: 'super-1',
+        acceptedUserId: null,
+        metadata: {
+          source: 'internal_admin_delegation',
+          scope: {
+            type: InternalScopeType.ORGANIZATION,
+            organizationId: 'org-1',
+          },
+        },
+        expiresAt: null,
+        acceptedAt: null,
+        declinedAt: null,
+        revokedAt: new Date('2026-08-29T12:00:00Z'),
+        createdAt: new Date('2026-08-29T12:00:00Z'),
+        updatedAt: new Date('2026-08-29T12:00:00Z'),
+        invitedBy: {
+          id: 'super-1',
+          fullName: 'Super Admin',
+          email: 'owner@example.test',
+          role: UserRole.SUPER_ADMIN,
+        },
+      },
+    ]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listInvitations(
+      { page: 1, pageSize: 10 },
+      {
+        sub: 'scoped-1',
+        role: UserRole.SUPPORT_ADMIN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      },
+    );
+
+    expect(result.total).toBe(1);
+    expect(result.items).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('inviteCode');
+    expect(JSON.stringify(result)).not.toContain('tokenHash');
+    expect(JSON.stringify(result)).not.toContain('temporaryPasswordHash');
+    expect(prisma.invitation.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [{ organizationId: { in: ['org-1'] } }],
+        }),
+      }),
+    );
+  });
+
+  it('lets organization-scoped internal readers narrow invitations to their organization only', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['internal_admin.read'],
+      },
+    ]);
+    prisma.invitation.count.mockResolvedValue(0);
+    prisma.invitation.findMany.mockResolvedValue([]);
+
+    const service = new InternalAdminService(prisma as never);
+    await service.listInvitations(
+      { page: 1, pageSize: 10, organizationId: 'org-1' },
+      {
+        sub: 'scoped-1',
+        role: UserRole.SUPPORT_ADMIN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      },
+    );
+
+    expect(prisma.invitation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            { organizationId: { in: ['org-1'] } },
+            { organizationId: 'org-1' },
+          ],
+        }),
+      }),
+    );
+    expect(prisma.complianceAuditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('does not disclose invitations when organization-scoped readers request another organization', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['internal_admin.read'],
+      },
+    ]);
+    prisma.invitation.count.mockResolvedValue(0);
+    prisma.invitation.findMany.mockResolvedValue([]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listInvitations(
+      { page: 1, pageSize: 10, organizationId: 'org-2' },
+      {
+        sub: 'scoped-1',
+        role: UserRole.SUPPORT_ADMIN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      },
+    );
+
+    expect(result.total).toBe(0);
+    expect(prisma.invitation.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            { organizationId: { in: ['org-1'] } },
+            { organizationId: 'org-2' },
+          ],
+        }),
+      }),
+    );
+    expect(prisma.complianceAuditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'Internal Admin Privilege Denied',
+          metadata: expect.objectContaining({
+            reason: 'invitation_scope_filter_denied',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('preserves platform invitation visibility for platform super administrators', async () => {
+    const prisma = mockPrisma();
+    prisma.invitation.count.mockResolvedValue(1);
+    prisma.invitation.findMany.mockResolvedValue([
+      {
+        id: 'invite-platform-1',
+        email: 'delegate@example.test',
+        fullName: 'Delegate Admin',
+        role: UserRole.SUPPORT_ADMIN,
+        status: InvitationStatus.PENDING,
+        organizationId: null,
+        invitedById: 'super-1',
+        acceptedUserId: null,
+        metadata: {
+          source: 'internal_admin_delegation',
+          scope: { type: InternalScopeType.PLATFORM },
+        },
+        expiresAt: null,
+        acceptedAt: null,
+        declinedAt: null,
+        revokedAt: null,
+        createdAt: new Date('2026-08-29T12:00:00Z'),
+        updatedAt: new Date('2026-08-29T12:00:00Z'),
+        invitedBy: {
+          id: 'super-1',
+          fullName: 'Super Admin',
+          email: 'owner@example.test',
+          role: UserRole.SUPER_ADMIN,
+        },
+      },
+    ]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listInvitations(
+      { page: 1, pageSize: 10, scopeType: InternalScopeType.PLATFORM },
+      superAdmin,
+    );
+
+    expect(result.total).toBe(1);
+    expect(prisma.invitation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            {
+              metadata: {
+                path: ['scope', 'type'],
+                equals: InternalScopeType.PLATFORM,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
   it('derives expired internal invitation state without mutating records', async () => {
     const prisma = mockPrisma();
     prisma.invitation.findUnique.mockResolvedValue({
@@ -574,6 +848,105 @@ describe('InternalAdminService', () => {
     expect(detail.canDecide).toBe(false);
     expect(detail.selfApprovalConflict).toBe(true);
     expect(detail.decisionProhibitedReason).toBe('self_approval_denied');
+  });
+
+  it('does not allow organization-scoped readers to widen approval list scope', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['payment.configuration_manage'],
+      },
+    ]);
+    prisma.privilegedApprovalRequest.count.mockResolvedValue(0);
+    prisma.privilegedApprovalRequest.findMany.mockResolvedValue([]);
+
+    const service = new InternalAdminService(prisma as never);
+    const result = await service.listPrivilegedApprovals(
+      { organizationId: 'org-2' },
+      {
+        sub: 'scoped-1',
+        role: UserRole.FINANCE_BILLING_ADMIN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      },
+    );
+
+    expect(result.total).toBe(0);
+    expect(prisma.privilegedApprovalRequest.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: [
+            { organizationId: { in: ['org-1'] } },
+            { organizationId: 'org-2' },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('denies organization-scoped approval detail outside scope', async () => {
+    const prisma = mockPrisma();
+    prisma.internalRoleAssignment.findMany.mockResolvedValue([
+      {
+        scopeType: InternalScopeType.ORGANIZATION,
+        scopeRef: 'org-1',
+        organizationId: 'org-1',
+        moduleKey: null,
+        jurisdiction: null,
+        permissionsSnapshot: ['payment.configuration_manage'],
+      },
+    ]);
+    prisma.privilegedApprovalRequest.findUnique.mockResolvedValue({
+      id: 'approval-org-2',
+      operationType: PrivilegedOperationType.PAYMENT_CONFIGURATION_CHANGE,
+      status: PrivilegedApprovalStatus.PENDING,
+      requesterId: 'requester-1',
+      approverId: null,
+      targetUserId: null,
+      organizationId: 'org-2',
+      requestedRole: null,
+      requestedScope: { organizationId: 'org-2' },
+      payload: {},
+      reason: 'outside scope',
+      decisionReason: null,
+      requestedAt: new Date(),
+      decidedAt: null,
+      executionBlocked: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      requester: {
+        id: 'requester-1',
+        fullName: 'Requester',
+        email: 'requester@example.test',
+        role: UserRole.FINANCE_BILLING_ADMIN,
+      },
+      approver: null,
+    });
+
+    const service = new InternalAdminService(prisma as never);
+    await expect(
+      service.privilegedApprovalDetail('approval-org-2', {
+        sub: 'scoped-1',
+        role: UserRole.FINANCE_BILLING_ADMIN,
+        organizationId: 'org-1',
+        accountStatus: AccountStatus.ACTIVE,
+      }),
+    ).rejects.toThrow('Approval request not found');
+    expect(prisma.complianceAuditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'Internal Admin Privilege Denied',
+          metadata: expect.objectContaining({
+            reason: 'approval_detail_scope_denied',
+          }),
+        }),
+      }),
+    );
   });
 
   it('denies suspended internal administrators from queue visibility', async () => {
