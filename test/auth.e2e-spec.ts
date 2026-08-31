@@ -5,6 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { FirebaseAuthVerifierService } from '../src/auth/firebase-auth-verifier.service';
 
 describe('Auth API (e2e)', () => {
   jest.setTimeout(30000);
@@ -44,10 +45,39 @@ describe('Auth API (e2e)', () => {
     'PRV-AUTH-RESET',
   ];
 
+  const firebaseAuthVerifierMock = {
+    verifyIdToken: jest.fn((idToken: string) => {
+      if (idToken === 'auth-firebase-sync-token') {
+        return Promise.resolve({
+          uid: 'firebase-sync-uid',
+          phoneNumber: '+2348000000001',
+          email: null,
+          emailVerified: false,
+          fullName: 'Citizen Sync',
+        });
+      }
+      if (idToken === 'auth-firebase-sync-updated-token') {
+        return Promise.resolve({
+          uid: 'firebase-sync-uid',
+          phoneNumber: '+2348000000001',
+          email: 'citizen.sync@test.com',
+          emailVerified: true,
+          fullName: 'Citizen Sync Updated',
+        });
+      }
+      return Promise.reject(
+        new Error('Firebase ID token could not be verified'),
+      );
+    }),
+  };
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(FirebaseAuthVerifierService)
+      .useValue(firebaseAuthVerifierMock)
+      .compile();
 
     app = moduleFixture.createNestApplication({ bodyParser: false });
     configureApp(app);
@@ -602,11 +632,8 @@ describe('Auth API (e2e)', () => {
     const firstLogin = await request(app.getHttpServer())
       .post('/api/auth/firebase-login')
       .send({
-        firebaseUid: 'firebase-sync-uid',
-        phone: '+2348000000001',
-        email: '',
+        idToken: 'auth-firebase-sync-token',
         fullName: 'Citizen Sync',
-        role: 'citizen',
       });
 
     expect(firstLogin.status).toBe(201);
@@ -624,11 +651,8 @@ describe('Auth API (e2e)', () => {
     const secondLogin = await request(app.getHttpServer())
       .post('/api/auth/firebase-login')
       .send({
-        firebaseUid: 'firebase-sync-uid',
-        phone: '+2348000000001',
-        email: 'citizen.sync@test.com',
+        idToken: 'auth-firebase-sync-updated-token',
         fullName: 'Citizen Sync Updated',
-        role: 'citizen',
       });
 
     expect(secondLogin.status).toBe(201);

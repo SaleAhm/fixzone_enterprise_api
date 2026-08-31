@@ -9,6 +9,7 @@ import { RolesGuard } from './guards/roles.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { getJwtAccessSecret } from './jwt-secret';
+import { FirebaseAuthVerifierService } from './firebase-auth-verifier.service';
 
 @Module({
   imports: [
@@ -21,7 +22,13 @@ import { getJwtAccessSecret } from './jwt-secret';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard, RolesGuard],
+  providers: [
+    AuthService,
+    FirebaseAuthVerifierService,
+    JwtStrategy,
+    JwtAuthGuard,
+    RolesGuard,
+  ],
   exports: [AuthService, JwtModule, PassportModule, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}

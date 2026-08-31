@@ -3,9 +3,15 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { Prisma, User, UserRole } from '@prisma/client';
+import {
+  IdentityVerificationStatus,
+  Prisma,
+  User,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TrustService } from '../trust/trust.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
@@ -16,6 +22,10 @@ import {
   assertSupportedLocale,
   preferredLocaleFromProfile,
 } from '../localization/supported-locales';
+import {
+  FirebaseAuthVerifierService,
+  VerifiedFirebaseIdentity,
+} from './firebase-auth-verifier.service';
 
 type AuthUser = Pick<
   User,
@@ -27,6 +37,8 @@ type AuthUser = Pick<
   | 'organizationId'
   | 'providerId'
   | 'accountStatus'
+  | 'phoneVerifiedAt'
+  | 'emailVerifiedAt'
 > & {
   secureZoneId?: string | null;
   identityVerificationStatus?: string;
@@ -44,6 +56,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly trustService: TrustService,
+    private readonly firebaseAuthVerifier: FirebaseAuthVerifierService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -115,6 +128,8 @@ export class AuthService {
         organizationId: true,
         providerId: true,
         accountStatus: true,
+        phoneVerifiedAt: true,
+        emailVerifiedAt: true,
         secureZoneId: true,
       },
     });
@@ -257,6 +272,8 @@ export class AuthService {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      phoneVerifiedAt: user.phoneVerifiedAt,
+      emailVerifiedAt: user.emailVerifiedAt,
       secureZoneId: identityUser.secureZoneId,
       identityVerificationStatus: identityUser.identityVerificationStatus,
       identityVerificationLevel: identityUser.identityVerificationLevel,
@@ -392,18 +409,28 @@ export class AuthService {
   }
 
   async firebaseLogin(dto: FirebaseLoginDto) {
-    const role = this.mapApiRoleToPrismaRole(dto.role);
+    const firebaseIdentity = await this.firebaseAuthVerifier.verifyIdToken(
+      dto.idToken,
+    );
+    const firebaseUid = firebaseIdentity.uid.trim();
+    const phone = firebaseIdentity.phoneNumber?.trim() || null;
+    const email = firebaseIdentity.email?.toLowerCase().trim() || null;
+    const verifiedEmail = firebaseIdentity.emailVerified ? email : null;
+    const fullName =
+      dto.fullName?.trim() ||
+      firebaseIdentity.fullName?.trim() ||
+      'Citizen User';
 
-    if (role !== UserRole.CITIZEN) {
-      throw new BadRequestException(
-        'Firebase citizen login only supports CITIZEN role',
+    if (!firebaseUid) {
+      throw new UnauthorizedException(
+        'Firebase ID token could not be verified',
       );
     }
-
-    const firebaseUid = dto.firebaseUid.trim();
-    const phone = dto.phone?.trim() || null;
-    const email = dto.email?.toLowerCase().trim() || null;
-    const fullName = dto.fullName?.trim() || 'Citizen User';
+    if (!phone) {
+      throw new UnauthorizedException(
+        'Firebase phone verification claim is required',
+      );
+    }
     const organizationId = await this.getDefaultCitizenOrganizationId();
 
     const existingByFirebaseUid = await this.prisma.user.findUnique({
@@ -415,9 +442,9 @@ export class AuthService {
           where: { phone },
         })
       : null;
-    const existingByEmail = email
+    const existingByEmail = verifiedEmail
       ? await this.prisma.user.findUnique({
-          where: { email },
+          where: { email: verifiedEmail },
         })
       : null;
 
@@ -426,9 +453,8 @@ export class AuthService {
       existingByPhone &&
       existingByFirebaseUid.id !== existingByPhone.id
     ) {
-      throw new BadRequestException(
-        'Firebase UID and phone belong to different users',
-      );
+      await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_phone');
+      throw new BadRequestException('Firebase identity conflict');
     }
 
     if (
@@ -436,9 +462,8 @@ export class AuthService {
       existingByEmail &&
       existingByFirebaseUid.id !== existingByEmail.id
     ) {
-      throw new BadRequestException(
-        'Firebase UID and email belong to different users',
-      );
+      await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_email');
+      throw new BadRequestException('Firebase identity conflict');
     }
 
     if (
@@ -446,9 +471,8 @@ export class AuthService {
       existingByEmail &&
       existingByPhone.id !== existingByEmail.id
     ) {
-      throw new BadRequestException(
-        'Phone and email belong to different users',
-      );
+      await this.auditFirebaseLoginConflict(firebaseIdentity, 'phone_email');
+      throw new BadRequestException('Firebase identity conflict');
     }
 
     const existingUser =
@@ -456,8 +480,23 @@ export class AuthService {
 
     if (existingUser && existingUser.role !== UserRole.CITIZEN) {
       throw new BadRequestException(
-        'Firebase citizen login cannot be used for provider or admin users',
+        'Firebase citizen login cannot be used for this account',
       );
+    }
+
+    if (existingUser?.firebaseUid && existingUser.firebaseUid !== firebaseUid) {
+      await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_mismatch');
+      throw new BadRequestException('Firebase identity conflict');
+    }
+
+    if (existingUser?.phone && phone && existingUser.phone !== phone) {
+      const phoneOwner = await this.prisma.user.findUnique({
+        where: { phone },
+      });
+      if (phoneOwner && phoneOwner.id !== existingUser.id) {
+        await this.auditFirebaseLoginConflict(firebaseIdentity, 'phone_owner');
+        throw new BadRequestException('Firebase identity conflict');
+      }
     }
 
     const user = existingUser
@@ -466,7 +505,20 @@ export class AuthService {
           data: {
             firebaseUid: existingUser.firebaseUid ?? firebaseUid,
             phone: phone ?? existingUser.phone,
-            email: email ?? existingUser.email,
+            phoneVerifiedAt: phone ? new Date() : existingUser.phoneVerifiedAt,
+            identityVerificationStatus:
+              existingUser.identityVerificationStatus ===
+              IdentityVerificationStatus.UNVERIFIED
+                ? IdentityVerificationStatus.PHONE_VERIFIED
+                : existingUser.identityVerificationStatus,
+            identityVerificationLevel: Math.max(
+              existingUser.identityVerificationLevel ?? 0,
+              1,
+            ),
+            email: verifiedEmail ?? existingUser.email,
+            emailVerifiedAt: verifiedEmail
+              ? (existingUser.emailVerifiedAt ?? new Date())
+              : existingUser.emailVerifiedAt,
             fullName: dto.fullName?.trim() || existingUser.fullName || fullName,
             role: UserRole.CITIZEN,
             organizationId: existingUser.organizationId ?? organizationId,
@@ -481,6 +533,8 @@ export class AuthService {
             organizationId: true,
             providerId: true,
             accountStatus: true,
+            phoneVerifiedAt: true,
+            emailVerifiedAt: true,
             identityVerificationStatus: true,
             identityVerificationLevel: true,
             trustScore: true,
@@ -491,7 +545,12 @@ export class AuthService {
           data: {
             firebaseUid,
             phone,
-            email,
+            phoneVerifiedAt: phone ? new Date() : null,
+            identityVerificationStatus:
+              IdentityVerificationStatus.PHONE_VERIFIED,
+            identityVerificationLevel: 1,
+            email: verifiedEmail,
+            emailVerifiedAt: verifiedEmail ? new Date() : null,
             fullName,
             role: UserRole.CITIZEN,
             organizationId,
@@ -506,6 +565,8 @@ export class AuthService {
             organizationId: true,
             providerId: true,
             accountStatus: true,
+            phoneVerifiedAt: true,
+            emailVerifiedAt: true,
             identityVerificationStatus: true,
             identityVerificationLevel: true,
             trustScore: true,
@@ -516,6 +577,19 @@ export class AuthService {
     const identityUser = await this.trustService.ensureIdentity(user.id);
 
     return this.issueTokens({ ...user, ...identityUser });
+  }
+
+  private async auditFirebaseLoginConflict(
+    identity: VerifiedFirebaseIdentity,
+    reason: string,
+  ) {
+    await this.audit('Firebase Login Rejected', 'anonymous', {
+      reason,
+      uidHash: this.safeHash(identity.uid),
+      hasPhoneClaim: Boolean(identity.phoneNumber),
+      hasEmailClaim: Boolean(identity.email),
+      emailVerified: identity.emailVerified,
+    });
   }
 
   async issueTokensForOnboarding(user: AuthUser) {
@@ -600,6 +674,8 @@ export class AuthService {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      phoneVerifiedAt: user.phoneVerifiedAt,
+      emailVerifiedAt: user.emailVerifiedAt,
       secureZoneId: user.secureZoneId,
     };
 
@@ -618,6 +694,8 @@ export class AuthService {
         organizationId: user.organizationId,
         providerId: user.providerId,
         accountStatus: user.accountStatus,
+        phoneVerifiedAt: user.phoneVerifiedAt,
+        emailVerifiedAt: user.emailVerifiedAt,
         secureZoneId: user.secureZoneId,
         identityVerificationStatus: user.identityVerificationStatus,
         identityVerificationLevel: user.identityVerificationLevel,
@@ -626,5 +704,9 @@ export class AuthService {
       },
       accessToken,
     };
+  }
+
+  private safeHash(value: string) {
+    return createHash('sha256').update(value).digest('hex').slice(0, 24);
   }
 }

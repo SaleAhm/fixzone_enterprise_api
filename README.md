@@ -57,6 +57,26 @@ Seed the matching Firebase Auth user and Firestore provider profile with:
 $ npm run seed:firebase-provider
 ```
 
+## Firebase citizen authentication
+
+`/api/auth/firebase-login` verifies Firebase ID tokens on the server. The
+endpoint derives UID, phone, email, and verification state from Firebase Admin
+only; clients must not send identity fields or roles.
+
+Configure one of these Firebase Admin patterns before enabling citizen OTP
+backend login:
+
+```text
+FIREBASE_SERVICE_ACCOUNT_PATH=./path/to/service-account.json
+FIREBASE_PROJECT_ID=fixzone-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/application-default-credentials.json
+```
+
+`FIREBASE_SERVICE_ACCOUNT_PATH` can be used alone or with
+`FIREBASE_PROJECT_ID`. `GOOGLE_APPLICATION_CREDENTIALS` uses Application
+Default Credentials and can also be paired with `FIREBASE_PROJECT_ID`. If none
+of these values is available, token verification fails closed.
+
 ## Compile and run the project
 
 ```bash

@@ -23,6 +23,7 @@ import { join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
+import { FirebaseAuthVerifierService } from '../src/auth/firebase-auth-verifier.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { uploadPath } from '../src/storage/upload-root';
 
@@ -125,7 +126,26 @@ describe('Report Workflow (e2e)', () => {
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(FirebaseAuthVerifierService)
+      .useValue({
+        verifyIdToken: jest.fn((idToken: string) => {
+          if (idToken.startsWith('wf-firebase-citizen-token:')) {
+            const [, uid, phone] = idToken.split(':');
+            return Promise.resolve({
+              uid,
+              phoneNumber: phone,
+              email: null,
+              emailVerified: false,
+              fullName: 'Workflow Firebase Citizen',
+            });
+          }
+          return Promise.reject(
+            new Error('Firebase ID token could not be verified'),
+          );
+        }),
+      })
+      .compile();
 
     app = moduleFixture.createNestApplication({
       bodyParser: false,
@@ -2644,10 +2664,8 @@ describe('Report Workflow (e2e)', () => {
     const loginRes = await request(app.getHttpServer())
       .post('/api/auth/firebase-login')
       .send({
-        firebaseUid,
-        phone,
+        idToken: `wf-firebase-citizen-token:${firebaseUid}:${phone}`,
         fullName: 'Workflow Firebase Citizen',
-        role: 'citizen',
       });
 
     expect(loginRes.status).toBe(201);

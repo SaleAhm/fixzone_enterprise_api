@@ -1,33 +1,18 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsOptional, IsString, MinLength } from 'class-validator';
 
-const emptyToUndefined = ({ value }: { value: unknown }) =>
-  typeof value === 'string' && value.trim() === '' ? undefined : value;
+const trimStringOrUndefined = ({ value }: { value: unknown }) =>
+  typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 
 export class FirebaseLoginDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(trimStringOrUndefined)
   @IsString()
   @MinLength(1)
-  firebaseUid: string;
+  idToken: string;
 
   @IsOptional()
-  @Transform(emptyToUndefined)
-  @IsString()
-  @MinLength(7)
-  phone?: string;
-
-  @IsOptional()
-  @Transform(emptyToUndefined)
-  @IsEmail()
-  email?: string;
-
-  @IsOptional()
-  @Transform(emptyToUndefined)
+  @Transform(trimStringOrUndefined)
   @IsString()
   @MinLength(2)
   fullName?: string;
-
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @IsString()
-  role: string;
 }

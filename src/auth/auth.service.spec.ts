@@ -1,12 +1,23 @@
 import { UserRole } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TrustService } from '../trust/trust.service';
+import { FirebaseLoginDto } from './dto/firebase-login.dto';
+import {
+  FirebaseAuthVerifierService,
+  VerifiedFirebaseIdentity,
+} from './firebase-auth-verifier.service';
 
 type PrismaAuthMock = {
+  organization?: {
+    findFirst: jest.Mock;
+    create: jest.Mock;
+  };
   user: {
     findUnique: jest.Mock;
     update: jest.Mock;
+    create?: jest.Mock;
   };
   demoAuditLog: {
     create: jest.Mock;
@@ -19,8 +30,18 @@ type UserUpdateArgs = {
   };
 };
 
+type MockUserWriteArgs = {
+  data: Record<string, unknown>;
+  where?: Record<string, unknown>;
+};
+
 function prismaMock(prisma: PrismaAuthMock): PrismaService {
   return prisma as unknown as PrismaService;
+}
+
+function firstUserWriteArg(mock: jest.Mock): MockUserWriteArgs {
+  const [arg] = mock.mock.calls[0] as [MockUserWriteArgs];
+  return arg;
 }
 
 describe('AuthService localization preferences', () => {
@@ -36,6 +57,7 @@ describe('AuthService localization preferences', () => {
       { signAsync: jest.fn() },
       prismaMock(prisma),
       {} as TrustService,
+      { verifyIdToken: jest.fn() } as unknown as FirebaseAuthVerifierService,
     );
   }
 
@@ -98,5 +120,286 @@ describe('AuthService localization preferences', () => {
       },
     });
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService Firebase citizen login trust boundary', () => {
+  const verifiedPhoneToken: VerifiedFirebaseIdentity = {
+    uid: 'firebase-uid-1',
+    phoneNumber: '+2348000000001',
+    email: 'citizen.claim@test.com',
+    emailVerified: false,
+    fullName: 'Token Citizen',
+  };
+
+  function user(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'user-1',
+      email: null,
+      phone: null,
+      firebaseUid: null,
+      fullName: 'Citizen User',
+      role: UserRole.CITIZEN,
+      organizationId: 'org-1',
+      providerId: null,
+      accountStatus: 'ACTIVE',
+      phoneVerifiedAt: null,
+      emailVerifiedAt: null,
+      secureZoneId: 'SZ-1',
+      identityVerificationStatus: 'UNVERIFIED',
+      identityVerificationLevel: 0,
+      trustScore: 0,
+      identityType: 'INDIVIDUAL',
+      ...overrides,
+    };
+  }
+
+  function createFirebaseLoginService(
+    options: {
+      identity?: VerifiedFirebaseIdentity;
+      verifyError?: Error;
+      findUnique?: jest.Mock;
+      createUser?: jest.Mock;
+      updateUser?: jest.Mock;
+    } = {},
+  ) {
+    const created = user({
+      id: 'created-user',
+      firebaseUid: options.identity?.uid ?? verifiedPhoneToken.uid,
+      phone: options.identity?.phoneNumber ?? verifiedPhoneToken.phoneNumber,
+      phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+      fullName: options.identity?.fullName ?? verifiedPhoneToken.fullName,
+    });
+    const updated = user({
+      firebaseUid: options.identity?.uid ?? verifiedPhoneToken.uid,
+      phone: options.identity?.phoneNumber ?? verifiedPhoneToken.phoneNumber,
+      phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+      fullName: options.identity?.fullName ?? verifiedPhoneToken.fullName,
+    });
+    const prisma: PrismaAuthMock = {
+      organization: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'org-1' }),
+        create: jest.fn(),
+      },
+      user: {
+        findUnique: options.findUnique ?? jest.fn().mockResolvedValue(null),
+        create:
+          options.createUser ??
+          jest.fn().mockImplementation(({ data }) =>
+            Promise.resolve({
+              ...created,
+              ...data,
+              id: created.id,
+            }),
+          ),
+        update:
+          options.updateUser ??
+          jest.fn().mockImplementation(({ data }) =>
+            Promise.resolve({
+              ...updated,
+              ...data,
+              id: updated.id,
+            }),
+          ),
+      },
+      demoAuditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const firebaseVerifier = {
+      verifyIdToken: options.verifyError
+        ? jest.fn().mockRejectedValue(options.verifyError)
+        : jest.fn().mockResolvedValue(options.identity ?? verifiedPhoneToken),
+    };
+    const trustService = {
+      ensureIdentity: jest.fn((id: string) => Promise.resolve(user({ id }))),
+    };
+    const jwtService = {
+      signAsync: jest.fn().mockResolvedValue('fixzone-jwt'),
+    };
+
+    const service = new AuthService(
+      jwtService as unknown as JwtService,
+      prismaMock(prisma),
+      trustService as unknown as TrustService,
+      firebaseVerifier as unknown as FirebaseAuthVerifierService,
+    );
+
+    return { service, prisma, firebaseVerifier, jwtService };
+  }
+
+  it('issues a FixZone JWT only after a valid verified phone Firebase token', async () => {
+    const { service, prisma, jwtService } = createFirebaseLoginService();
+
+    const result = await service.firebaseLogin({
+      idToken: 'verified-token',
+    });
+
+    expect(result.accessToken).toBe('fixzone-jwt');
+    const createArg = firstUserWriteArg(prisma.user.create!);
+    expect(createArg.data).toMatchObject({
+      firebaseUid: 'firebase-uid-1',
+      phone: '+2348000000001',
+      identityVerificationStatus: 'PHONE_VERIFIED',
+      identityVerificationLevel: 1,
+      email: null,
+      emailVerifiedAt: null,
+    });
+    expect(createArg.data.phoneVerifiedAt).toBeInstanceOf(Date);
+    expect(jwtService.signAsync).toHaveBeenCalled();
+  });
+
+  it('rejects missing tokens before user lookup', async () => {
+    const { service, prisma, firebaseVerifier } = createFirebaseLoginService({
+      verifyError: Object.assign(new Error('missing'), {
+        response: { message: 'Firebase ID token is required' },
+        status: 401,
+      }),
+    });
+
+    await expect(service.firebaseLogin({ idToken: '' })).rejects.toThrow(
+      'missing',
+    );
+    expect(firebaseVerifier.verifyIdToken).toHaveBeenCalledWith('');
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid expired or revoked tokens without issuing a JWT', async () => {
+    const { service, jwtService } = createFirebaseLoginService({
+      verifyError: Object.assign(
+        new Error('Firebase ID token could not be verified'),
+        {
+          status: 401,
+        },
+      ),
+    });
+
+    await expect(
+      service.firebaseLogin({ idToken: 'expired-or-revoked' }),
+    ).rejects.toThrow('Firebase ID token could not be verified');
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('rejects Firebase tokens without a phone ownership claim', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        ...verifiedPhoneToken,
+        phoneNumber: null,
+      },
+    });
+
+    await expect(
+      service.firebaseLogin({ idToken: 'email-only-token' }),
+    ).rejects.toThrow('Firebase phone verification claim is required');
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('does not trust client supplied Firebase UID or phone fields', async () => {
+    const { service, prisma } = createFirebaseLoginService();
+    const attackerDto: FirebaseLoginDto & {
+      firebaseUid: string;
+      phone: string;
+    } = {
+      idToken: 'verified-token',
+      firebaseUid: 'attacker-uid',
+      phone: '+2348999999999',
+    };
+
+    await service.firebaseLogin(attackerDto);
+
+    const createArg = firstUserWriteArg(prisma.user.create!);
+    expect(createArg.data).toMatchObject({
+      firebaseUid: 'firebase-uid-1',
+      phone: '+2348000000001',
+    });
+  });
+
+  it('safely links an existing citizen matched by verified phone', async () => {
+    const existing = user({
+      id: 'existing-user',
+      phone: '+2348000000001',
+      firebaseUid: null,
+    });
+    const { service, prisma } = createFirebaseLoginService({
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(null),
+      updateUser: jest.fn().mockImplementation(({ data }) =>
+        Promise.resolve({
+          ...existing,
+          ...data,
+        }),
+      ),
+    });
+
+    await service.firebaseLogin({ idToken: 'verified-token' });
+
+    const updateArg = firstUserWriteArg(prisma.user.update);
+    expect(updateArg.where).toEqual({ id: 'existing-user' });
+    expect(updateArg.data).toMatchObject({
+      firebaseUid: 'firebase-uid-1',
+      identityVerificationStatus: 'PHONE_VERIFIED',
+      identityVerificationLevel: 1,
+    });
+    expect(updateArg.data.phoneVerifiedAt).toBeInstanceOf(Date);
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('prevents duplicate account linking when UID and phone belong to different users', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(
+          user({ id: 'uid-user', firebaseUid: 'firebase-uid-1' }),
+        )
+        .mockResolvedValueOnce(
+          user({ id: 'phone-user', phone: '+2348000000001' }),
+        )
+        .mockResolvedValueOnce(null),
+    });
+
+    await expect(
+      service.firebaseLogin({ idToken: 'verified-token' }),
+    ).rejects.toThrow('Firebase identity conflict');
+    const auditArg = firstUserWriteArg(prisma.demoAuditLog.create);
+    expect(auditArg.data).toMatchObject({
+      action: 'Firebase Login Rejected',
+      metadata: {
+        reason: 'uid_phone',
+        hasPhoneClaim: true,
+      },
+    });
+  });
+
+  it('does not mark an unverified token email as verified or attach it', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        ...verifiedPhoneToken,
+        email: 'unverified.claim@test.com',
+        emailVerified: false,
+      },
+    });
+
+    await service.firebaseLogin({ idToken: 'verified-token' });
+
+    const createArg = firstUserWriteArg(prisma.user.create!);
+    expect(createArg.data).toMatchObject({
+      email: null,
+      emailVerifiedAt: null,
+    });
+  });
+
+  it('fails closed when Firebase verification configuration is unavailable', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      verifyError: Object.assign(
+        new Error('Firebase authentication verification is not configured'),
+        { status: 401 },
+      ),
+    });
+
+    await expect(service.firebaseLogin({ idToken: 'token' })).rejects.toThrow(
+      'Firebase authentication verification is not configured',
+    );
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 });
