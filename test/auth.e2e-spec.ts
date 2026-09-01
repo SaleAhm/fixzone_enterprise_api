@@ -35,7 +35,11 @@ describe('Auth API (e2e)', () => {
     'provider.firebase.block@test.com',
   ];
 
-  const authFixturePhones = ['+2348000000001', '+2348000000999'];
+  const authFixturePhones = [
+    '+2348000000001',
+    '+2348000000999',
+    '+2348000000888',
+  ];
   const authFixtureProviderIds = [
     'PRV-AUTH-MISMATCH-001',
     'PRV-AUTH-MISMATCH-002',
@@ -296,15 +300,17 @@ describe('Auth API (e2e)', () => {
       .set('Authorization', `Bearer ${citizenToken}`)
       .send({
         fullName: 'Citizen User Updated',
-        phone: '+2348000000999',
         address: '12 SecureZone Street',
+        state: 'Lagos',
+        lga: 'Ikeja',
         notificationPreferences: { email: true, sms: false, push: true },
       });
 
     expect(res.status).toBe(200);
     expect(res.body.fullName).toBe('Citizen User Updated');
-    expect(res.body.phone).toBe('+2348000000999');
     expect(res.body.profileData.address).toBe('12 SecureZone Street');
+    expect(res.body.profileData.state).toBe('Lagos');
+    expect(res.body.profileData.lga).toBe('Ikeja');
     expect(res.body.profileData.notificationPreferences.sms).toBe(false);
   });
 
@@ -680,6 +686,20 @@ describe('Auth API (e2e)', () => {
 
     expect(me.status).toBe(200);
     expect(me.body.role).toBe('CITIZEN');
+    expect(me.body.phoneVerifiedAt).toBeTruthy();
+
+    const rejectedPhoneChange = await request(app.getHttpServer())
+      .patch('/api/auth/me')
+      .set('Authorization', `Bearer ${firstLogin.body.accessToken}`)
+      .send({
+        fullName: 'Citizen Sync',
+        phone: '+2348000000888',
+      });
+
+    expect(rejectedPhoneChange.status).toBe(400);
+    expect(rejectedPhoneChange.body.message).toBe(
+      'Phone changes require secure verification',
+    );
 
     const secondLogin = await request(app.getHttpServer())
       .post('/api/auth/firebase-login')

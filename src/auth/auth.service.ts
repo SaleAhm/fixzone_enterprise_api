@@ -284,13 +284,42 @@ export class AuthService {
 
   async updateMe(user: AuthUser, dto: Record<string, unknown>) {
     const data: Prisma.UserUpdateInput = {};
+    const existing = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        email: true,
+        phone: true,
+        phoneVerifiedAt: true,
+        profileData: true,
+      },
+    });
+
+    if (!existing) {
+      throw new UnauthorizedException('User no longer exists');
+    }
 
     if (typeof dto.fullName === 'string' && dto.fullName.trim().length >= 2) {
       data.fullName = dto.fullName.trim();
     }
 
     if (typeof dto.phone === 'string') {
-      data.phone = dto.phone.trim() || null;
+      const requestedPhone = dto.phone.trim() || null;
+      const existingPhone = existing.phone?.trim() || null;
+      if (requestedPhone !== existingPhone) {
+        throw new BadRequestException(
+          'Phone changes require secure verification',
+        );
+      }
+    }
+
+    if (typeof dto.email === 'string') {
+      const requestedEmail = dto.email.toLowerCase().trim() || null;
+      const existingEmail = existing.email?.toLowerCase().trim() || null;
+      if (requestedEmail !== existingEmail) {
+        throw new BadRequestException(
+          'Email changes require secure verification',
+        );
+      }
     }
 
     const profileData: Record<string, unknown> = {};
@@ -320,10 +349,6 @@ export class AuthService {
     }
 
     if (Object.keys(profileData).length > 0) {
-      const existing = await this.prisma.user.findUnique({
-        where: { id: user.id },
-        select: { profileData: true },
-      });
       const existingProfile =
         existing?.profileData &&
         typeof existing.profileData === 'object' &&

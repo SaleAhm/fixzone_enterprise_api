@@ -833,8 +833,7 @@ export class PlatformModulesService {
     if (level >= 6) return 'Professional Verified';
     if (level >= 4) return 'Biometric Verified';
     if (level >= 3) return 'Government ID Verified';
-    if (level >= 2) return 'Phone Verified';
-    if (level >= 1) return 'Email Verified';
+    if (level >= 1) return 'Contact Verified';
     return 'Basic Account';
   }
 

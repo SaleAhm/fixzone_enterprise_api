@@ -106,7 +106,12 @@ describe('AuthService localization preferences', () => {
   it('rejects unsupported locale preferences with a stable code', async () => {
     const prisma: PrismaAuthMock = {
       user: {
-        findUnique: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({
+          email: 'citizen@example.test',
+          phone: '+2348000000001',
+          phoneVerifiedAt: null,
+          profileData: {},
+        }),
         update: jest.fn(),
       },
       demoAuditLog: { create: jest.fn() },
@@ -119,6 +124,105 @@ describe('AuthService localization preferences', () => {
         code: 'UNSUPPORTED_LOCALE',
       },
     });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ordinary profile updates that replace a verified phone', async () => {
+    const prisma: PrismaAuthMock = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          email: 'citizen@example.test',
+          phone: '+2348000000001',
+          phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+          profileData: {},
+        }),
+        update: jest.fn(),
+      },
+      demoAuditLog: { create: jest.fn() },
+    };
+
+    await expect(
+      createService(prisma).updateMe(authUser, {
+        fullName: 'Citizen User',
+        phone: '+2348000000999',
+      }),
+    ).rejects.toThrow('Phone changes require secure verification');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('treats the same ordinary phone value as a no-op and updates safe profile fields', async () => {
+    const prisma: PrismaAuthMock = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          email: 'citizen@example.test',
+          phone: '+2348000000001',
+          phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+          profileData: { address: 'Old address' },
+        }),
+        update: jest.fn(({ data }: UserUpdateArgs) =>
+          Promise.resolve({
+            ...authUser,
+            email: 'citizen@example.test',
+            phone: '+2348000000001',
+            firebaseUid: 'firebase-uid-1',
+            secureZoneId: 'SZ-1',
+            providerId: null,
+            accountStatus: 'ACTIVE',
+            phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+            emailVerifiedAt: null,
+            providerEngagementType: null,
+            serviceCategories: null,
+            coverageAreas: null,
+            profileData: data.profileData,
+            subscriptionPlan: null,
+            identityVerificationStatus: 'PHONE_VERIFIED',
+            identityVerificationLevel: 2,
+            trustScore: 0,
+            identityType: 'INDIVIDUAL',
+            organization: null,
+          }),
+        ),
+      },
+      demoAuditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+
+    const result = await createService(prisma).updateMe(authUser, {
+      fullName: 'Citizen User Updated',
+      phone: '+2348000000001',
+      address: 'New address',
+      state: 'Lagos',
+      lga: 'Ikeja',
+    });
+
+    const updateArg = firstUserWriteArg(prisma.user.update);
+    expect(updateArg.data).not.toHaveProperty('phone');
+    expect(result.phone).toBe('+2348000000001');
+    expect(result.profileData).toMatchObject({
+      address: 'New address',
+      state: 'Lagos',
+      lga: 'Ikeja',
+    });
+  });
+
+  it('rejects ordinary profile updates that attach a different email', async () => {
+    const prisma: PrismaAuthMock = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          email: null,
+          phone: '+2348000000001',
+          phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+          profileData: {},
+        }),
+        update: jest.fn(),
+      },
+      demoAuditLog: { create: jest.fn() },
+    };
+
+    await expect(
+      createService(prisma).updateMe(authUser, {
+        email: 'new.email@example.test',
+      }),
+    ).rejects.toThrow('Email changes require secure verification');
     expect(prisma.user.update).not.toHaveBeenCalled();
   });
 });
