@@ -63,8 +63,13 @@ $ npm run seed:firebase-provider
 endpoint derives UID, phone, email, and verification state from Firebase Admin
 only; clients must not send identity fields or roles.
 
-Configure one of these Firebase Admin patterns before enabling citizen OTP
-backend login:
+The bridge accepts a verified Firebase phone claim or a Firebase email claim
+where `email_verified` is true. It records `phoneVerifiedAt` and
+`emailVerifiedAt` independently, rejects tokens with neither verified claim, and
+never grants provider or administrator roles through the citizen bridge.
+
+Configure one of these Firebase Admin patterns before enabling citizen backend
+login:
 
 ```text
 FIREBASE_SERVICE_ACCOUNT_PATH=./path/to/service-account.json

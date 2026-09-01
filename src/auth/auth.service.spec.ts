@@ -239,7 +239,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
       firebaseUid: 'firebase-uid-1',
       phone: '+2348000000001',
       identityVerificationStatus: 'PHONE_VERIFIED',
-      identityVerificationLevel: 1,
+      identityVerificationLevel: 2,
       email: null,
       emailVerifiedAt: null,
     });
@@ -278,7 +278,36 @@ describe('AuthService Firebase citizen login trust boundary', () => {
     expect(jwtService.signAsync).not.toHaveBeenCalled();
   });
 
-  it('rejects Firebase tokens without a phone ownership claim', async () => {
+  it('issues a FixZone JWT after a verified email Firebase token', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        uid: 'firebase-email-uid-1',
+        phoneNumber: null,
+        email: 'verified.email@test.com',
+        emailVerified: true,
+        fullName: 'Verified Email Citizen',
+        signInProvider: 'password',
+      },
+    });
+
+    const result = await service.firebaseLogin({
+      idToken: 'verified-email-token',
+    });
+
+    expect(result.accessToken).toBe('fixzone-jwt');
+    const createArg = firstUserWriteArg(prisma.user.create!);
+    expect(createArg.data).toMatchObject({
+      firebaseUid: 'firebase-email-uid-1',
+      phone: null,
+      phoneVerifiedAt: null,
+      identityVerificationStatus: 'EMAIL_VERIFIED',
+      identityVerificationLevel: 1,
+      email: 'verified.email@test.com',
+    });
+    expect(createArg.data.emailVerifiedAt).toBeInstanceOf(Date);
+  });
+
+  it('rejects Firebase tokens without verified email or phone ownership claims', async () => {
     const { service, prisma } = createFirebaseLoginService({
       identity: {
         ...verifiedPhoneToken,
@@ -288,7 +317,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
     await expect(
       service.firebaseLogin({ idToken: 'email-only-token' }),
-    ).rejects.toThrow('Firebase phone verification claim is required');
+    ).rejects.toThrow('External authentication failed');
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
@@ -339,7 +368,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
     expect(updateArg.data).toMatchObject({
       firebaseUid: 'firebase-uid-1',
       identityVerificationStatus: 'PHONE_VERIFIED',
-      identityVerificationLevel: 1,
+      identityVerificationLevel: 2,
     });
     expect(updateArg.data.phoneVerifiedAt).toBeInstanceOf(Date);
     expect(prisma.user.create).not.toHaveBeenCalled();
@@ -360,7 +389,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
     await expect(
       service.firebaseLogin({ idToken: 'verified-token' }),
-    ).rejects.toThrow('Firebase identity conflict');
+    ).rejects.toThrow('External authentication failed');
     const auditArg = firstUserWriteArg(prisma.demoAuditLog.create);
     expect(auditArg.data).toMatchObject({
       action: 'Firebase Login Rejected',
@@ -369,6 +398,59 @@ describe('AuthService Firebase citizen login trust boundary', () => {
         hasPhoneClaim: true,
       },
     });
+  });
+
+  it('does not create a duplicate citizen on repeated Firebase login', async () => {
+    const existing = user({
+      id: 'existing-user',
+      firebaseUid: 'firebase-uid-1',
+      phone: '+2348000000001',
+      phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+      identityVerificationStatus: 'PHONE_VERIFIED',
+      identityVerificationLevel: 2,
+    });
+    const { service, prisma } = createFirebaseLoginService({
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(null),
+      updateUser: jest.fn().mockImplementation(({ data }) =>
+        Promise.resolve({
+          ...existing,
+          ...data,
+        }),
+      ),
+    });
+
+    await service.firebaseLogin({ idToken: 'verified-token' });
+
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'existing-user' } }),
+    );
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects Firebase citizen bridge for provider admin role matches', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(
+          user({
+            id: 'provider-user',
+            firebaseUid: 'firebase-uid-1',
+            phone: '+2348000000001',
+            role: UserRole.PROVIDER,
+          }),
+        )
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null),
+    });
+
+    await expect(
+      service.firebaseLogin({ idToken: 'verified-token' }),
+    ).rejects.toThrow('External authentication failed');
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('does not mark an unverified token email as verified or attach it', async () => {

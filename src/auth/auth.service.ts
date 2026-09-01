@@ -354,6 +354,8 @@ export class AuthService {
         organizationId: true,
         providerId: true,
         accountStatus: true,
+        phoneVerifiedAt: true,
+        emailVerifiedAt: true,
         providerEngagementType: true,
         serviceCategories: true,
         coverageAreas: true,
@@ -394,6 +396,8 @@ export class AuthService {
       organizationId: updated.organizationId,
       providerId: updated.providerId,
       accountStatus: updated.accountStatus,
+      phoneVerifiedAt: updated.phoneVerifiedAt,
+      emailVerifiedAt: updated.emailVerifiedAt,
       providerEngagementType: updated.providerEngagementType,
       serviceCategories: updated.serviceCategories,
       coverageAreas: updated.coverageAreas,
@@ -416,77 +420,48 @@ export class AuthService {
     const phone = firebaseIdentity.phoneNumber?.trim() || null;
     const email = firebaseIdentity.email?.toLowerCase().trim() || null;
     const verifiedEmail = firebaseIdentity.emailVerified ? email : null;
+    const hasVerifiedPhone = Boolean(phone);
+    const hasVerifiedEmail = Boolean(verifiedEmail);
     const fullName =
       dto.fullName?.trim() ||
       firebaseIdentity.fullName?.trim() ||
       'Citizen User';
 
     if (!firebaseUid) {
-      throw new UnauthorizedException(
-        'Firebase ID token could not be verified',
-      );
+      throw new UnauthorizedException('External authentication failed');
     }
-    if (!phone) {
-      throw new UnauthorizedException(
-        'Firebase phone verification claim is required',
-      );
+    if (!hasVerifiedPhone && !hasVerifiedEmail) {
+      await this.auditFirebaseLoginConflict(firebaseIdentity, 'unverified');
+      throw new UnauthorizedException('External authentication failed');
     }
     const organizationId = await this.getDefaultCitizenOrganizationId();
 
-    const existingByFirebaseUid = await this.prisma.user.findUnique({
-      where: { firebaseUid },
-    });
+    const [existingByFirebaseUid, existingByPhone, existingByEmail] =
+      await Promise.all([
+        this.prisma.user.findUnique({ where: { firebaseUid } }),
+        phone ? this.prisma.user.findUnique({ where: { phone } }) : null,
+        verifiedEmail
+          ? this.prisma.user.findUnique({ where: { email: verifiedEmail } })
+          : null,
+      ]);
 
-    const existingByPhone = phone
-      ? await this.prisma.user.findUnique({
-          where: { phone },
-        })
-      : null;
-    const existingByEmail = verifiedEmail
-      ? await this.prisma.user.findUnique({
-          where: { email: verifiedEmail },
-        })
-      : null;
-
-    if (
-      existingByFirebaseUid &&
-      existingByPhone &&
-      existingByFirebaseUid.id !== existingByPhone.id
-    ) {
-      await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_phone');
-      throw new BadRequestException('Firebase identity conflict');
-    }
-
-    if (
-      existingByFirebaseUid &&
-      existingByEmail &&
-      existingByFirebaseUid.id !== existingByEmail.id
-    ) {
-      await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_email');
-      throw new BadRequestException('Firebase identity conflict');
-    }
-
-    if (
-      existingByPhone &&
-      existingByEmail &&
-      existingByPhone.id !== existingByEmail.id
-    ) {
-      await this.auditFirebaseLoginConflict(firebaseIdentity, 'phone_email');
-      throw new BadRequestException('Firebase identity conflict');
-    }
+    await this.assertSameFirebaseCitizen(firebaseIdentity, [
+      ['uid', existingByFirebaseUid],
+      ['phone', existingByPhone],
+      ['email', existingByEmail],
+    ]);
 
     const existingUser =
       existingByFirebaseUid ?? existingByPhone ?? existingByEmail;
 
     if (existingUser && existingUser.role !== UserRole.CITIZEN) {
-      throw new BadRequestException(
-        'Firebase citizen login cannot be used for this account',
-      );
+      await this.auditFirebaseLoginConflict(firebaseIdentity, 'role_boundary');
+      throw new UnauthorizedException('External authentication failed');
     }
 
     if (existingUser?.firebaseUid && existingUser.firebaseUid !== firebaseUid) {
       await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_mismatch');
-      throw new BadRequestException('Firebase identity conflict');
+      throw new UnauthorizedException('External authentication failed');
     }
 
     if (existingUser?.phone && phone && existingUser.phone !== phone) {
@@ -495,9 +470,33 @@ export class AuthService {
       });
       if (phoneOwner && phoneOwner.id !== existingUser.id) {
         await this.auditFirebaseLoginConflict(firebaseIdentity, 'phone_owner');
-        throw new BadRequestException('Firebase identity conflict');
+        throw new UnauthorizedException('External authentication failed');
       }
     }
+
+    if (
+      existingUser?.email &&
+      verifiedEmail &&
+      existingUser.email !== verifiedEmail
+    ) {
+      const emailOwner = await this.prisma.user.findUnique({
+        where: { email: verifiedEmail },
+      });
+      if (emailOwner && emailOwner.id !== existingUser.id) {
+        await this.auditFirebaseLoginConflict(firebaseIdentity, 'email_owner');
+        throw new UnauthorizedException('External authentication failed');
+      }
+    }
+
+    const now = new Date();
+    const nextStatus = this.nextFirebaseIdentityStatus(existingUser, {
+      hasVerifiedEmail,
+      hasVerifiedPhone,
+    });
+    const nextLevel = this.nextFirebaseIdentityLevel(existingUser, {
+      hasVerifiedEmail,
+      hasVerifiedPhone,
+    });
 
     const user = existingUser
       ? await this.prisma.user.update({
@@ -505,19 +504,14 @@ export class AuthService {
           data: {
             firebaseUid: existingUser.firebaseUid ?? firebaseUid,
             phone: phone ?? existingUser.phone,
-            phoneVerifiedAt: phone ? new Date() : existingUser.phoneVerifiedAt,
-            identityVerificationStatus:
-              existingUser.identityVerificationStatus ===
-              IdentityVerificationStatus.UNVERIFIED
-                ? IdentityVerificationStatus.PHONE_VERIFIED
-                : existingUser.identityVerificationStatus,
-            identityVerificationLevel: Math.max(
-              existingUser.identityVerificationLevel ?? 0,
-              1,
-            ),
+            phoneVerifiedAt: phone
+              ? (existingUser.phoneVerifiedAt ?? now)
+              : existingUser.phoneVerifiedAt,
+            identityVerificationStatus: nextStatus,
+            identityVerificationLevel: nextLevel,
             email: verifiedEmail ?? existingUser.email,
             emailVerifiedAt: verifiedEmail
-              ? (existingUser.emailVerifiedAt ?? new Date())
+              ? (existingUser.emailVerifiedAt ?? now)
               : existingUser.emailVerifiedAt,
             fullName: dto.fullName?.trim() || existingUser.fullName || fullName,
             role: UserRole.CITIZEN,
@@ -545,12 +539,11 @@ export class AuthService {
           data: {
             firebaseUid,
             phone,
-            phoneVerifiedAt: phone ? new Date() : null,
-            identityVerificationStatus:
-              IdentityVerificationStatus.PHONE_VERIFIED,
-            identityVerificationLevel: 1,
+            phoneVerifiedAt: phone ? now : null,
+            identityVerificationStatus: nextStatus,
+            identityVerificationLevel: nextLevel,
             email: verifiedEmail,
-            emailVerifiedAt: verifiedEmail ? new Date() : null,
+            emailVerifiedAt: verifiedEmail ? now : null,
             fullName,
             role: UserRole.CITIZEN,
             organizationId,
@@ -589,7 +582,56 @@ export class AuthService {
       hasPhoneClaim: Boolean(identity.phoneNumber),
       hasEmailClaim: Boolean(identity.email),
       emailVerified: identity.emailVerified,
+      signInProvider: identity.signInProvider ?? null,
     });
+  }
+
+  private async assertSameFirebaseCitizen(
+    identity: VerifiedFirebaseIdentity,
+    matches: Array<[string, User | null]>,
+  ) {
+    const existing = matches.filter(
+      (match): match is [string, User] => match[1] !== null,
+    );
+    const first = existing[0]?.[1];
+    const conflicting = existing.find(([, user]) => user.id !== first?.id);
+    if (conflicting) {
+      await this.auditFirebaseLoginConflict(
+        identity,
+        `${existing[0][0]}_${conflicting[0]}`,
+      );
+      throw new UnauthorizedException('External authentication failed');
+    }
+  }
+
+  private nextFirebaseIdentityStatus(
+    existingUser: User | null,
+    verified: { hasVerifiedEmail: boolean; hasVerifiedPhone: boolean },
+  ) {
+    const current =
+      existingUser?.identityVerificationStatus ??
+      IdentityVerificationStatus.UNVERIFIED;
+    if (current !== IdentityVerificationStatus.UNVERIFIED) return current;
+    if (verified.hasVerifiedPhone) {
+      return IdentityVerificationStatus.PHONE_VERIFIED;
+    }
+    if (verified.hasVerifiedEmail) {
+      return IdentityVerificationStatus.EMAIL_VERIFIED;
+    }
+    return IdentityVerificationStatus.UNVERIFIED;
+  }
+
+  private nextFirebaseIdentityLevel(
+    existingUser: User | null,
+    verified: { hasVerifiedEmail: boolean; hasVerifiedPhone: boolean },
+  ) {
+    const current = existingUser?.identityVerificationLevel ?? 0;
+    const firebaseLevel = verified.hasVerifiedPhone
+      ? 2
+      : verified.hasVerifiedEmail
+        ? 1
+        : 0;
+    return Math.max(current, firebaseLevel);
   }
 
   async issueTokensForOnboarding(user: AuthUser) {

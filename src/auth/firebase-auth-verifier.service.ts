@@ -10,6 +10,7 @@ export type VerifiedFirebaseIdentity = {
   email?: string | null;
   emailVerified: boolean;
   fullName?: string | null;
+  signInProvider?: string | null;
 };
 
 type ServiceAccountJson = {
@@ -44,6 +45,10 @@ export class FirebaseAuthVerifierService {
             : null,
         emailVerified: decoded.email_verified === true,
         fullName: typeof decoded.name === 'string' ? decoded.name.trim() : null,
+        signInProvider:
+          typeof decoded.firebase?.sign_in_provider === 'string'
+            ? decoded.firebase.sign_in_provider.trim()
+            : null,
       };
     } catch {
       throw new UnauthorizedException(

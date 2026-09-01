@@ -31,6 +31,8 @@ describe('Auth API (e2e)', () => {
     'demo-provider-2-auth@test.com',
     'demo-provider-3-auth@test.com',
     'citizen.sync@test.com',
+    'citizen.email.bridge@test.com',
+    'provider.firebase.block@test.com',
   ];
 
   const authFixturePhones = ['+2348000000001', '+2348000000999'];
@@ -43,6 +45,7 @@ describe('Auth API (e2e)', () => {
     'PRV-AUTH-003',
     'PRV-AUTH-DEMO-001',
     'PRV-AUTH-RESET',
+    'PRV-AUTH-FIREBASE-BLOCK',
   ];
 
   const firebaseAuthVerifierMock = {
@@ -63,6 +66,36 @@ describe('Auth API (e2e)', () => {
           email: 'citizen.sync@test.com',
           emailVerified: true,
           fullName: 'Citizen Sync Updated',
+        });
+      }
+      if (idToken === 'auth-firebase-email-token') {
+        return Promise.resolve({
+          uid: 'firebase-email-bridge-uid',
+          phoneNumber: null,
+          email: 'citizen.email.bridge@test.com',
+          emailVerified: true,
+          fullName: 'Citizen Email Bridge',
+          signInProvider: 'password',
+        });
+      }
+      if (idToken === 'auth-firebase-unverified-email-token') {
+        return Promise.resolve({
+          uid: 'firebase-unverified-email-bridge-uid',
+          phoneNumber: null,
+          email: 'citizen.email.bridge@test.com',
+          emailVerified: false,
+          fullName: 'Citizen Email Bridge',
+          signInProvider: 'password',
+        });
+      }
+      if (idToken === 'auth-firebase-provider-block-token') {
+        return Promise.resolve({
+          uid: 'firebase-provider-block-uid',
+          phoneNumber: null,
+          email: 'provider.firebase.block@test.com',
+          emailVerified: true,
+          fullName: 'Provider Firebase Block',
+          signInProvider: 'password',
         });
       }
       return Promise.reject(
@@ -659,5 +692,67 @@ describe('Auth API (e2e)', () => {
     expect(secondLogin.body.accessToken).toBeDefined();
     expect(secondLogin.body.user.email).toBe('citizen.sync@test.com');
     expect(secondLogin.body.user.fullName).toBe('Citizen Sync Updated');
+  });
+
+  it('bridges a verified Firebase email citizen without phone verification', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        idToken: 'auth-firebase-email-token',
+        fullName: 'Citizen Email Bridge',
+      });
+
+    expect(login.status).toBe(201);
+    expect(login.body.user.email).toBe('citizen.email.bridge@test.com');
+    expect(login.body.user.phone).toBeNull();
+    expect(login.body.user.emailVerifiedAt).toBeTruthy();
+    expect(login.body.user.phoneVerifiedAt).toBeNull();
+    expect(login.body.user.identityVerificationStatus).toBe('EMAIL_VERIFIED');
+
+    const replay = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        idToken: 'auth-firebase-email-token',
+        fullName: 'Citizen Email Bridge',
+      });
+
+    expect(replay.status).toBe(201);
+    expect(replay.body.user.id).toBe(login.body.user.id);
+  });
+
+  it('rejects unverified Firebase email bridge tokens', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        idToken: 'auth-firebase-unverified-email-token',
+        fullName: 'Citizen Email Bridge',
+      });
+
+    expect(login.status).toBe(401);
+    expect(login.body.message).toBe('External authentication failed');
+  });
+
+  it('blocks provider accounts from the Firebase citizen bridge', async () => {
+    await prisma.user.create({
+      data: {
+        fullName: 'Provider Firebase Block',
+        email: 'provider.firebase.block@test.com',
+        passwordHash: await bcrypt.hash('Password123!', 10),
+        role: 'PROVIDER',
+        firebaseUid: 'firebase-provider-block-uid',
+        providerId: 'PRV-AUTH-FIREBASE-BLOCK',
+        organizationId: adminOrganizationId,
+      },
+    });
+
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        idToken: 'auth-firebase-provider-block-token',
+        fullName: 'Citizen Email Bridge',
+      });
+
+    expect(login.status).toBe(401);
+    expect(login.body.message).toBe('External authentication failed');
   });
 });
