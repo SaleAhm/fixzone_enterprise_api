@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 const trimStringOrUndefined = ({ value }: { value: unknown }) =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
@@ -15,4 +15,10 @@ export class FirebaseLoginDto {
   @IsString()
   @MinLength(2)
   fullName?: string;
+
+  @IsOptional()
+  @Transform(trimStringOrUndefined)
+  @IsString()
+  @IsIn(['login', 'registration'])
+  intent?: 'login' | 'registration';
 }

@@ -411,6 +411,128 @@ describe('AuthService Firebase citizen login trust boundary', () => {
     expect(createArg.data.emailVerifiedAt).toBeInstanceOf(Date);
   });
 
+  it('allows new verified-email citizen registration intent to create a linked citizen', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        uid: 'firebase-email-registration-uid-1',
+        phoneNumber: null,
+        email: 'new.verified.email@test.com',
+        emailVerified: true,
+        fullName: 'New Verified Citizen',
+        signInProvider: 'password',
+      },
+    });
+
+    const result = await service.firebaseLogin({
+      idToken: 'verified-email-registration-token',
+      intent: 'registration',
+      fullName: 'New Verified Citizen',
+    });
+
+    expect(result.accessToken).toBe('fixzone-jwt');
+    const createArg = firstUserWriteArg(prisma.user.create!);
+    expect(createArg.data).toMatchObject({
+      firebaseUid: 'firebase-email-registration-uid-1',
+      email: 'new.verified.email@test.com',
+      phone: null,
+      fullName: 'New Verified Citizen',
+    });
+    expect(createArg.data.emailVerifiedAt).toBeInstanceOf(Date);
+  });
+
+  it('keeps existing verified-email registration idempotent when UID is already linked', async () => {
+    const existing = user({
+      id: 'existing-email-user',
+      firebaseUid: 'firebase-email-uid-1',
+      email: 'verified.email@test.com',
+      emailVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+      identityVerificationStatus: 'EMAIL_VERIFIED',
+      identityVerificationLevel: 1,
+    });
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        uid: 'firebase-email-uid-1',
+        phoneNumber: null,
+        email: 'verified.email@test.com',
+        emailVerified: true,
+        fullName: 'Submitted Name',
+        signInProvider: 'password',
+      },
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(existing),
+      updateUser: jest.fn().mockImplementation(({ data }) =>
+        Promise.resolve({
+          ...existing,
+          ...data,
+        }),
+      ),
+    });
+
+    const result = await service.firebaseLogin({
+      idToken: 'verified-email-token',
+      intent: 'registration',
+      fullName: 'Submitted Name',
+    });
+
+    expect(result).toHaveProperty('accessToken', 'fixzone-jwt');
+    expect(result).toHaveProperty(['user', 'id'], 'existing-email-user');
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('returns recovery-required for registration intent with existing unlinked verified email', async () => {
+    const existing = user({
+      id: 'existing-email-user',
+      firebaseUid: null,
+      email: 'verified.email@test.com',
+      fullName: 'Original Citizen',
+      phone: '+2348000000444',
+      phoneVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+      emailVerifiedAt: new Date('2026-08-31T00:00:00.000Z'),
+      profileData: { address: 'Original address' },
+    });
+    const { service, prisma, jwtService } = createFirebaseLoginService({
+      identity: {
+        uid: 'new-firebase-email-uid',
+        phoneNumber: null,
+        email: 'verified.email@test.com',
+        emailVerified: true,
+        fullName: 'Submitted Registration Name',
+        signInProvider: 'password',
+      },
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(existing),
+    });
+
+    const result = await service.firebaseLogin({
+      idToken: 'verified-email-token',
+      intent: 'registration',
+      fullName: 'Submitted Registration Name',
+    });
+
+    expect(result).toEqual({
+      outcome: 'RECOVERY_REQUIRED',
+      code: 'CITIZEN_EMAIL_RECOVERY_REQUIRED',
+      message:
+        'This verified email is associated with an existing FixZone account. Continue through secure account recovery.',
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+    const auditArg = firstUserWriteArg(prisma.demoAuditLog.create);
+    expect(auditArg.data).toMatchObject({
+      action: 'Firebase Login Rejected',
+      metadata: {
+        reason: 'registration_email_recovery_required',
+        hasEmailClaim: true,
+        emailVerified: true,
+      },
+    });
+  });
+
   it('rejects Firebase tokens without verified email or phone ownership claims', async () => {
     const { service, prisma } = createFirebaseLoginService({
       identity: {
@@ -422,6 +544,26 @@ describe('AuthService Firebase citizen login trust boundary', () => {
     await expect(
       service.firebaseLogin({ idToken: 'email-only-token' }),
     ).rejects.toThrow('External authentication failed');
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('does not reveal existing email state to unverified registration tokens', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        ...verifiedPhoneToken,
+        phoneNumber: null,
+        email: 'verified.email@test.com',
+        emailVerified: false,
+      },
+    });
+
+    await expect(
+      service.firebaseLogin({
+        idToken: 'unverified-email-registration-token',
+        intent: 'registration',
+      }),
+    ).rejects.toThrow('External authentication failed');
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
@@ -502,6 +644,36 @@ describe('AuthService Firebase citizen login trust boundary', () => {
         hasPhoneClaim: true,
       },
     });
+  });
+
+  it('rejects registration intent when UID and verified email belong to different citizens', async () => {
+    const { service, prisma } = createFirebaseLoginService({
+      identity: {
+        uid: 'firebase-email-uid-1',
+        phoneNumber: null,
+        email: 'verified.email@test.com',
+        emailVerified: true,
+        fullName: 'Verified Email Citizen',
+        signInProvider: 'password',
+      },
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(
+          user({ id: 'uid-user', firebaseUid: 'firebase-email-uid-1' }),
+        )
+        .mockResolvedValueOnce(
+          user({ id: 'email-user', email: 'verified.email@test.com' }),
+        ),
+    });
+
+    await expect(
+      service.firebaseLogin({
+        idToken: 'verified-email-token',
+        intent: 'registration',
+      }),
+    ).rejects.toThrow('External authentication failed');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('does not create a duplicate citizen on repeated Firebase login', async () => {

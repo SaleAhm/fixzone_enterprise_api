@@ -489,6 +489,26 @@ export class AuthService {
       throw new UnauthorizedException('External authentication failed');
     }
 
+    if (
+      dto.intent === 'registration' &&
+      verifiedEmail &&
+      existingByEmail &&
+      existingByEmail.id === existingUser?.id &&
+      !existingByEmail.firebaseUid &&
+      !existingByFirebaseUid
+    ) {
+      await this.auditFirebaseLoginConflict(
+        firebaseIdentity,
+        'registration_email_recovery_required',
+      );
+      return {
+        outcome: 'RECOVERY_REQUIRED',
+        code: 'CITIZEN_EMAIL_RECOVERY_REQUIRED',
+        message:
+          'This verified email is associated with an existing FixZone account. Continue through secure account recovery.',
+      };
+    }
+
     if (existingUser?.phone && phone && existingUser.phone !== phone) {
       const phoneOwner = await this.prisma.user.findUnique({
         where: { phone },

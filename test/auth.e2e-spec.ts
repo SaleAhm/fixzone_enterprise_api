@@ -32,6 +32,7 @@ describe('Auth API (e2e)', () => {
     'demo-provider-3-auth@test.com',
     'citizen.sync@test.com',
     'citizen.email.bridge@test.com',
+    'citizen.email.recovery@test.com',
     'provider.firebase.block@test.com',
   ];
 
@@ -89,6 +90,16 @@ describe('Auth API (e2e)', () => {
           email: 'citizen.email.bridge@test.com',
           emailVerified: false,
           fullName: 'Citizen Email Bridge',
+          signInProvider: 'password',
+        });
+      }
+      if (idToken === 'auth-firebase-email-recovery-token') {
+        return Promise.resolve({
+          uid: 'firebase-email-recovery-new-uid',
+          phoneNumber: null,
+          email: 'citizen.email.recovery@test.com',
+          emailVerified: true,
+          fullName: 'Submitted Recovery Name',
           signInProvider: 'password',
         });
       }
@@ -750,6 +761,48 @@ describe('Auth API (e2e)', () => {
 
     expect(login.status).toBe(401);
     expect(login.body.message).toBe('External authentication failed');
+  });
+
+  it('returns recovery-required for verified registration email already held by an unlinked citizen', async () => {
+    const existing = await prisma.user.create({
+      data: {
+        fullName: 'Original Recovery Citizen',
+        email: 'citizen.email.recovery@test.com',
+        role: 'CITIZEN',
+        organizationId: adminOrganizationId,
+        profileData: { address: 'Existing address' },
+      },
+    });
+
+    const login = await request(app.getHttpServer())
+      .post('/api/auth/firebase-login')
+      .send({
+        idToken: 'auth-firebase-email-recovery-token',
+        intent: 'registration',
+        fullName: 'Submitted Recovery Name',
+      });
+
+    expect(login.status).toBe(201);
+    expect(login.body).toEqual({
+      outcome: 'RECOVERY_REQUIRED',
+      code: 'CITIZEN_EMAIL_RECOVERY_REQUIRED',
+      message:
+        'This verified email is associated with an existing FixZone account. Continue through secure account recovery.',
+    });
+    expect(login.body.accessToken).toBeUndefined();
+    expect(login.body.user).toBeUndefined();
+
+    const unchanged = await prisma.user.findUnique({
+      where: { id: existing.id },
+    });
+    expect(unchanged?.firebaseUid).toBeNull();
+    expect(unchanged?.fullName).toBe('Original Recovery Citizen');
+    expect(unchanged?.profileData).toEqual({ address: 'Existing address' });
+    expect(
+      await prisma.user.count({
+        where: { email: 'citizen.email.recovery@test.com' },
+      }),
+    ).toBe(1);
   });
 
   it('blocks provider accounts from the Firebase citizen bridge', async () => {
