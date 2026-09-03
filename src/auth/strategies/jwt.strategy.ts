@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { UserRole } from '@prisma/client';
+import { AccountStatus, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getJwtAccessSecret } from '../jwt-secret';
 import { preferredLocaleFromProfile } from '../../localization/supported-locales';
@@ -63,8 +63,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       },
     });
 
-    if (!user) {
-      throw new UnauthorizedException('User no longer exists');
+    if (!user || !this.isEligibleAccountStatus(user.accountStatus)) {
+      throw new UnauthorizedException('Unauthorized');
     }
 
     return {
@@ -94,5 +94,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       identityType: user.identityType,
       organization: user.organization,
     };
+  }
+
+  private isEligibleAccountStatus(status: unknown): status is AccountStatus {
+    return status === AccountStatus.ACTIVE;
   }
 }

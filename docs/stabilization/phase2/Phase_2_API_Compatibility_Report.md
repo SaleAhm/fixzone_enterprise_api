@@ -252,6 +252,11 @@ Operational tools and demo data:
 - Module entitlement checks must layer on top of existing RBAC without weakening it.
 - Unauthenticated endpoints must remain limited to explicit public entry points.
 - Auth error responses should remain consistent enough for current clients to handle.
+- JWT-authenticated requests use current database account status, not only token
+  issuance state. Only `ACTIVE` accounts authenticate; suspended, deactivated,
+  pending, missing or unknown-status accounts receive a generic unauthorized
+  response. Reactivating an account to `ACTIVE` restores authentication for any
+  otherwise valid unexpired token.
 
 ## Frontend and Mobile Client Compatibility Considerations
 
