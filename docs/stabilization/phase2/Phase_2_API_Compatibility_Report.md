@@ -38,6 +38,8 @@ Unauthenticated or low-friction entry points:
 - `POST /api/onboarding/organization/register`
 - `GET /api/platform-tools/maintenance/public`
 
+`POST /api/auth/register` is a public citizen-only compatibility path. Requests must omit `role`; any supplied role value is denied, and successful registrations receive the server-assigned `CITIZEN` role. Provider access requests, organization owner onboarding, internal administrator delegation, and seeded/bootstrap accounts use their separate guarded or purpose-specific workflows.
+
 Authenticated client and provider endpoints:
 
 - `GET /api/auth/me`

@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import * as bcrypt from 'bcrypt';
+import { UserRole } from '@prisma/client';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -30,6 +31,7 @@ describe('Auth API (e2e)', () => {
     'demo-provider-1-auth@test.com',
     'demo-provider-2-auth@test.com',
     'demo-provider-3-auth@test.com',
+    'public-role-attack@test.com',
     'citizen.sync@test.com',
     'citizen.email.bridge@test.com',
     'citizen.email.recovery@test.com',
@@ -224,24 +226,40 @@ describe('Auth API (e2e)', () => {
     });
   }
 
-  it('Register Admin', async () => {
+  it('denies public privileged role selection through /auth/register', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({
-        fullName: 'Admin User',
-        email: 'admin@test.com',
+        fullName: 'Public Role Attack',
+        email: 'public-role-attack@test.com',
         password: '123456',
         role: 'admin',
         organizationId: adminOrganizationId,
       });
 
-    expect(res.status).toBe(201);
-    expect(res.body.accessToken).toBeDefined();
-    expect(res.body.user.role).toBe('ORG_ADMIN');
-    expect(res.body.user.organizationId).toBe(adminOrganizationId);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe(
+      'Role cannot be selected during public registration',
+    );
+    expect(res.body.accessToken).toBeUndefined();
+    expect(
+      await prisma.user.count({
+        where: { email: 'public-role-attack@test.com' },
+      }),
+    ).toBe(0);
   });
 
   it('Login Admin', async () => {
+    await prisma.user.create({
+      data: {
+        fullName: 'Admin User',
+        email: 'admin@test.com',
+        passwordHash: await bcrypt.hash('123456', 10),
+        role: UserRole.ORG_ADMIN,
+        organizationId: adminOrganizationId,
+      },
+    });
+
     const res = await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({
@@ -272,17 +290,39 @@ describe('Auth API (e2e)', () => {
     expect(res.status).toBe(200);
   });
 
-  it('Register Citizen', async () => {
+  it('registers a public citizen when role is omitted', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({
         fullName: 'Citizen User',
         email: 'citizen@test.com',
         password: '123456',
-        role: 'citizen',
       });
 
     expect(res.status).toBe(201);
+    expect(res.body.user.role).toBe('CITIZEN');
+    expect(res.body.user.organizationId).toBeNull();
+  });
+
+  it('rejects malformed public registration role payloads', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({
+        fullName: 'Public Role Attack',
+        email: 'public-role-attack@test.com',
+        password: '123456',
+        role: { value: 'CITIZEN' },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe(
+      'Role cannot be selected during public registration',
+    );
+    expect(
+      await prisma.user.count({
+        where: { email: 'public-role-attack@test.com' },
+      }),
+    ).toBe(0);
   });
 
   it('Login Citizen', async () => {
@@ -325,7 +365,7 @@ describe('Auth API (e2e)', () => {
     expect(res.body.profileData.notificationPreferences.sms).toBe(false);
   });
 
-  it('Register Provider', async () => {
+  it('denies public provider creation through /auth/register', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({
@@ -335,10 +375,23 @@ describe('Auth API (e2e)', () => {
         role: 'provider',
       });
 
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe(
+      'Role cannot be selected during public registration',
+    );
   });
 
   it('Login Provider', async () => {
+    await prisma.user.create({
+      data: {
+        fullName: 'Provider User',
+        email: 'provider@test.com',
+        passwordHash: await bcrypt.hash('123456', 10),
+        role: UserRole.PROVIDER,
+        organizationId: adminOrganizationId,
+      },
+    });
+
     const res = await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({
@@ -528,19 +581,25 @@ describe('Auth API (e2e)', () => {
     expect(providerIdLogin.body.user.providerId).toBe('PRV-AUTH-DEMO-001');
   });
 
-  it('newly registered provider can log in and never stores plaintext password', async () => {
+  it('public provider access request keeps provider onboarding pending and hashed', async () => {
     const res = await request(app.getHttpServer())
-      .post('/api/auth/register')
+      .post('/api/onboarding/provider/request-access')
       .send({
+        applicantType: 'INDIVIDUAL',
         fullName: 'New Provider Auth',
         email: 'provider-new-auth@test.com',
+        phone: '+2348000000999',
         password: 'Password123!',
-        role: 'provider',
-        organizationId: adminOrganizationId,
+        confirmPassword: 'Password123!',
+        address: '12 Provider Road',
+        coverageArea: 'Ikeja',
+        serviceCategories: ['Electrical'],
+        yearsOfExperience: 3,
       });
 
     expect(res.status).toBe(201);
-    expect(res.body.user.role).toBe('PROVIDER');
+    expect(res.body.request.role).toBe('PENDING_PROVIDER');
+    expect(res.body.request.accountStatus).toBe('PENDING_APPROVAL');
 
     const stored = await prisma.user.findUnique({
       where: { email: 'provider-new-auth@test.com' },
@@ -558,8 +617,8 @@ describe('Auth API (e2e)', () => {
         password: 'Password123!',
       });
 
-    expect(login.status).toBe(201);
-    expect(login.body.user.role).toBe('PROVIDER');
+    expect(login.status).toBe(401);
+    expect(login.body.message).toBe('Account is pending approval');
   });
 
   it('reset provider password hashes the new password and permits login', async () => {

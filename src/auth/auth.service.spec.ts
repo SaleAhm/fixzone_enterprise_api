@@ -16,6 +16,7 @@ type PrismaAuthMock = {
   };
   user: {
     findUnique: jest.Mock;
+    findFirst?: jest.Mock;
     update: jest.Mock;
     create?: jest.Mock;
   };
@@ -43,6 +44,137 @@ function firstUserWriteArg(mock: jest.Mock): MockUserWriteArgs {
   const [arg] = mock.mock.calls[0] as [MockUserWriteArgs];
   return arg;
 }
+
+describe('AuthService public registration role boundary', () => {
+  function createRegistrationService(
+    overrides: Partial<PrismaAuthMock['user']> = {},
+  ) {
+    const prisma: PrismaAuthMock = {
+      user: {
+        findUnique: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(({ data }) =>
+          Promise.resolve({
+            ...data,
+            id: 'registered-user',
+            secureZoneId: 'SZ-1',
+            providerId: null,
+            accountStatus: 'ACTIVE',
+            phoneVerifiedAt: null,
+            emailVerifiedAt: null,
+          }),
+        ),
+        update: jest.fn(),
+        ...overrides,
+      },
+      demoAuditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const trustService = {
+      ensureIdentity: jest.fn((id: string) =>
+        Promise.resolve({
+          id,
+          email: 'public-citizen@test.com',
+          phone: null,
+          fullName: 'Public Citizen',
+          role: UserRole.CITIZEN,
+          organizationId: null,
+          providerId: null,
+          accountStatus: 'ACTIVE',
+          phoneVerifiedAt: null,
+          emailVerifiedAt: null,
+          secureZoneId: 'SZ-1',
+        }),
+      ),
+    };
+    const service = new AuthService(
+      { signAsync: jest.fn().mockResolvedValue('fixzone-jwt') },
+      prismaMock(prisma),
+      trustService as unknown as TrustService,
+      { verifyIdToken: jest.fn() } as unknown as FirebaseAuthVerifierService,
+    );
+
+    return { service, prisma };
+  }
+
+  it('assigns the server-authoritative CITIZEN role when role is omitted', async () => {
+    const { service, prisma } = createRegistrationService();
+
+    const result = await service.register({
+      fullName: 'Public Citizen',
+      email: 'public-citizen@test.com',
+      password: 'Password123!',
+    });
+
+    expect(result.user.role).toBe(UserRole.CITIZEN);
+    const createArg = firstUserWriteArg(prisma.user.create!);
+    expect(createArg.data).toMatchObject({
+      role: UserRole.CITIZEN,
+      organizationId: null,
+    });
+  });
+
+  it('rejects direct service-level privileged and workflow role selection before user creation', async () => {
+    const { service, prisma } = createRegistrationService();
+    const deniedRoles = [
+      ...Object.values(UserRole).filter((role) => role !== UserRole.CITIZEN),
+      'ADMIN',
+      'admin',
+      'platform_admin',
+      'internal_admin',
+      'Org_Admin',
+      'provider',
+      'pending_provider',
+      'unexpected_role',
+    ];
+
+    for (const role of deniedRoles) {
+      await expect(
+        service.register({
+          fullName: 'Attack User',
+          email: 'attack-user@test.com',
+          password: 'Password123!',
+          role,
+        }),
+      ).rejects.toThrow('Role cannot be selected during public registration');
+    }
+
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    const auditArg = firstUserWriteArg(prisma.demoAuditLog.create);
+    expect(auditArg.data).toMatchObject({
+      action: 'Public Registration Role Selection Rejected',
+      actorUserId: 'anonymous',
+      metadata: {
+        requestedRoleType: 'string',
+        requestedRole: deniedRoles[0],
+      },
+    });
+  });
+
+  it('rejects null and malformed role payloads before user creation', async () => {
+    const { service, prisma } = createRegistrationService();
+
+    await expect(
+      service.register({
+        fullName: 'Malformed Role User',
+        email: 'malformed-role@test.com',
+        password: 'Password123!',
+        role: null,
+      }),
+    ).rejects.toThrow('Role cannot be selected during public registration');
+
+    await expect(
+      service.register({
+        fullName: 'Array Role User',
+        email: 'array-role@test.com',
+        password: 'Password123!',
+        role: ['CITIZEN'],
+      }),
+    ).rejects.toThrow('Role cannot be selected during public registration');
+
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+});
 
 describe('AuthService localization preferences', () => {
   const authUser = {

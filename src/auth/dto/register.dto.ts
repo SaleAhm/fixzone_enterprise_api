@@ -4,8 +4,11 @@ import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
 const emptyToUndefined = ({ value }: { value: unknown }) =>
   typeof value === 'string' && value.trim() === '' ? undefined : value;
 
+const trimString = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
+
 export class RegisterDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(trimString)
   @IsString()
   @MinLength(2)
   fullName: string;
@@ -21,14 +24,13 @@ export class RegisterDto {
   @MinLength(7)
   phone?: string;
 
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(trimString)
   @IsString()
   @MinLength(6)
   password: string;
 
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @IsString()
-  role: string;
+  @IsOptional()
+  role?: unknown;
 
   @IsOptional()
   @Transform(emptyToUndefined)

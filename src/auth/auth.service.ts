@@ -60,6 +60,28 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    if (dto.role !== undefined) {
+      await this.audit(
+        'Public Registration Role Selection Rejected',
+        'anonymous',
+        {
+          requestedRoleType:
+            dto.role === null
+              ? 'null'
+              : Array.isArray(dto.role)
+                ? 'array'
+                : typeof dto.role,
+          requestedRole:
+            typeof dto.role === 'string'
+              ? dto.role.trim().slice(0, 64)
+              : undefined,
+        },
+      );
+      throw new BadRequestException(
+        'Role cannot be selected during public registration',
+      );
+    }
+
     if (!dto.email && !dto.phone) {
       throw new BadRequestException('Email or phone is required');
     }
@@ -82,33 +104,6 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const prismaRole = this.mapApiRoleToPrismaRole(dto.role);
-
-    let organizationId: string | null = dto.organizationId?.trim() || null;
-
-    if (prismaRole === UserRole.ORG_ADMIN) {
-      if (organizationId && dto.organizationName?.trim()) {
-        throw new BadRequestException(
-          'Provide either organizationId or organizationName, not both',
-        );
-      }
-
-      if (!organizationId && !dto.organizationName?.trim()) {
-        throw new BadRequestException(
-          'organizationName or organizationId is required for ORG_ADMIN',
-        );
-      }
-
-      if (!organizationId && dto.organizationName?.trim()) {
-        const organization = await this.prisma.organization.create({
-          data: {
-            name: dto.organizationName.trim(),
-          },
-        });
-
-        organizationId = organization.id;
-      }
-    }
 
     let user = await this.prisma.user.create({
       data: {
@@ -116,8 +111,8 @@ export class AuthService {
         email: dto.email ? dto.email.toLowerCase().trim() : null,
         phone: dto.phone ? dto.phone.trim() : null,
         passwordHash,
-        role: prismaRole,
-        organizationId,
+        role: UserRole.CITIZEN,
+        organizationId: null,
       },
       select: {
         id: true,
@@ -695,30 +690,6 @@ export class AuthService {
         metadata: metadata as Prisma.InputJsonValue,
       },
     });
-  }
-
-  private mapApiRoleToPrismaRole(role?: string): UserRole {
-    const normalizedRole = String(role ?? '')
-      .trim()
-      .toUpperCase();
-
-    switch (normalizedRole) {
-      case 'SUPER_ADMIN':
-        return UserRole.SUPER_ADMIN;
-      case 'ORG_ADMIN':
-      case 'ADMIN':
-        return UserRole.ORG_ADMIN;
-      case 'DISPATCH_OFFICER':
-        return UserRole.DISPATCH_OFFICER;
-      case 'PROVIDER':
-        return UserRole.PROVIDER;
-      case 'PENDING_PROVIDER':
-        return UserRole.PENDING_PROVIDER;
-      case 'CITIZEN':
-        return UserRole.CITIZEN;
-      default:
-        throw new BadRequestException(`Unsupported role: ${role}`);
-    }
   }
 
   private async getDefaultCitizenOrganizationId() {
