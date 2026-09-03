@@ -66,7 +66,7 @@ This keeps existing database references compatible and makes the existing recove
 
 ## Dokploy Configuration Requirement
 
-This repository does not currently contain a Docker Compose file, Dockerfile, Nixpacks mount declaration, or committed Dokploy application manifest that Dokploy v0.29.8 can use to define the Swarm mount from source alone.
+This repository now contains a production `Dockerfile` for the API container build. It does not contain a Docker Compose file, Nixpacks mount declaration, or committed Dokploy application manifest that Dokploy v0.29.8 can use to define the Swarm mount from source alone.
 
 Therefore the persistent bind mount must be configured in Dokploy/server deployment configuration for the FixZone API application. A direct `docker service update --mount-add ...` is not sufficient as the final fix unless it is also reflected in Dokploy's durable application configuration, because a normal Dokploy redeploy may overwrite manual Swarm mutations.
 
@@ -89,8 +89,13 @@ Before deployment:
 
 1. Confirm the backup set exists and contains both the PostgreSQL dump and uploads archive.
 2. Confirm `/srv/securezone-data/fixzone/uploads` contains the expected 20 files.
-3. Configure the durable Dokploy/server mount before replacing the API container.
-4. Set `UPLOAD_ROOT=/app/uploads` in the API environment.
-5. Deploy only through the approved Dokploy release process.
+3. Switch the Dokploy API build type from Nixpacks to the repository Dockerfile.
+4. Confirm no secret-valued build arguments are configured for the Dockerfile build.
+5. Configure the durable Dokploy/server mount before replacing the API container.
+6. Set `UPLOAD_ROOT=/app/uploads` in the API runtime environment.
+7. Keep application secrets such as JWT, database, Firebase, payment, mail, SMS, storage, and backup credentials only in runtime environment or runtime-mounted secret files.
+8. Deploy only through the approved Dokploy release process.
 
 After deployment, verify the new container mount and evidence survival before continuing UAT.
+
+Before accepting the image, inspect image configuration and history for secret variable names and credential file paths. If a previous Nixpacks-generated image exposed runtime secret names or values through Docker `ARG` or `ENV`, rotate affected credentials only after a replacement image is proven clean and deployed successfully.

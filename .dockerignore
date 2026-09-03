@@ -1,0 +1,68 @@
+.git
+.gitignore
+.dockerignore
+
+# Local dependencies and generated outputs
+node_modules
+dist
+build
+coverage
+.nyc_output
+generated
+
+# Environment and credential material
+.env
+.env.*
+*.env
+*.env.*
+firebase-service-account*.json
+service-account*.json
+serviceAccount*.json
+*serviceAccountKey*.json
+*credential*.json
+*credentials*.json
+*.pem
+*.key
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Logs, diagnostics, and test output
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+test-results
+playwright-report
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime and backup data
+uploads/report-completion
+uploads/report-evidence
+backups
+*.dump
+*.bak
+*.backup
+
+# Local caches and temporary tooling
+.temp
+.tmp
+tmp
+temp
+.cache
+.parcel-cache
+.eslintcache
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.swp
+*.swo
+*.sublime-workspace
+
+# Local release/operator artifacts
+scripts/fixzone_controlled_production_release.sh
