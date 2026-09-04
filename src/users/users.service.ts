@@ -12,8 +12,8 @@ import {
   ReportStatus,
   UserRole,
 } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { AuthService } from '../auth/auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 type JwtUser = {
@@ -29,7 +29,10 @@ type JwtUser = {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly authService?: AuthService,
+  ) {}
 
   async getUsers(user: JwtUser) {
     return this.prisma.user.findMany({
@@ -448,6 +451,7 @@ export class UsersService {
   }
 
   async resetPassword(id: string, dto: { password?: unknown }, user: JwtUser) {
+    void dto;
     const existing = await this.getUser(id, user);
     if (
       user.role !== UserRole.SUPER_ADMIN &&
@@ -459,26 +463,30 @@ export class UsersService {
       );
     }
 
-    const password =
-      typeof dto.password === 'string' && dto.password.trim().length >= 8
-        ? dto.password.trim()
-        : 'Password123!';
-    const passwordHash = await bcrypt.hash(password, 10);
-    const updated = await this.prisma.user.update({
-      where: { id },
-      data: { passwordHash, accountStatus: 'ACTIVE' },
-      select: this.adminUserSelect(),
-    });
+    if (!this.authService) {
+      throw new ForbiddenException(
+        'Password recovery delivery is not configured.',
+      );
+    }
+
+    const actorId = user.id ?? user.userId ?? user.sub;
+    if (!actorId) throw new ForbiddenException('Actor missing');
+    const reset = await this.authService.issueAdministrativePasswordReset(
+      id,
+      actorId,
+    );
 
     await this.audit('User Password Reset', user, {
       targetUserId: id,
       role: existing.role,
+      outcome: 'secure_reset_requested',
     });
 
     return {
-      user: updated,
-      temporaryPassword: password,
-      message: 'Password reset successfully.',
+      user: existing,
+      recovery: reset,
+      message:
+        'Password reset initiated. If delivery is configured, reset instructions will be sent.',
     };
   }
 
@@ -694,7 +702,6 @@ export class UsersService {
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         metadata: {
           delivery: 'EMAIL_NOT_CONFIGURED',
-          tokenPreview: token.slice(0, 6),
           existingUserId: existing?.id ?? null,
           invitationPurpose: existingProviderMembershipInvite
             ? 'PROVIDER_MEMBERSHIP_ACTIVATION'
@@ -717,8 +724,8 @@ export class UsersService {
       invitationId: invitation.id,
       role,
       organizationId,
-      invitedEmail: email,
-      invitedPhone: phone,
+      hasInvitedEmail: Boolean(email),
+      hasInvitedPhone: Boolean(phone),
       existingUserId: existing?.id ?? null,
     });
 

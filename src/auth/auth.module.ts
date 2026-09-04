@@ -10,6 +10,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { getJwtAccessSecret } from './jwt-secret';
 import { FirebaseAuthVerifierService } from './firebase-auth-verifier.service';
+import { PasswordResetDeliveryService } from './password-reset-delivery.service';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { FirebaseAuthVerifierService } from './firebase-auth-verifier.service';
   providers: [
     AuthService,
     FirebaseAuthVerifierService,
+    PasswordResetDeliveryService,
     JwtStrategy,
     JwtAuthGuard,
     RolesGuard,

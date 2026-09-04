@@ -11,6 +11,10 @@ import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { LoginDto } from './dto/login.dto';
+import {
+  CompletePasswordResetDto,
+  RequestPasswordResetDto,
+} from './dto/password-reset.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
@@ -43,6 +47,18 @@ export class AuthController {
   @EnterpriseRateLimit(RateLimitTier.Auth)
   firebaseLogin(@Body() dto: FirebaseLoginDto) {
     return this.authService.firebaseLogin(dto);
+  }
+
+  @Post('password-reset/request')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
+  requestPasswordReset(@Body() dto: RequestPasswordResetDto) {
+    return this.authService.requestPasswordReset(dto);
+  }
+
+  @Post('password-reset/complete')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
+  completePasswordReset(@Body() dto: CompletePasswordResetDto) {
+    return this.authService.completePasswordReset(dto);
   }
 
   @UseGuards(JwtAuthGuard)

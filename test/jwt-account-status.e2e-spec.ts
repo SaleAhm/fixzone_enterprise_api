@@ -21,6 +21,7 @@ type TokenUser = {
   phoneVerifiedAt: Date | null;
   emailVerifiedAt: Date | null;
   secureZoneId: string | null;
+  tokenVersion: number;
 };
 
 describe('JWT account status enforcement (e2e)', () => {
@@ -116,6 +117,7 @@ describe('JWT account status enforcement (e2e)', () => {
         phoneVerifiedAt: true,
         emailVerifiedAt: true,
         secureZoneId: true,
+        tokenVersion: true,
       },
     });
   }
@@ -134,6 +136,7 @@ describe('JWT account status enforcement (e2e)', () => {
       phoneVerifiedAt: user.phoneVerifiedAt,
       emailVerifiedAt: user.emailVerifiedAt,
       secureZoneId: user.secureZoneId,
+      tokenVersion: user.tokenVersion,
     });
   }
 

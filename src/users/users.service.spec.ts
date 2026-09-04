@@ -1,5 +1,7 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { AccountStatus, UserRole } from '@prisma/client';
+import { AuthService } from '../auth/auth.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from './users.service';
 
 describe('UsersService identity helpers', () => {
@@ -57,6 +59,63 @@ describe('UsersService lifecycle controls', () => {
       }),
     ).rejects.toThrow(ForbiddenException);
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('does not return plaintext passwords tokens or reset URLs from admin reset', async () => {
+    const target = {
+      id: 'provider-1',
+      fullName: 'Provider User',
+      email: 'provider@example.test',
+      phone: null,
+      providerId: 'PRV-1',
+      role: UserRole.PROVIDER,
+      accountStatus: AccountStatus.ACTIVE,
+      serviceCategories: [],
+      coverageAreas: [],
+      profileData: null,
+      subscriptionPlan: null,
+      providerEngagementType: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      organizationId: 'org-1',
+      organization: { id: 'org-1', name: 'Org', type: 'AGENCY' },
+    };
+    const prisma = {
+      user: {
+        findFirst: jest.fn().mockResolvedValue(target),
+      },
+      demoAuditLog: {
+        create: jest.fn().mockResolvedValue({ id: 'audit-1' }),
+      },
+    };
+    const authService = {
+      issueAdministrativePasswordReset: jest.fn().mockResolvedValue({
+        message:
+          'If delivery is configured, reset instructions will be sent. No password was changed.',
+        delivery: {
+          configured: false,
+          status: 'DELIVERY_UNAVAILABLE',
+        },
+      }),
+    };
+    const service = new UsersService(
+      prisma as unknown as PrismaService,
+      authService as unknown as AuthService,
+    );
+
+    const result = await service.resetPassword(
+      'provider-1',
+      { password: 'IgnoredPassword1' },
+      { sub: 'admin-1', role: UserRole.ORG_ADMIN, organizationId: 'org-1' },
+    );
+
+    const body = JSON.stringify(result);
+    expect(body).not.toMatch(/temporaryPassword|IgnoredPassword1|resetUrl/i);
+    expect(body).not.toMatch(/"token"\s*:/i);
+    expect(authService.issueAdministrativePasswordReset).toHaveBeenCalledWith(
+      'provider-1',
+      'admin-1',
+    );
   });
 });
 

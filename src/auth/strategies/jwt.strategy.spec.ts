@@ -14,6 +14,7 @@ type JwtUserRecord = {
   organizationId: string | null;
   providerId: string | null;
   accountStatus: unknown;
+  tokenVersion: number;
   phoneVerifiedAt: Date | null;
   emailVerifiedAt: Date | null;
   providerEngagementType: string | null;
@@ -41,6 +42,7 @@ function user(overrides: Partial<JwtUserRecord> = {}): JwtUserRecord {
     organizationId: null,
     providerId: null,
     accountStatus: AccountStatus.ACTIVE,
+    tokenVersion: 3,
     phoneVerifiedAt: null,
     emailVerifiedAt: null,
     providerEngagementType: null,
@@ -68,6 +70,7 @@ describe('JwtStrategy current account eligibility', () => {
   const payload = {
     sub: 'user-1',
     role: UserRole.CITIZEN,
+    tokenVersion: 3,
   };
 
   it.each([
@@ -149,6 +152,33 @@ describe('JwtStrategy current account eligibility', () => {
     );
     await expect(strategy.validate(payload)).resolves.toMatchObject({
       accountStatus: AccountStatus.ACTIVE,
+    });
+  });
+
+  it.each([undefined, null, '3', 2.5])(
+    'rejects malformed token version claim %p',
+    async (tokenVersion) => {
+      const strategy = createStrategy(jest.fn().mockResolvedValue(user()));
+
+      await expect(
+        strategy.validate({ ...payload, tokenVersion }),
+      ).rejects.toMatchObject({
+        response: {
+          message: 'Unauthorized',
+        },
+      });
+    },
+  );
+
+  it('rejects stale token versions', async () => {
+    const strategy = createStrategy(
+      jest.fn().mockResolvedValue(user({ tokenVersion: 4 })),
+    );
+
+    await expect(strategy.validate(payload)).rejects.toMatchObject({
+      response: {
+        message: 'Unauthorized',
+      },
     });
   });
 });

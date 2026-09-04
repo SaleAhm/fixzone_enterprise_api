@@ -8,6 +8,24 @@ import { configureApp } from '../src/configure-app';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { FirebaseAuthVerifierService } from '../src/auth/firebase-auth-verifier.service';
 
+type AuthErrorBody = {
+  message?: string;
+};
+
+type AdminResetBody = {
+  user?: {
+    accountStatus?: string;
+  };
+  temporaryPassword?: unknown;
+  token?: unknown;
+  resetUrl?: unknown;
+  recovery?: {
+    delivery?: {
+      status?: string;
+    };
+  };
+};
+
 describe('Auth API (e2e)', () => {
   jest.setTimeout(30000);
 
@@ -481,7 +499,9 @@ describe('Auth API (e2e)', () => {
       });
 
     expect(res.status).toBe(401);
-    expect(res.body.message).toBe('Account is suspended');
+    expect((res.body as unknown as AuthErrorBody).message).toBe(
+      'Authentication failed',
+    );
   });
 
   it('Provider can access provider-or-admin route', async () => {
@@ -618,10 +638,12 @@ describe('Auth API (e2e)', () => {
       });
 
     expect(login.status).toBe(401);
-    expect(login.body.message).toBe('Account is pending approval');
+    expect((login.body as unknown as AuthErrorBody).message).toBe(
+      'Authentication failed',
+    );
   });
 
-  it('reset provider password hashes the new password and permits login', async () => {
+  it('admin reset provider password starts secure recovery without returning or changing secrets', async () => {
     const originalHash = await bcrypt.hash('Password123!', 10);
     const provider = await prisma.user.create({
       data: {
@@ -641,14 +663,17 @@ describe('Auth API (e2e)', () => {
       .send({ password: 'NewPassword123!' });
 
     expect(reset.status).toBe(201);
-    expect(reset.body.user.accountStatus).toBe('ACTIVE');
+    const resetBody = reset.body as unknown as AdminResetBody;
+    expect(resetBody.user?.accountStatus).toBe('SUSPENDED');
+    expect(resetBody.temporaryPassword).toBeUndefined();
+    expect(resetBody.token).toBeUndefined();
+    expect(resetBody.resetUrl).toBeUndefined();
+    expect(JSON.stringify(reset.body)).not.toContain('NewPassword123!');
+    expect(resetBody.recovery?.delivery?.status).toBe('DELIVERY_UNAVAILABLE');
 
     const stored = await prisma.user.findUnique({ where: { id: provider.id } });
-    expect(stored?.passwordHash).toBeDefined();
-    expect(stored?.passwordHash).not.toBe('NewPassword123!');
-    expect(await bcrypt.compare('NewPassword123!', stored!.passwordHash!)).toBe(
-      true,
-    );
+    expect(stored?.passwordHash).toBe(originalHash);
+    expect(stored?.accountStatus).toBe('SUSPENDED');
 
     const login = await request(app.getHttpServer())
       .post('/api/auth/login')
@@ -658,9 +683,10 @@ describe('Auth API (e2e)', () => {
         providerId: 'PRV-AUTH-RESET',
       });
 
-    expect(login.status).toBe(201);
-    expect(login.body.user.accountStatus).toBe('ACTIVE');
-    expect(login.body.user.role).toBe('PROVIDER');
+    expect(login.status).toBe(401);
+    expect((login.body as unknown as AuthErrorBody).message).toBe(
+      'Authentication failed',
+    );
   });
 
   it('invited provider can view and accept organization invitation', async () => {
@@ -819,7 +845,9 @@ describe('Auth API (e2e)', () => {
       });
 
     expect(login.status).toBe(401);
-    expect(login.body.message).toBe('External authentication failed');
+    expect((login.body as unknown as AuthErrorBody).message).toBe(
+      'Authentication failed',
+    );
   });
 
   it('returns recovery-required for verified registration email already held by an unlinked citizen', async () => {
@@ -885,6 +913,8 @@ describe('Auth API (e2e)', () => {
       });
 
     expect(login.status).toBe(401);
-    expect(login.body.message).toBe('External authentication failed');
+    expect((login.body as unknown as AuthErrorBody).message).toBe(
+      'Authentication failed',
+    );
   });
 });

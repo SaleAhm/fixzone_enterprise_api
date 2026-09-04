@@ -3,10 +3,11 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import {
+  AccountStatus,
   IdentityVerificationStatus,
   Prisma,
   User,
@@ -26,6 +27,11 @@ import {
   FirebaseAuthVerifierService,
   VerifiedFirebaseIdentity,
 } from './firebase-auth-verifier.service';
+import {
+  CompletePasswordResetDto,
+  RequestPasswordResetDto,
+} from './dto/password-reset.dto';
+import { PasswordResetDeliveryService } from './password-reset-delivery.service';
 
 type AuthUser = Pick<
   User,
@@ -37,6 +43,7 @@ type AuthUser = Pick<
   | 'organizationId'
   | 'providerId'
   | 'accountStatus'
+  | 'tokenVersion'
   | 'phoneVerifiedAt'
   | 'emailVerifiedAt'
 > & {
@@ -57,6 +64,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly trustService: TrustService,
     private readonly firebaseAuthVerifier: FirebaseAuthVerifierService,
+    private readonly passwordResetDelivery?: PasswordResetDeliveryService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -123,13 +131,14 @@ export class AuthService {
         organizationId: true,
         providerId: true,
         accountStatus: true,
+        tokenVersion: true,
         phoneVerifiedAt: true,
         emailVerifiedAt: true,
         secureZoneId: true,
       },
     });
 
-    user = await this.trustService.ensureIdentity(user.id);
+    user = { ...user, ...(await this.trustService.ensureIdentity(user.id)) };
 
     return this.issueTokens(user);
   }
@@ -161,18 +170,15 @@ export class AuthService {
 
     if (!user || !user.passwordHash) {
       await this.audit('Failed Login', 'anonymous', {
-        email: dto.email?.toLowerCase().trim() ?? null,
-        phone: dto.phone?.trim() ?? null,
         reason: 'user_not_found',
       });
       await this.trustService.recordLogin({
-        email: dto.email,
         success: false,
         failureReason: 'user_not_found',
         ipAddress: context?.ipAddress,
         userAgent: context?.userAgent,
       });
-      throw new UnauthorizedException('User not found');
+      throw this.genericAuthFailure();
     }
 
     const isPasswordValid = await bcrypt.compare(
@@ -182,43 +188,31 @@ export class AuthService {
 
     if (!isPasswordValid) {
       await this.audit('Failed Login', user.id, {
-        email: user.email,
         reason: 'invalid_password',
       });
       await this.trustService.recordLogin({
         userId: user.id,
-        email: user.email,
         success: false,
         failureReason: 'invalid_password',
         ipAddress: context?.ipAddress,
         userAgent: context?.userAgent,
       });
-      throw new UnauthorizedException('Incorrect password');
+      throw this.genericAuthFailure();
     }
 
-    if (user.accountStatus !== 'ACTIVE') {
+    if (user.accountStatus !== AccountStatus.ACTIVE) {
       await this.audit('Inactive Login Blocked', user.id, {
-        email: user.email,
         role: user.role,
         accountStatus: user.accountStatus,
       });
       await this.trustService.recordLogin({
         userId: user.id,
-        email: user.email,
         success: false,
         failureReason: `account_${user.accountStatus.toLowerCase()}`,
         ipAddress: context?.ipAddress,
         userAgent: context?.userAgent,
       });
-      throw new UnauthorizedException(
-        user.accountStatus === 'PENDING_INVITE'
-          ? 'Invitation has not been accepted'
-          : user.accountStatus === 'PENDING_APPROVAL'
-            ? 'Account is pending approval'
-            : user.accountStatus === 'DEACTIVATED'
-              ? 'Account is inactive'
-              : 'Account is suspended',
-      );
+      throw this.genericAuthFailure();
     }
 
     const requestedProviderId = dto.providerId?.trim();
@@ -228,31 +222,26 @@ export class AuthService {
         user.providerId !== requestedProviderId
       ) {
         await this.audit('Provider Login ID Mismatch', user.id, {
-          email: user.email,
-          requestedProviderId,
-          actualProviderId: user.providerId,
           role: user.role,
+          reason: 'provider_id_mismatch',
         });
         await this.trustService.recordLogin({
           userId: user.id,
-          email: user.email,
           success: false,
           failureReason: 'provider_id_mismatch',
           ipAddress: context?.ipAddress,
           userAgent: context?.userAgent,
         });
-        throw new UnauthorizedException('Invalid provider credentials');
+        throw this.genericAuthFailure();
       }
     }
 
     await this.audit('Login', user.id, {
-      email: user.email,
       role: user.role,
     });
     const identityUser = await this.trustService.ensureIdentity(user.id);
     await this.trustService.recordLogin({
       userId: user.id,
-      email: user.email,
       success: true,
       ipAddress: context?.ipAddress,
       userAgent: context?.userAgent,
@@ -267,6 +256,7 @@ export class AuthService {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      tokenVersion: user.tokenVersion,
       phoneVerifiedAt: user.phoneVerifiedAt,
       emailVerifiedAt: user.emailVerifiedAt,
       secureZoneId: identityUser.secureZoneId,
@@ -433,9 +423,17 @@ export class AuthService {
   }
 
   async firebaseLogin(dto: FirebaseLoginDto) {
-    const firebaseIdentity = await this.firebaseAuthVerifier.verifyIdToken(
-      dto.idToken,
-    );
+    let firebaseIdentity: VerifiedFirebaseIdentity;
+    try {
+      firebaseIdentity = await this.firebaseAuthVerifier.verifyIdToken(
+        dto.idToken,
+      );
+    } catch {
+      await this.audit('Firebase Login Rejected', 'anonymous', {
+        reason: 'firebase_token_invalid',
+      });
+      throw this.genericAuthFailure();
+    }
     const firebaseUid = firebaseIdentity.uid.trim();
     const phone = firebaseIdentity.phoneNumber?.trim() || null;
     const email = firebaseIdentity.email?.toLowerCase().trim() || null;
@@ -448,11 +446,11 @@ export class AuthService {
       'Citizen User';
 
     if (!firebaseUid) {
-      throw new UnauthorizedException('External authentication failed');
+      throw this.genericAuthFailure();
     }
     if (!hasVerifiedPhone && !hasVerifiedEmail) {
       await this.auditFirebaseLoginConflict(firebaseIdentity, 'unverified');
-      throw new UnauthorizedException('External authentication failed');
+      throw this.genericAuthFailure();
     }
     const organizationId = await this.getDefaultCitizenOrganizationId();
 
@@ -476,12 +474,20 @@ export class AuthService {
 
     if (existingUser && existingUser.role !== UserRole.CITIZEN) {
       await this.auditFirebaseLoginConflict(firebaseIdentity, 'role_boundary');
-      throw new UnauthorizedException('External authentication failed');
+      throw this.genericAuthFailure();
+    }
+
+    if (existingUser && existingUser.accountStatus !== AccountStatus.ACTIVE) {
+      await this.auditFirebaseLoginConflict(
+        firebaseIdentity,
+        `account_${existingUser.accountStatus.toLowerCase()}`,
+      );
+      throw this.genericAuthFailure();
     }
 
     if (existingUser?.firebaseUid && existingUser.firebaseUid !== firebaseUid) {
       await this.auditFirebaseLoginConflict(firebaseIdentity, 'uid_mismatch');
-      throw new UnauthorizedException('External authentication failed');
+      throw this.genericAuthFailure();
     }
 
     if (
@@ -510,7 +516,7 @@ export class AuthService {
       });
       if (phoneOwner && phoneOwner.id !== existingUser.id) {
         await this.auditFirebaseLoginConflict(firebaseIdentity, 'phone_owner');
-        throw new UnauthorizedException('External authentication failed');
+        throw this.genericAuthFailure();
       }
     }
 
@@ -524,7 +530,7 @@ export class AuthService {
       });
       if (emailOwner && emailOwner.id !== existingUser.id) {
         await this.auditFirebaseLoginConflict(firebaseIdentity, 'email_owner');
-        throw new UnauthorizedException('External authentication failed');
+        throw this.genericAuthFailure();
       }
     }
 
@@ -567,6 +573,7 @@ export class AuthService {
             organizationId: true,
             providerId: true,
             accountStatus: true,
+            tokenVersion: true,
             phoneVerifiedAt: true,
             emailVerifiedAt: true,
             identityVerificationStatus: true,
@@ -598,6 +605,7 @@ export class AuthService {
             organizationId: true,
             providerId: true,
             accountStatus: true,
+            tokenVersion: true,
             phoneVerifiedAt: true,
             emailVerifiedAt: true,
             identityVerificationStatus: true,
@@ -609,7 +617,7 @@ export class AuthService {
 
     const identityUser = await this.trustService.ensureIdentity(user.id);
 
-    return this.issueTokens({ ...user, ...identityUser });
+    return this.issueTokens({ ...identityUser, ...user });
   }
 
   private async auditFirebaseLoginConflict(
@@ -622,7 +630,7 @@ export class AuthService {
       hasPhoneClaim: Boolean(identity.phoneNumber),
       hasEmailClaim: Boolean(identity.email),
       emailVerified: identity.emailVerified,
-      signInProvider: identity.signInProvider ?? null,
+      providerTypePresent: Boolean(identity.signInProvider),
     });
   }
 
@@ -640,7 +648,7 @@ export class AuthService {
         identity,
         `${existing[0][0]}_${conflicting[0]}`,
       );
-      throw new UnauthorizedException('External authentication failed');
+      throw this.genericAuthFailure();
     }
   }
 
@@ -672,6 +680,98 @@ export class AuthService {
         ? 1
         : 0;
     return Math.max(current, firebaseLevel);
+  }
+
+  async requestPasswordReset(dto: RequestPasswordResetDto) {
+    const filters = [
+      dto.email ? { email: dto.email.toLowerCase().trim() } : null,
+      dto.phone ? { phone: dto.phone.trim() } : null,
+    ].filter(
+      (value): value is { email: string } | { phone: string } => value !== null,
+    );
+    if (!filters.length) {
+      throw new BadRequestException('Email or phone is required');
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { OR: filters } });
+    if (
+      !user ||
+      !user.passwordHash ||
+      user.accountStatus !== AccountStatus.ACTIVE
+    ) {
+      await this.audit('Password Reset Request', user?.id ?? 'anonymous', {
+        outcome: 'accepted_without_delivery',
+        reason: user ? 'ineligible_account' : 'identity_not_found',
+      });
+      return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
+    }
+
+    return this.createPasswordResetToken(user.id, null);
+  }
+
+  async issueAdministrativePasswordReset(
+    targetUserId: string,
+    actorUserId: string,
+  ) {
+    return this.createPasswordResetToken(targetUserId, actorUserId);
+  }
+
+  async completePasswordReset(dto: CompletePasswordResetDto) {
+    const password = dto.password.trim();
+    if (!this.isCompliantPassword(password)) {
+      throw new BadRequestException('Password does not meet requirements');
+    }
+
+    const tokenDigest = this.hashResetToken(dto.token.trim());
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenDigest },
+      include: { user: true },
+    });
+    const now = new Date();
+    if (
+      !record ||
+      record.usedAt ||
+      record.supersededAt ||
+      record.expiresAt <= now ||
+      record.user.accountStatus !== AccountStatus.ACTIVE
+    ) {
+      await this.audit(
+        'Password Reset Rejected',
+        record?.userId ?? 'anonymous',
+        {
+          reason: !record
+            ? 'token_not_found'
+            : record.usedAt
+              ? 'token_reuse'
+              : record.supersededAt
+                ? 'token_superseded'
+                : record.expiresAt <= now
+                  ? 'token_expired'
+                  : 'ineligible_account',
+        },
+      );
+      throw this.genericAuthFailure();
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    await this.prisma.$transaction([
+      this.prisma.passwordResetToken.update({
+        where: { id: record.id },
+        data: { usedAt: now },
+      }),
+      this.prisma.user.update({
+        where: { id: record.userId },
+        data: {
+          passwordHash,
+          tokenVersion: { increment: 1 },
+        },
+      }),
+    ]);
+    await this.audit('Password Reset Completed', record.userId, {
+      resetTokenId: record.id,
+      sessionVersionAdvanced: true,
+    });
+    return { message: 'Password reset completed.' };
   }
 
   async issueTokensForOnboarding(user: AuthUser) {
@@ -722,6 +822,10 @@ export class AuthService {
   }
 
   private async issueTokens(user: AuthUser) {
+    const tokenVersion =
+      Number.isInteger(user.tokenVersion) && user.tokenVersion >= 0
+        ? user.tokenVersion
+        : 0;
     const payload = {
       id: user.id,
       sub: user.id,
@@ -732,6 +836,7 @@ export class AuthService {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      tokenVersion,
       phoneVerifiedAt: user.phoneVerifiedAt,
       emailVerifiedAt: user.emailVerifiedAt,
       secureZoneId: user.secureZoneId,
@@ -752,6 +857,7 @@ export class AuthService {
         organizationId: user.organizationId,
         providerId: user.providerId,
         accountStatus: user.accountStatus,
+        tokenVersion,
         phoneVerifiedAt: user.phoneVerifiedAt,
         emailVerifiedAt: user.emailVerifiedAt,
         secureZoneId: user.secureZoneId,
@@ -766,5 +872,85 @@ export class AuthService {
 
   private safeHash(value: string) {
     return createHash('sha256').update(value).digest('hex').slice(0, 24);
+  }
+
+  private async createPasswordResetToken(
+    targetUserId: string,
+    actorUserId: string | null,
+  ) {
+    const token = randomBytes(32).toString('base64url');
+    const tokenDigest = this.hashResetToken(token);
+    const expiresAt = new Date(Date.now() + this.passwordResetTtlMs());
+    const delivery = await this.passwordResetDelivery?.deliver({
+      userId: targetUserId,
+      token,
+      expiresAt,
+    });
+    const deliveryStatus = delivery?.status ?? 'DELIVERY_UNAVAILABLE';
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.passwordResetToken.updateMany({
+        where: {
+          userId: targetUserId,
+          usedAt: null,
+          supersededAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { supersededAt: now },
+      });
+      await tx.passwordResetToken.create({
+        data: {
+          userId: targetUserId,
+          tokenDigest,
+          expiresAt,
+          requestedById: actorUserId,
+          deliveryStatus,
+        },
+      });
+    });
+
+    await this.audit('Password Reset Requested', actorUserId ?? targetUserId, {
+      targetUserId,
+      administrativeActor: actorUserId !== null,
+      deliveryStatus,
+      expiresAt: expiresAt.toISOString(),
+    });
+    return this.passwordResetRequestResponse(deliveryStatus);
+  }
+
+  private passwordResetRequestResponse(deliveryStatus: string) {
+    return {
+      message:
+        'If delivery is configured, reset instructions will be sent. No password was changed.',
+      delivery: {
+        configured: deliveryStatus !== 'DELIVERY_UNAVAILABLE',
+        status: deliveryStatus,
+      },
+    };
+  }
+
+  private hashResetToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private passwordResetTtlMs() {
+    const minutes = Number(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES ?? 15);
+    const boundedMinutes =
+      Number.isFinite(minutes) && minutes > 0 && minutes <= 60 ? minutes : 15;
+    return boundedMinutes * 60_000;
+  }
+
+  private isCompliantPassword(password: string) {
+    return (
+      password.length >= 8 &&
+      /[a-z]/.test(password) &&
+      /[A-Z]/.test(password) &&
+      /\d/.test(password)
+    );
+  }
+
+  private genericAuthFailure() {
+    return new UnauthorizedException('Authentication failed');
   }
 }

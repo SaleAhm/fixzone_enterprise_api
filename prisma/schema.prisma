@@ -425,6 +425,7 @@ model User {
   firebaseUid                String?                    @unique
   providerId                 String?                    @unique
   passwordHash               String?
+  tokenVersion               Int                        @default(0)
   fullName                   String
   role                       UserRole
   accountStatus              AccountStatus              @default(ACTIVE)
@@ -480,15 +481,35 @@ model User {
   revokedInternalRoles    InternalRoleAssignment[]    @relation("InternalRoleAssignmentRevokedBy")
   requestedApprovals      PrivilegedApprovalRequest[] @relation("PrivilegedApprovalRequester")
   decidedApprovals        PrivilegedApprovalRequest[] @relation("PrivilegedApprovalDecider")
+  passwordResetTokens      PasswordResetToken[]
 
   @@index([organizationId])
   @@index([secureZoneId])
   @@index([identityVerificationStatus])
   @@index([identityType])
   @@index([accountStatus])
+  @@index([tokenVersion])
   @@index([isDemo])
   @@index([demoBatchId])
   @@index([demoScenario])
+}
+
+model PasswordResetToken {
+  id             String    @id @default(cuid())
+  userId         String
+  tokenDigest    String    @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  supersededAt   DateTime?
+  requestedById  String?
+  deliveryStatus String
+  createdAt      DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, usedAt, supersededAt, expiresAt])
+  @@index([expiresAt])
 }
 
 model KycSubmission {

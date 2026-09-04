@@ -76,6 +76,7 @@ describe('Platform Configuration (e2e)', () => {
       fullName: superAdmin.fullName,
       role: superAdmin.role,
       organizationId: superAdmin.organizationId,
+      tokenVersion: superAdmin.tokenVersion,
     });
 
     return { organization, provider, token };
@@ -351,6 +352,7 @@ describe('Platform Configuration (e2e)', () => {
       fullName: hunslowAdmin.fullName,
       role: hunslowAdmin.role,
       organizationId: hunslowAdmin.organizationId,
+      tokenVersion: hunslowAdmin.tokenVersion,
     });
     const otherToken = await jwtService.signAsync({
       sub: otherAdmin.id,
@@ -358,6 +360,7 @@ describe('Platform Configuration (e2e)', () => {
       fullName: otherAdmin.fullName,
       role: otherAdmin.role,
       organizationId: otherAdmin.organizationId,
+      tokenVersion: otherAdmin.tokenVersion,
     });
 
     const summaryRes = await request(app.getHttpServer())

@@ -67,6 +67,7 @@ describe('Enterprise Services Framework (e2e)', () => {
       fullName: user.fullName,
       role: user.role,
       organizationId: user.organizationId,
+      tokenVersion: user.tokenVersion,
     });
   }
 

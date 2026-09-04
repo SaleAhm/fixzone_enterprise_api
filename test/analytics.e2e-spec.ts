@@ -233,6 +233,7 @@ describe('Executive Analytics (e2e)', () => {
     fullName: string;
     role: UserRole;
     organizationId: string | null;
+    tokenVersion: number;
   }) {
     return jwtService.signAsync({
       sub: user.id,
@@ -240,6 +241,7 @@ describe('Executive Analytics (e2e)', () => {
       fullName: user.fullName,
       role: user.role,
       organizationId: user.organizationId,
+      tokenVersion: user.tokenVersion,
     });
   }
 

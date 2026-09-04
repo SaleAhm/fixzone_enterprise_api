@@ -1,5 +1,6 @@
 import { UserRole } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
+import { createHash } from 'crypto';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TrustService } from '../trust/trust.service';
@@ -8,6 +9,7 @@ import {
   FirebaseAuthVerifierService,
   VerifiedFirebaseIdentity,
 } from './firebase-auth-verifier.service';
+import { PasswordResetDeliveryService } from './password-reset-delivery.service';
 
 type PrismaAuthMock = {
   organization?: {
@@ -379,6 +381,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
       organizationId: 'org-1',
       providerId: null,
       accountStatus: 'ACTIVE',
+      tokenVersion: 0,
       phoneVerifiedAt: null,
       emailVerifiedAt: null,
       secureZoneId: 'SZ-1',
@@ -485,14 +488,14 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
   it('rejects missing tokens before user lookup', async () => {
     const { service, prisma, firebaseVerifier } = createFirebaseLoginService({
-      verifyError: Object.assign(new Error('missing'), {
+      verifyError: Object.assign(new Error('Authentication failed'), {
         response: { message: 'Firebase ID token is required' },
         status: 401,
       }),
     });
 
     await expect(service.firebaseLogin({ idToken: '' })).rejects.toThrow(
-      'missing',
+      'Authentication failed',
     );
     expect(firebaseVerifier.verifyIdToken).toHaveBeenCalledWith('');
     expect(prisma.user.findUnique).not.toHaveBeenCalled();
@@ -500,17 +503,14 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
   it('rejects invalid expired or revoked tokens without issuing a JWT', async () => {
     const { service, jwtService } = createFirebaseLoginService({
-      verifyError: Object.assign(
-        new Error('Firebase ID token could not be verified'),
-        {
-          status: 401,
-        },
-      ),
+      verifyError: Object.assign(new Error('Authentication failed'), {
+        status: 401,
+      }),
     });
 
     await expect(
       service.firebaseLogin({ idToken: 'expired-or-revoked' }),
-    ).rejects.toThrow('Firebase ID token could not be verified');
+    ).rejects.toThrow('Authentication failed');
     expect(jwtService.signAsync).not.toHaveBeenCalled();
   });
 
@@ -675,7 +675,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
     await expect(
       service.firebaseLogin({ idToken: 'email-only-token' }),
-    ).rejects.toThrow('External authentication failed');
+    ).rejects.toThrow('Authentication failed');
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
@@ -694,7 +694,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
         idToken: 'unverified-email-registration-token',
         intent: 'registration',
       }),
-    ).rejects.toThrow('External authentication failed');
+    ).rejects.toThrow('Authentication failed');
     expect(prisma.user.findUnique).not.toHaveBeenCalled();
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
@@ -767,7 +767,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
     await expect(
       service.firebaseLogin({ idToken: 'verified-token' }),
-    ).rejects.toThrow('External authentication failed');
+    ).rejects.toThrow('Authentication failed');
     const auditArg = firstUserWriteArg(prisma.demoAuditLog.create);
     expect(auditArg.data).toMatchObject({
       action: 'Firebase Login Rejected',
@@ -803,7 +803,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
         idToken: 'verified-email-token',
         intent: 'registration',
       }),
-    ).rejects.toThrow('External authentication failed');
+    ).rejects.toThrow('Authentication failed');
     expect(prisma.user.update).not.toHaveBeenCalled();
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
@@ -857,7 +857,7 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
     await expect(
       service.firebaseLogin({ idToken: 'verified-token' }),
-    ).rejects.toThrow('External authentication failed');
+    ).rejects.toThrow('Authentication failed');
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
@@ -881,15 +881,351 @@ describe('AuthService Firebase citizen login trust boundary', () => {
 
   it('fails closed when Firebase verification configuration is unavailable', async () => {
     const { service, prisma } = createFirebaseLoginService({
-      verifyError: Object.assign(
-        new Error('Firebase authentication verification is not configured'),
-        { status: 401 },
-      ),
+      verifyError: Object.assign(new Error('Authentication failed'), {
+        status: 401,
+      }),
     });
 
     await expect(service.firebaseLogin({ idToken: 'token' })).rejects.toThrow(
-      'Firebase authentication verification is not configured',
+      'Authentication failed',
     );
     expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['PENDING_INVITE', 'PENDING_APPROVAL', 'SUSPENDED', 'DEACTIVATED'])(
+    'rejects existing non-active Firebase citizen %s before linking',
+    async (accountStatus) => {
+      const existing = user({
+        id: 'existing-user',
+        phone: '+2348000000001',
+        firebaseUid: null,
+        accountStatus,
+      });
+      const { service, prisma, jwtService } = createFirebaseLoginService({
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(existing)
+          .mockResolvedValueOnce(null),
+      });
+
+      await expect(
+        service.firebaseLogin({ idToken: 'verified-token' }),
+      ).rejects.toThrow('Authentication failed');
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(jwtService.signAsync).not.toHaveBeenCalled();
+    },
+  );
+
+  it('puts tokenVersion into newly issued JWTs', async () => {
+    const existing = user({
+      id: 'existing-user',
+      firebaseUid: 'firebase-uid-1',
+      phone: '+2348000000001',
+      tokenVersion: 7,
+    });
+    const { service, jwtService } = createFirebaseLoginService({
+      findUnique: jest
+        .fn()
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValueOnce(null),
+      updateUser: jest.fn().mockImplementation(({ data }) =>
+        Promise.resolve({
+          ...existing,
+          ...data,
+        }),
+      ),
+    });
+
+    await service.firebaseLogin({ idToken: 'verified-token' });
+
+    expect(jwtService.signAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenVersion: 7 }),
+      expect.any(Object),
+    );
+  });
+});
+
+describe('AuthService secure password reset foundation', () => {
+  const deliveredTokens: string[] = [];
+
+  type ResetUserFixture = {
+    id: string;
+    email: string;
+    phone: string | null;
+    fullName: string;
+    role: UserRole;
+    organizationId: string | null;
+    providerId: string | null;
+    accountStatus: string;
+    tokenVersion: number;
+    passwordHash: string;
+    phoneVerifiedAt: Date | null;
+    emailVerifiedAt: Date | null;
+  };
+
+  type ResetTokenFixture = {
+    id: string;
+    userId: string;
+    usedAt: Date | null;
+    supersededAt: Date | null;
+    expiresAt: Date;
+    user: {
+      id?: string;
+      accountStatus: string;
+    };
+  };
+
+  type PasswordResetTokenCreateArgs = {
+    data: {
+      tokenDigest: string;
+      expiresAt: Date;
+    };
+  };
+
+  type PasswordResetTokenFindUniqueArgs = {
+    where: {
+      tokenDigest: string;
+    };
+  };
+
+  type SupersedeArgs = {
+    data?: {
+      supersededAt?: unknown;
+    };
+  };
+
+  type MarkUsedArgs = {
+    where?: {
+      id?: string;
+    };
+    data?: {
+      usedAt?: unknown;
+    };
+  };
+
+  type PasswordUpdateArgs = {
+    data?: {
+      tokenVersion?: {
+        increment?: number;
+      };
+    };
+  };
+
+  type TransactionCallback = (tx: PasswordResetPrismaMock) => Promise<unknown>;
+
+  type PasswordResetPrismaMock = {
+    user: {
+      findFirst: jest.Mock<Promise<ResetUserFixture | undefined>, []>;
+      update: jest.Mock<Promise<ResetUserFixture>, [unknown]>;
+    };
+    passwordResetToken: {
+      create: jest.Mock<
+        Promise<{ id: string }>,
+        [PasswordResetTokenCreateArgs]
+      >;
+      updateMany: jest.Mock<Promise<{ count: number }>, [unknown]>;
+      findUnique: jest.Mock<
+        Promise<ResetTokenFixture | null>,
+        [PasswordResetTokenFindUniqueArgs]
+      >;
+      update: jest.Mock<Promise<{ id: string }>, [unknown]>;
+    };
+    demoAuditLog: {
+      create: jest.Mock<Promise<Record<string, never>>, [unknown]>;
+    };
+    $transaction: jest.Mock<Promise<unknown>, [unknown]>;
+  };
+
+  function resetDigest(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  function isTransactionCallback(value: unknown): value is TransactionCallback {
+    return typeof value === 'function';
+  }
+
+  function createPasswordResetService(
+    options: {
+      user?: ResetUserFixture;
+      token?: ResetTokenFixture | null;
+      delivery?: PasswordResetDeliveryService | null;
+    } = {},
+  ) {
+    deliveredTokens.length = 0;
+    const user = options.user ?? {
+      id: 'user-1',
+      email: 'reset@example.test',
+      phone: null,
+      fullName: 'Reset User',
+      role: UserRole.CITIZEN,
+      organizationId: null,
+      providerId: null,
+      accountStatus: 'ACTIVE',
+      tokenVersion: 2,
+      passwordHash: 'hash',
+      phoneVerifiedAt: null,
+      emailVerifiedAt: null,
+    };
+    const prisma: PasswordResetPrismaMock = {
+      user: {
+        findFirst: jest.fn<Promise<ResetUserFixture | undefined>, []>(() =>
+          Promise.resolve(user),
+        ),
+        update: jest.fn<Promise<ResetUserFixture>, [unknown]>(() =>
+          Promise.resolve({ ...user, tokenVersion: 3 }),
+        ),
+      },
+      passwordResetToken: {
+        create: jest.fn<
+          Promise<{ id: string }>,
+          [PasswordResetTokenCreateArgs]
+        >(() => Promise.resolve({ id: 'reset-token-1' })),
+        updateMany: jest.fn<Promise<{ count: number }>, [unknown]>(() =>
+          Promise.resolve({ count: 1 }),
+        ),
+        findUnique: jest.fn<
+          Promise<ResetTokenFixture | null>,
+          [PasswordResetTokenFindUniqueArgs]
+        >(() => Promise.resolve(options.token ?? null)),
+        update: jest.fn<Promise<{ id: string }>, [unknown]>(() =>
+          Promise.resolve({ id: 'reset-token-1' }),
+        ),
+      },
+      demoAuditLog: {
+        create: jest.fn<Promise<Record<string, never>>, [unknown]>(() =>
+          Promise.resolve({}),
+        ),
+      },
+      $transaction: jest.fn<Promise<unknown>, [unknown]>((arg) =>
+        isTransactionCallback(arg) ? arg(prisma) : Promise.resolve(undefined),
+      ),
+    };
+    const delivery =
+      options.delivery === undefined
+        ? ({
+            deliver: jest.fn((request: { token: string }) => {
+              deliveredTokens.push(request.token);
+              return Promise.resolve({
+                delivered: true,
+                status: 'DELIVERY_ACCEPTED',
+              });
+            }),
+          } satisfies PasswordResetDeliveryService)
+        : options.delivery;
+    const service = new AuthService(
+      { signAsync: jest.fn() } as unknown as JwtService,
+      prisma as unknown as PrismaService,
+      {} as TrustService,
+      { verifyIdToken: jest.fn() } as unknown as FirebaseAuthVerifierService,
+      delivery ?? undefined,
+    );
+    return { service, prisma };
+  }
+
+  it('does not expose reset token password value or URL in request responses', async () => {
+    const { service, prisma } = createPasswordResetService();
+
+    const response = await service.requestPasswordReset({
+      email: 'reset@example.test',
+    });
+
+    expect(response).not.toHaveProperty('token');
+    expect(response).not.toHaveProperty('resetUrl');
+    expect(JSON.stringify(response)).not.toContain(deliveredTokens[0]);
+    expect(deliveredTokens).toHaveLength(1);
+    const createArg = prisma.passwordResetToken.create.mock.calls[0][0];
+    expect(createArg.data.tokenDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(createArg.data.tokenDigest).not.toBe(deliveredTokens[0]);
+    expect(createArg.data.expiresAt).toBeInstanceOf(Date);
+  });
+
+  it('supersedes older active tokens when issuing a newer token', async () => {
+    const { service, prisma } = createPasswordResetService();
+
+    await service.requestPasswordReset({ email: 'reset@example.test' });
+    await service.requestPasswordReset({ email: 'reset@example.test' });
+
+    expect(deliveredTokens[0]).not.toBe(deliveredTokens[1]);
+    const supersedeArg = prisma.passwordResetToken.updateMany.mock
+      .calls[0][0] as SupersedeArgs;
+    expect(supersedeArg.data?.supersededAt).toBeInstanceOf(Date);
+  });
+
+  it('fails closed and truthfully when delivery is unavailable', async () => {
+    const { service } = createPasswordResetService({
+      delivery: null,
+    });
+
+    const response = await service.requestPasswordReset({
+      email: 'reset@example.test',
+    });
+
+    expect(response.delivery).toEqual({
+      configured: false,
+      status: 'DELIVERY_UNAVAILABLE',
+    });
+    expect(response.message).toContain('If delivery is configured');
+  });
+
+  it('marks reset tokens single-use and advances tokenVersion on completion', async () => {
+    const token = {
+      id: 'reset-token-1',
+      userId: 'user-1',
+      usedAt: null,
+      supersededAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      user: {
+        id: 'user-1',
+        accountStatus: 'ACTIVE',
+      },
+    };
+    const { service, prisma } = createPasswordResetService({ token });
+    const digest = resetDigest('plain-reset-token');
+    prisma.passwordResetToken.findUnique.mockImplementation(({ where }) =>
+      Promise.resolve(where.tokenDigest === digest ? token : null),
+    );
+
+    await service.completePasswordReset({
+      token: 'plain-reset-token',
+      password: 'NewPassword1',
+    });
+
+    const markUsedArg = prisma.passwordResetToken.update.mock
+      .calls[0][0] as MarkUsedArgs;
+    expect(markUsedArg.where?.id).toBe('reset-token-1');
+    expect(markUsedArg.data?.usedAt).toBeInstanceOf(Date);
+    const passwordUpdateArg = prisma.user.update.mock
+      .calls[0][0] as PasswordUpdateArgs;
+    expect(passwordUpdateArg.data?.tokenVersion?.increment).toBe(1);
+  });
+
+  it.each([
+    { usedAt: new Date(), supersededAt: null },
+    { usedAt: null, supersededAt: new Date() },
+    {
+      usedAt: null,
+      supersededAt: null,
+      expiresAt: new Date(Date.now() - 60_000),
+    },
+  ])('rejects unusable reset token states', async (state) => {
+    const token = {
+      id: 'reset-token-1',
+      userId: 'user-1',
+      usedAt: state.usedAt,
+      supersededAt: state.supersededAt,
+      expiresAt: state.expiresAt ?? new Date(Date.now() + 60_000),
+      user: { accountStatus: 'ACTIVE' },
+    };
+    const { service } = createPasswordResetService({ token });
+
+    await expect(
+      service.completePasswordReset({
+        token: 'plain-reset-token',
+        password: 'NewPassword1',
+      }),
+    ).rejects.toThrow('Authentication failed');
   });
 });

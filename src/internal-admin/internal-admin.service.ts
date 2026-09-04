@@ -500,18 +500,20 @@ export class InternalAdminService {
     });
     if (!target) throw new NotFoundException('Administrator not found');
     const revokedAt = new Date().toISOString();
-    await this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: targetUserId },
       data: {
+        tokenVersion: { increment: 1 },
         profileData: this.safeJson({
           ...this.objectRecord(target.profileData),
           sessionRevocation: {
             requestedAt: revokedAt,
             reason: dto.reason ?? null,
-            enforcement: 'blocked_until_token_version_foundation',
+            enforcement: 'token_version_advanced',
           },
         }),
       },
+      select: { tokenVersion: true },
     });
     await this.audit(
       'Internal Admin Sessions Revocation Requested',
@@ -523,17 +525,18 @@ export class InternalAdminService {
         metadata: {
           revokedAt,
           reason: dto.reason ?? null,
-          enforcement: 'blocked_until_token_version_foundation',
+          enforcement: 'token_version_advanced',
+          tokenVersion: updated.tokenVersion,
         },
       },
     );
     return {
       targetUserId,
       revokedAt,
-      enforced: false,
-      state: 'blocked_until_token_version_foundation',
-      fallbackMessage:
-        'Session revocation was recorded, but active token invalidation requires the token-version foundation.',
+      enforced: true,
+      state: 'token_version_advanced',
+      tokenVersion: updated.tokenVersion,
+      message: 'All previously issued FixZone sessions are revoked.',
     };
   }
 

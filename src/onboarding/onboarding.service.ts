@@ -131,6 +131,13 @@ export class OnboardingService {
   }
 
   async registerOrganization(dto: OrganizationRegisterDto) {
+    if (!this.publicOrganizationRegistrationEnabled()) {
+      await this.auditPublicOrganizationRegistrationDenied(dto);
+      throw new BadRequestException(
+        'Organization onboarding is not available through this route.',
+      );
+    }
+
     if (dto.password !== dto.confirmPassword) {
       throw new BadRequestException('Passwords do not match');
     }
@@ -267,5 +274,28 @@ export class OnboardingService {
       default:
         return OrganizationType.OTHER;
     }
+  }
+
+  private publicOrganizationRegistrationEnabled() {
+    return process.env.ENABLE_PUBLIC_ORGANIZATION_REGISTRATION === 'true';
+  }
+
+  private async auditPublicOrganizationRegistrationDenied(
+    dto: OrganizationRegisterDto,
+  ) {
+    await this.prisma.demoAuditLog.create({
+      data: {
+        action: 'Public Organization Registration Denied',
+        actorUserId: 'anonymous',
+        metadata: {
+          reason: 'public_org_registration_disabled',
+          hasOwnerEmail: Boolean(dto.ownerEmail),
+          hasOwnerPhone: Boolean(dto.ownerPhone),
+          hasContactEmail: Boolean(dto.contactEmail),
+          hasContactPhone: Boolean(dto.contactPhone),
+          organizationClass: dto.organizationClass ?? null,
+        },
+      },
+    });
   }
 }

@@ -13,6 +13,7 @@ type JwtPayload = {
   fullName?: string | null;
   role: UserRole;
   organizationId?: string | null;
+  tokenVersion?: unknown;
 };
 
 @Injectable()
@@ -39,6 +40,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         organizationId: true,
         providerId: true,
         accountStatus: true,
+        tokenVersion: true,
         phoneVerifiedAt: true,
         emailVerifiedAt: true,
         providerEngagementType: true,
@@ -63,7 +65,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       },
     });
 
-    if (!user || !this.isEligibleAccountStatus(user.accountStatus)) {
+    if (
+      !user ||
+      !this.isEligibleAccountStatus(user.accountStatus) ||
+      !this.isCurrentTokenVersion(payload.tokenVersion, user.tokenVersion)
+    ) {
       throw new UnauthorizedException('Unauthorized');
     }
 
@@ -80,6 +86,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       organizationId: user.organizationId,
       providerId: user.providerId,
       accountStatus: user.accountStatus,
+      tokenVersion: user.tokenVersion,
       phoneVerifiedAt: user.phoneVerifiedAt,
       emailVerifiedAt: user.emailVerifiedAt,
       providerEngagementType: user.providerEngagementType,
@@ -98,5 +105,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   private isEligibleAccountStatus(status: unknown): status is AccountStatus {
     return status === AccountStatus.ACTIVE;
+  }
+
+  private isCurrentTokenVersion(claimVersion: unknown, storedVersion: number) {
+    return (
+      Number.isInteger(claimVersion) &&
+      claimVersion === storedVersion &&
+      storedVersion >= 0
+    );
   }
 }

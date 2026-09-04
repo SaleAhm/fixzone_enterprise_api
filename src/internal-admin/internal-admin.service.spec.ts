@@ -169,12 +169,13 @@ describe('InternalAdminService', () => {
     ).rejects.toThrow(ForbiddenException);
   });
 
-  it('records session revocation as blocked readiness until token versions exist', async () => {
+  it('advances tokenVersion when revoking all sessions', async () => {
     const prisma = mockPrisma();
     prisma.user.findUnique.mockResolvedValue({
       id: 'security-target',
       profileData: {},
     });
+    prisma.user.update.mockResolvedValue({ tokenVersion: 4 });
     const service = new InternalAdminService(prisma as never);
 
     const result = await service.revokeSessions(
@@ -189,8 +190,14 @@ describe('InternalAdminService', () => {
 
     expect(result).toEqual(
       expect.objectContaining({
-        enforced: false,
-        state: 'blocked_until_token_version_foundation',
+        enforced: true,
+        state: 'token_version_advanced',
+        tokenVersion: 4,
+      }),
+    );
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ tokenVersion: { increment: 1 } }),
       }),
     );
   });
