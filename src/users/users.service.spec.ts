@@ -91,11 +91,7 @@ describe('UsersService lifecycle controls', () => {
     const authService = {
       issueAdministrativePasswordReset: jest.fn().mockResolvedValue({
         message:
-          'If delivery is configured, reset instructions will be sent. No password was changed.',
-        delivery: {
-          configured: false,
-          status: 'DELIVERY_UNAVAILABLE',
-        },
+          'If the account is eligible and delivery is available, recovery instructions will be sent. No password was changed.',
       }),
     };
     const service = new UsersService(

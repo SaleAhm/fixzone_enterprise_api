@@ -1019,6 +1019,7 @@ describe('AuthService secure password reset foundation', () => {
   type PasswordResetPrismaMock = {
     user: {
       findFirst: jest.Mock<Promise<ResetUserFixture | undefined>, []>;
+      findUnique: jest.Mock<Promise<ResetUserFixture | undefined>, [unknown]>;
       update: jest.Mock<Promise<ResetUserFixture>, [unknown]>;
     };
     passwordResetToken: {
@@ -1027,6 +1028,7 @@ describe('AuthService secure password reset foundation', () => {
         [PasswordResetTokenCreateArgs]
       >;
       updateMany: jest.Mock<Promise<{ count: number }>, [unknown]>;
+      count: jest.Mock<Promise<number>, [unknown]>;
       findUnique: jest.Mock<
         Promise<ResetTokenFixture | null>,
         [PasswordResetTokenFindUniqueArgs]
@@ -1049,33 +1051,39 @@ describe('AuthService secure password reset foundation', () => {
 
   function createPasswordResetService(
     options: {
-      user?: ResetUserFixture;
+      user?: ResetUserFixture | null;
       token?: ResetTokenFixture | null;
       delivery?: PasswordResetDeliveryService | null;
     } = {},
   ) {
     deliveredTokens.length = 0;
-    const user = options.user ?? {
-      id: 'user-1',
-      email: 'reset@example.test',
-      phone: null,
-      fullName: 'Reset User',
-      role: UserRole.CITIZEN,
-      organizationId: null,
-      providerId: null,
-      accountStatus: 'ACTIVE',
-      tokenVersion: 2,
-      passwordHash: 'hash',
-      phoneVerifiedAt: null,
-      emailVerifiedAt: null,
-    };
+    const user =
+      options.user === undefined
+        ? {
+            id: 'user-1',
+            email: 'reset@example.test',
+            phone: null,
+            fullName: 'Reset User',
+            role: UserRole.CITIZEN,
+            organizationId: null,
+            providerId: null,
+            accountStatus: 'ACTIVE',
+            tokenVersion: 2,
+            passwordHash: 'hash',
+            phoneVerifiedAt: null,
+            emailVerifiedAt: null,
+          }
+        : options.user;
     const prisma: PasswordResetPrismaMock = {
       user: {
         findFirst: jest.fn<Promise<ResetUserFixture | undefined>, []>(() =>
-          Promise.resolve(user),
+          Promise.resolve(user ?? undefined),
+        ),
+        findUnique: jest.fn<Promise<ResetUserFixture | undefined>, [unknown]>(
+          () => Promise.resolve(user ?? undefined),
         ),
         update: jest.fn<Promise<ResetUserFixture>, [unknown]>(() =>
-          Promise.resolve({ ...user, tokenVersion: 3 }),
+          Promise.resolve({ ...(user as ResetUserFixture), tokenVersion: 3 }),
         ),
       },
       passwordResetToken: {
@@ -1086,6 +1094,7 @@ describe('AuthService secure password reset foundation', () => {
         updateMany: jest.fn<Promise<{ count: number }>, [unknown]>(() =>
           Promise.resolve({ count: 1 }),
         ),
+        count: jest.fn<Promise<number>, [unknown]>(() => Promise.resolve(0)),
         findUnique: jest.fn<
           Promise<ResetTokenFixture | null>,
           [PasswordResetTokenFindUniqueArgs]
@@ -1106,14 +1115,20 @@ describe('AuthService secure password reset foundation', () => {
     const delivery =
       options.delivery === undefined
         ? ({
+            isEnabled: jest.fn(() => true),
+            policy: jest.fn(() => ({
+              cooldownSeconds: 120,
+              dailyLimit: 5,
+            })),
             deliver: jest.fn((request: { token: string }) => {
               deliveredTokens.push(request.token);
               return Promise.resolve({
                 delivered: true,
                 status: 'DELIVERY_ACCEPTED',
+                attempts: 1,
               });
             }),
-          } satisfies PasswordResetDeliveryService)
+          } as unknown as PasswordResetDeliveryService)
         : options.delivery;
     const service = new AuthService(
       { signAsync: jest.fn() } as unknown as JwtService,
@@ -1134,6 +1149,7 @@ describe('AuthService secure password reset foundation', () => {
 
     expect(response).not.toHaveProperty('token');
     expect(response).not.toHaveProperty('resetUrl');
+    expect(response).not.toHaveProperty('delivery');
     expect(JSON.stringify(response)).not.toContain(deliveredTokens[0]);
     expect(deliveredTokens).toHaveLength(1);
     const createArg = prisma.passwordResetToken.create.mock.calls[0][0];
@@ -1155,7 +1171,7 @@ describe('AuthService secure password reset foundation', () => {
   });
 
   it('fails closed and truthfully when delivery is unavailable', async () => {
-    const { service } = createPasswordResetService({
+    const { service, prisma } = createPasswordResetService({
       delivery: null,
     });
 
@@ -1163,11 +1179,70 @@ describe('AuthService secure password reset foundation', () => {
       email: 'reset@example.test',
     });
 
-    expect(response.delivery).toEqual({
-      configured: false,
-      status: 'DELIVERY_UNAVAILABLE',
+    expect(response).not.toHaveProperty('delivery');
+    expect(response.message).toContain('If the account is eligible');
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown account reset requests enumeration-safe', async () => {
+    const { service, prisma } = createPasswordResetService({
+      user: null,
     });
-    expect(response.message).toContain('If delivery is configured');
+
+    const response = await service.requestPasswordReset({
+      email: 'missing@example.test',
+    });
+
+    expect(response).toEqual({
+      message:
+        'If the account is eligible and delivery is available, recovery instructions will be sent. No password was changed.',
+    });
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+  });
+
+  it('does not issue new tokens when cooldown applies', async () => {
+    const { service, prisma } = createPasswordResetService();
+    prisma.passwordResetToken.count.mockResolvedValueOnce(1);
+
+    await service.requestPasswordReset({ email: 'reset@example.test' });
+
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+    expect(deliveredTokens).toHaveLength(0);
+  });
+
+  it('does not issue new tokens when daily cap applies', async () => {
+    const { service, prisma } = createPasswordResetService();
+    prisma.passwordResetToken.count
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(5);
+
+    await service.requestPasswordReset({ email: 'reset@example.test' });
+
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+    expect(deliveredTokens).toHaveLength(0);
+  });
+
+  it('supersedes created tokens when delivery fails', async () => {
+    const { service, prisma } = createPasswordResetService({
+      delivery: {
+        isEnabled: jest.fn(() => true),
+        policy: jest.fn(() => ({ cooldownSeconds: 120, dailyLimit: 5 })),
+        deliver: jest.fn(() =>
+          Promise.resolve({
+            delivered: false,
+            status: 'DELIVERY_FAILED',
+            attempts: 1,
+            errorCategory: 'permanent',
+          }),
+        ),
+      } as unknown as PasswordResetDeliveryService,
+    });
+
+    await service.requestPasswordReset({ email: 'reset@example.test' });
+
+    const deliveryUpdate = prisma.passwordResetToken.update.mock
+      .calls[0][0] as SupersedeArgs;
+    expect(deliveryUpdate.data?.supersededAt).toBeInstanceOf(Date);
   });
 
   it('marks reset tokens single-use and advances tokenVersion on completion', async () => {

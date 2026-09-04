@@ -31,7 +31,10 @@ import {
   CompletePasswordResetDto,
   RequestPasswordResetDto,
 } from './dto/password-reset.dto';
-import { PasswordResetDeliveryService } from './password-reset-delivery.service';
+import {
+  PasswordResetDeliveryService,
+  redactedResetIdentifier,
+} from './password-reset-delivery.service';
 
 type AuthUser = Pick<
   User,
@@ -702,6 +705,7 @@ export class AuthService {
       await this.audit('Password Reset Request', user?.id ?? 'anonymous', {
         outcome: 'accepted_without_delivery',
         reason: user ? 'ineligible_account' : 'identity_not_found',
+        identifierHash: redactedResetIdentifier(dto.email ?? dto.phone),
       });
       return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
     }
@@ -878,16 +882,67 @@ export class AuthService {
     targetUserId: string,
     actorUserId: string | null,
   ) {
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: {
+        id: true,
+        email: true,
+        passwordHash: true,
+        accountStatus: true,
+      },
+    });
+    if (
+      !target ||
+      !target.passwordHash ||
+      target.accountStatus !== AccountStatus.ACTIVE
+    ) {
+      await this.audit(
+        'Password Reset Requested',
+        actorUserId ?? targetUserId,
+        {
+          targetUserId,
+          administrativeActor: actorUserId !== null,
+          deliveryStatus: 'DELIVERY_UNAVAILABLE',
+          outcome: target ? 'ineligible_account' : 'identity_not_found',
+        },
+      );
+      return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
+    }
+
+    if (!this.passwordResetDelivery?.isEnabled() || !target.email) {
+      await this.audit(
+        'Password Reset Requested',
+        actorUserId ?? targetUserId,
+        {
+          targetUserId,
+          administrativeActor: actorUserId !== null,
+          deliveryStatus: 'DELIVERY_UNAVAILABLE',
+          outcome: target.email ? 'delivery_disabled' : 'email_unavailable',
+        },
+      );
+      return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
+    }
+
+    const limited = await this.passwordResetRateLimited(targetUserId);
+    if (limited) {
+      await this.audit(
+        'Password Reset Requested',
+        actorUserId ?? targetUserId,
+        {
+          targetUserId,
+          administrativeActor: actorUserId !== null,
+          deliveryStatus: 'DELIVERY_UNAVAILABLE',
+          outcome: limited,
+        },
+      );
+      return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
+    }
+
     const token = randomBytes(32).toString('base64url');
     const tokenDigest = this.hashResetToken(token);
     const expiresAt = new Date(Date.now() + this.passwordResetTtlMs());
-    const delivery = await this.passwordResetDelivery?.deliver({
-      userId: targetUserId,
-      token,
-      expiresAt,
-    });
-    const deliveryStatus = delivery?.status ?? 'DELIVERY_UNAVAILABLE';
     const now = new Date();
+    let resetTokenId = '';
 
     await this.prisma.$transaction(async (tx) => {
       await tx.passwordResetToken.updateMany({
@@ -899,16 +954,46 @@ export class AuthService {
         },
         data: { supersededAt: now },
       });
-      await tx.passwordResetToken.create({
+      const created = await tx.passwordResetToken.create({
         data: {
           userId: targetUserId,
           tokenDigest,
           expiresAt,
           requestedById: actorUserId,
-          deliveryStatus,
+          deliveryStatus: 'DELIVERY_PENDING',
         },
       });
+      resetTokenId = created.id;
     });
+
+    const delivery = await this.passwordResetDelivery.deliver({
+      userId: targetUserId,
+      recipientEmail: target.email,
+      token,
+      expiresAt,
+    });
+    const deliveryStatus = delivery.status;
+
+    await this.prisma.passwordResetToken.update({
+      where: { id: resetTokenId },
+      data: {
+        deliveryStatus,
+        ...(delivery.delivered ? {} : { supersededAt: new Date() }),
+      },
+    });
+
+    await this.audit(
+      'Password Reset Delivery Attempted',
+      actorUserId ?? targetUserId,
+      {
+        targetUserId,
+        administrativeActor: actorUserId !== null,
+        deliveryStatus,
+        attempts: delivery.attempts,
+        errorCategory: delivery.errorCategory ?? null,
+        recipientHash: redactedResetIdentifier(target.email),
+      },
+    );
 
     await this.audit('Password Reset Requested', actorUserId ?? targetUserId, {
       targetUserId,
@@ -920,13 +1005,10 @@ export class AuthService {
   }
 
   private passwordResetRequestResponse(deliveryStatus: string) {
+    void deliveryStatus;
     return {
       message:
-        'If delivery is configured, reset instructions will be sent. No password was changed.',
-      delivery: {
-        configured: deliveryStatus !== 'DELIVERY_UNAVAILABLE',
-        status: deliveryStatus,
-      },
+        'If the account is eligible and delivery is available, recovery instructions will be sent. No password was changed.',
     };
   }
 
@@ -939,6 +1021,33 @@ export class AuthService {
     const boundedMinutes =
       Number.isFinite(minutes) && minutes > 0 && minutes <= 60 ? minutes : 15;
     return boundedMinutes * 60_000;
+  }
+
+  private async passwordResetRateLimited(targetUserId: string) {
+    const policy = this.passwordResetDelivery?.policy() ?? {
+      cooldownSeconds: 120,
+      dailyLimit: 5,
+    };
+    const now = Date.now();
+    const cooldownSince = new Date(now - policy.cooldownSeconds * 1000);
+    const daySince = new Date(now - 24 * 60 * 60 * 1000);
+    const [recent, daily] = await Promise.all([
+      this.prisma.passwordResetToken.count({
+        where: {
+          userId: targetUserId,
+          createdAt: { gte: cooldownSince },
+        },
+      }),
+      this.prisma.passwordResetToken.count({
+        where: {
+          userId: targetUserId,
+          createdAt: { gte: daySince },
+        },
+      }),
+    ]);
+    if (recent > 0) return 'cooldown_limited';
+    if (daily >= policy.dailyLimit) return 'daily_limited';
+    return null;
   }
 
   private isCompliantPassword(password: string) {

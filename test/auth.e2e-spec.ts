@@ -19,11 +19,7 @@ type AdminResetBody = {
   temporaryPassword?: unknown;
   token?: unknown;
   resetUrl?: unknown;
-  recovery?: {
-    delivery?: {
-      status?: string;
-    };
-  };
+  recovery?: unknown;
 };
 
 describe('Auth API (e2e)', () => {
@@ -669,7 +665,9 @@ describe('Auth API (e2e)', () => {
     expect(resetBody.token).toBeUndefined();
     expect(resetBody.resetUrl).toBeUndefined();
     expect(JSON.stringify(reset.body)).not.toContain('NewPassword123!');
-    expect(resetBody.recovery?.delivery?.status).toBe('DELIVERY_UNAVAILABLE');
+    expect(JSON.stringify(resetBody.recovery)).not.toContain(
+      'DELIVERY_UNAVAILABLE',
+    );
 
     const stored = await prisma.user.findUnique({ where: { id: provider.id } });
     expect(stored?.passwordHash).toBe(originalHash);
