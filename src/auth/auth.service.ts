@@ -710,7 +710,7 @@ export class AuthService {
       return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
     }
 
-    return this.createPasswordResetToken(user.id, null);
+    return this.createPasswordResetToken(user.id, null, dto.returnTo);
   }
 
   async issueAdministrativePasswordReset(
@@ -881,6 +881,7 @@ export class AuthService {
   private async createPasswordResetToken(
     targetUserId: string,
     actorUserId: string | null,
+    returnTo?: string,
   ) {
     const target = await this.prisma.user.findUnique({
       where: { id: targetUserId },
@@ -971,6 +972,9 @@ export class AuthService {
       recipientEmail: target.email,
       token,
       expiresAt,
+      ...(this.safePasswordResetReturnTo(returnTo)
+        ? { returnTo: this.safePasswordResetReturnTo(returnTo) }
+        : {}),
     });
     const deliveryStatus = delivery.status;
 
@@ -1014,6 +1018,18 @@ export class AuthService {
 
   private hashResetToken(token: string) {
     return createHash('sha256').update(token).digest('hex');
+  }
+
+  private safePasswordResetReturnTo(route: string | undefined) {
+    const normalized = route?.trim();
+    if (
+      normalized === '/citizen-login' ||
+      normalized === '/provider-login' ||
+      normalized === '/admin-login'
+    ) {
+      return normalized;
+    }
+    return undefined;
   }
 
   private passwordResetTtlMs() {

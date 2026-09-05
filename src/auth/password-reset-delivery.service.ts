@@ -9,6 +9,7 @@ export type PasswordResetDeliveryRequest = {
   recipientEmail: string | null;
   token: string;
   expiresAt: Date;
+  returnTo?: string;
 };
 
 export type PasswordResetDeliveryResult = {
@@ -79,7 +80,7 @@ export class PasswordResetDeliveryService {
       };
     }
 
-    const resetLink = this.buildResetLink(request.token);
+    const resetLink = this.buildResetLink(request.token, request.returnTo);
     const message = {
       from: this.config.smtp.from,
       to: request.recipientEmail,
@@ -149,9 +150,12 @@ export class PasswordResetDeliveryService {
     };
   }
 
-  private buildResetLink(token: string) {
+  private buildResetLink(token: string, returnTo?: string) {
     const url = new URL(this.config.resetPath, this.config.resetOrigin);
     url.searchParams.set('token', token);
+    if (returnTo) {
+      url.searchParams.set('returnTo', returnTo);
+    }
     return url.toString();
   }
 }

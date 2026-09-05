@@ -66,6 +66,23 @@ describe('PasswordResetDeliveryService', () => {
     expect(JSON.stringify(result)).not.toContain('/reset-password');
   });
 
+  it('adds an allow-listed return route when supplied by the auth service', async () => {
+    const sendMail = jest.fn().mockResolvedValue({});
+    const service = new PasswordResetDeliveryService(config, () => ({
+      sendMail,
+    }));
+
+    await service.deliver({ ...request, returnTo: '/provider-login' });
+
+    const [[message]] = sendMail.mock.calls as [
+      [{ text: string; html: string }],
+    ];
+    expect(message.text).toContain(
+      '/reset-password?token=opaque&returnTo=%2Fprovider-login',
+    );
+    expect(message.html).toContain('returnTo=%2Fprovider-login');
+  });
+
   it('retries transient pre-acceptance failures and then succeeds', async () => {
     const sendMail = jest
       .fn()

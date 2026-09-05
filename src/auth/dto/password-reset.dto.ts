@@ -8,6 +8,10 @@ export class RequestPasswordResetDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  returnTo?: string;
 }
 
 export class CompletePasswordResetDto {

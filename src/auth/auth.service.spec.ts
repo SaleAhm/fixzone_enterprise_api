@@ -1222,6 +1222,38 @@ describe('AuthService secure password reset foundation', () => {
     expect(deliveredTokens).toHaveLength(0);
   });
 
+  it('passes only safe login return routes to reset delivery', async () => {
+    const deliver = jest.fn((request: { token: string }) => {
+      deliveredTokens.push(request.token);
+      return Promise.resolve({
+        delivered: true,
+        status: 'DELIVERY_ACCEPTED',
+        attempts: 1,
+      });
+    });
+    const { service } = createPasswordResetService({
+      delivery: {
+        isEnabled: jest.fn(() => true),
+        policy: jest.fn(() => ({ cooldownSeconds: 120, dailyLimit: 5 })),
+        deliver,
+      } as unknown as PasswordResetDeliveryService,
+    });
+
+    await service.requestPasswordReset({
+      email: 'reset@example.test',
+      returnTo: '/provider-login',
+    });
+    await service.requestPasswordReset({
+      email: 'reset@example.test',
+      returnTo: 'https://evil.example.test',
+    });
+
+    expect(deliver.mock.calls[0][0]).toMatchObject({
+      returnTo: '/provider-login',
+    });
+    expect(deliver.mock.calls[1][0]).not.toHaveProperty('returnTo');
+  });
+
   it('supersedes created tokens when delivery fails', async () => {
     const { service, prisma } = createPasswordResetService({
       delivery: {
