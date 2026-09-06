@@ -35,8 +35,10 @@ import {
   PasswordResetDeliveryService,
   redactedResetIdentifier,
 } from './password-reset-delivery.service';
+import { PrivilegedMfaService } from './privileged-mfa.service';
+import { requiresPrivilegedMfa } from './privileged-mfa.policy';
 
-type AuthUser = Pick<
+export type AuthUser = Pick<
   User,
   | 'id'
   | 'email'
@@ -68,6 +70,7 @@ export class AuthService {
     private readonly trustService: TrustService,
     private readonly firebaseAuthVerifier: FirebaseAuthVerifierService,
     private readonly passwordResetDelivery?: PasswordResetDeliveryService,
+    private readonly privilegedMfa?: PrivilegedMfaService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -239,18 +242,8 @@ export class AuthService {
       }
     }
 
-    await this.audit('Login', user.id, {
-      role: user.role,
-    });
     const identityUser = await this.trustService.ensureIdentity(user.id);
-    await this.trustService.recordLogin({
-      userId: user.id,
-      success: true,
-      ipAddress: context?.ipAddress,
-      userAgent: context?.userAgent,
-    });
-
-    return this.issueTokens({
+    const authUser = {
       id: user.id,
       email: user.email,
       phone: user.phone,
@@ -267,7 +260,98 @@ export class AuthService {
       identityVerificationLevel: identityUser.identityVerificationLevel,
       trustScore: identityUser.trustScore,
       identityType: identityUser.identityType,
+    };
+
+    if (requiresPrivilegedMfa(user.role)) {
+      if (!this.privilegedMfa) {
+        await this.audit('Privileged Login MFA Foundation Missing', user.id, {
+          role: user.role,
+        });
+        throw this.genericAuthFailure();
+      }
+      await this.trustService.recordLogin({
+        userId: user.id,
+        success: false,
+        failureReason: 'mfa_pending',
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+      });
+      return this.privilegedMfa.createPreAuthSession(authUser, context);
+    }
+
+    await this.audit('Login', user.id, {
+      role: user.role,
     });
+    await this.trustService.recordLogin({
+      userId: user.id,
+      success: true,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
+    });
+
+    return this.issueTokens(authUser);
+  }
+
+  async startMfaEnrollment(
+    preAuthToken: string,
+    context?: { ipAddress?: string | null; userAgent?: string | null },
+  ) {
+    return this.requiredPrivilegedMfa().startEnrollment(preAuthToken, context);
+  }
+
+  async confirmMfaEnrollment(
+    preAuthToken: string,
+    code: string,
+    context?: { ipAddress?: string | null; userAgent?: string | null },
+  ) {
+    const result = await this.requiredPrivilegedMfa().confirmEnrollment(
+      preAuthToken,
+      code,
+      context,
+    );
+    await this.audit('Login', result.user.id, {
+      role: result.user.role,
+      mfa: 'enrollment_confirmed',
+    });
+    await this.trustService.recordLogin({
+      userId: result.user.id,
+      success: true,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
+    });
+    return {
+      status: 'MFA_ENROLLMENT_CONFIRMED',
+      ...(await this.issueTokens(result.user)),
+      recoveryCodes: result.recoveryCodes,
+    };
+  }
+
+  async completeMfaChallenge(
+    preAuthToken: string,
+    method: 'totp' | 'recovery_code',
+    code: string,
+    context?: { ipAddress?: string | null; userAgent?: string | null },
+  ) {
+    const result = await this.requiredPrivilegedMfa().completeChallenge(
+      preAuthToken,
+      method,
+      code,
+      context,
+    );
+    await this.audit('Login', result.user.id, {
+      role: result.user.role,
+      mfa: result.recoveryCodeUsed ? 'recovery_code' : 'totp',
+    });
+    await this.trustService.recordLogin({
+      userId: result.user.id,
+      success: true,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
+    });
+    return {
+      status: 'MFA_CHALLENGE_CONFIRMED',
+      ...(await this.issueTokens(result.user)),
+    };
   }
 
   async updateMe(user: AuthUser, dto: Record<string, unknown>) {
@@ -1077,5 +1161,12 @@ export class AuthService {
 
   private genericAuthFailure() {
     return new UnauthorizedException('Authentication failed');
+  }
+
+  private requiredPrivilegedMfa() {
+    if (!this.privilegedMfa) {
+      throw new UnauthorizedException('MFA verification failed');
+    }
+    return this.privilegedMfa;
   }
 }

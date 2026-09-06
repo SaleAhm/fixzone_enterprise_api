@@ -1008,9 +1008,11 @@ describe('AuthService secure password reset foundation', () => {
 
   type PasswordUpdateArgs = {
     data?: {
+      passwordHash?: string;
       tokenVersion?: {
         increment?: number;
       };
+      privilegedMfaEnrollments?: unknown;
     };
   };
 
@@ -1284,7 +1286,7 @@ describe('AuthService secure password reset foundation', () => {
     expect(deliveryUpdate.data?.supersededAt).toBeInstanceOf(Date);
   });
 
-  it('marks reset tokens single-use and advances tokenVersion on completion', async () => {
+  it('marks reset tokens single-use, advances tokenVersion, and preserves MFA state', async () => {
     const token = {
       id: 'reset-token-1',
       userId: 'user-1',
@@ -1313,7 +1315,15 @@ describe('AuthService secure password reset foundation', () => {
     expect(markUsedArg.data?.usedAt).toBeInstanceOf(Date);
     const passwordUpdateArg = prisma.user.update.mock
       .calls[0][0] as PasswordUpdateArgs;
+    expect(passwordUpdateArg.data?.passwordHash).toEqual(expect.any(String));
     expect(passwordUpdateArg.data?.tokenVersion?.increment).toBe(1);
+    expect(passwordUpdateArg.data).not.toHaveProperty(
+      'privilegedMfaEnrollments',
+    );
+    expect(Object.keys(passwordUpdateArg.data ?? {}).sort()).toEqual([
+      'passwordHash',
+      'tokenVersion',
+    ]);
   });
 
   it.each([

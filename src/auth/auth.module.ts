@@ -11,6 +11,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { getJwtAccessSecret } from './jwt-secret';
 import { FirebaseAuthVerifierService } from './firebase-auth-verifier.service';
 import { PasswordResetDeliveryService } from './password-reset-delivery.service';
+import { PrivilegedMfaService } from './privileged-mfa.service';
 
 @Module({
   imports: [
@@ -27,10 +28,18 @@ import { PasswordResetDeliveryService } from './password-reset-delivery.service'
     AuthService,
     FirebaseAuthVerifierService,
     PasswordResetDeliveryService,
+    PrivilegedMfaService,
     JwtStrategy,
     JwtAuthGuard,
     RolesGuard,
   ],
-  exports: [AuthService, JwtModule, PassportModule, JwtAuthGuard, RolesGuard],
+  exports: [
+    AuthService,
+    PrivilegedMfaService,
+    JwtModule,
+    PassportModule,
+    JwtAuthGuard,
+    RolesGuard,
+  ],
 })
 export class AuthModule {}

@@ -303,6 +303,17 @@ enum PrivilegedOperationType {
   HIGH_VALUE_REFUND_APPROVAL
 }
 
+enum PrivilegedMfaEnrollmentStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+}
+
+enum PrivilegedMfaPreAuthPurpose {
+  ENROLLMENT
+  CHALLENGE
+}
+
 enum RegulatoryCaseStatus {
   DRAFT
   OPEN
@@ -457,31 +468,33 @@ model User {
 
   organization Organization? @relation(fields: [organizationId], references: [id])
 
-  citizenReports          Report[]                    @relation("CitizenReports")
-  assignedReports         Report[]                    @relation("AssignedProviderReports")
-  notifications           Notification[]
-  providerOrganizations   ProviderOrganization[]
-  sentInvitations         Invitation[]                @relation("InvitationInviter")
-  acceptedInvitations     Invitation[]                @relation("InvitationAcceptedUser")
-  kycSubmissions          KycSubmission[]             @relation("KycSubmissionUser")
-  reviewedKycSubmissions  KycSubmission[]             @relation("KycSubmissionReviewer")
-  loginHistory            LoginHistory[]
-  ownedEvidenceRecords    EvidenceRecord[]            @relation("EvidenceOwner")
-  uploadedEvidenceRecords EvidenceRecord[]            @relation("EvidenceUploader")
-  openedDisputes          DisputeCase[]               @relation("DisputeOpenedBy")
-  disputesAgainst         DisputeCase[]               @relation("DisputeAgainstUser")
-  reviewedDisputes        DisputeCase[]               @relation("DisputeClosedBy")
-  disputeMessages         DisputeMessage[]
-  reportMessages          ReportMessage[]
-  entitlement             UserEntitlement?
-  complianceAuditLogs     ComplianceAuditLog[]        @relation("ComplianceAuditActor")
-  requestedPayments       PaymentTransaction[]        @relation("PaymentRequestingUser")
-  internalRoleAssignments InternalRoleAssignment[]    @relation("InternalRoleAssignmentUser")
-  assignedInternalRoles   InternalRoleAssignment[]    @relation("InternalRoleAssignmentAssignedBy")
-  revokedInternalRoles    InternalRoleAssignment[]    @relation("InternalRoleAssignmentRevokedBy")
-  requestedApprovals      PrivilegedApprovalRequest[] @relation("PrivilegedApprovalRequester")
-  decidedApprovals        PrivilegedApprovalRequest[] @relation("PrivilegedApprovalDecider")
-  passwordResetTokens      PasswordResetToken[]
+  citizenReports               Report[]                      @relation("CitizenReports")
+  assignedReports              Report[]                      @relation("AssignedProviderReports")
+  notifications                Notification[]
+  providerOrganizations        ProviderOrganization[]
+  sentInvitations              Invitation[]                  @relation("InvitationInviter")
+  acceptedInvitations          Invitation[]                  @relation("InvitationAcceptedUser")
+  kycSubmissions               KycSubmission[]               @relation("KycSubmissionUser")
+  reviewedKycSubmissions       KycSubmission[]               @relation("KycSubmissionReviewer")
+  loginHistory                 LoginHistory[]
+  ownedEvidenceRecords         EvidenceRecord[]              @relation("EvidenceOwner")
+  uploadedEvidenceRecords      EvidenceRecord[]              @relation("EvidenceUploader")
+  openedDisputes               DisputeCase[]                 @relation("DisputeOpenedBy")
+  disputesAgainst              DisputeCase[]                 @relation("DisputeAgainstUser")
+  reviewedDisputes             DisputeCase[]                 @relation("DisputeClosedBy")
+  disputeMessages              DisputeMessage[]
+  reportMessages               ReportMessage[]
+  entitlement                  UserEntitlement?
+  complianceAuditLogs          ComplianceAuditLog[]          @relation("ComplianceAuditActor")
+  requestedPayments            PaymentTransaction[]          @relation("PaymentRequestingUser")
+  internalRoleAssignments      InternalRoleAssignment[]      @relation("InternalRoleAssignmentUser")
+  assignedInternalRoles        InternalRoleAssignment[]      @relation("InternalRoleAssignmentAssignedBy")
+  revokedInternalRoles         InternalRoleAssignment[]      @relation("InternalRoleAssignmentRevokedBy")
+  requestedApprovals           PrivilegedApprovalRequest[]   @relation("PrivilegedApprovalRequester")
+  decidedApprovals             PrivilegedApprovalRequest[]   @relation("PrivilegedApprovalDecider")
+  passwordResetTokens          PasswordResetToken[]
+  privilegedMfaEnrollments     PrivilegedMfaEnrollment[]
+  privilegedMfaPreAuthSessions PrivilegedMfaPreAuthSession[]
 
   @@index([organizationId])
   @@index([secureZoneId])
@@ -510,6 +523,65 @@ model PasswordResetToken {
   @@index([userId, createdAt])
   @@index([userId, usedAt, supersededAt, expiresAt])
   @@index([expiresAt])
+}
+
+model PrivilegedMfaEnrollment {
+  id                  String                        @id @default(cuid())
+  userId              String
+  status              PrivilegedMfaEnrollmentStatus @default(PENDING)
+  encryptedTotpSecret String
+  secretFormatVersion Int                           @default(1)
+  enabledAt           DateTime?
+  enforcedAt          DateTime?
+  lastVerifiedAt      DateTime?
+  lastVerifiedStep    BigInt?
+  recoveryResetAt     DateTime?
+  recoveryResetById   String?
+  disabledAt          DateTime?
+  disabledById        String?
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @updatedAt
+
+  user        User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  backupCodes PrivilegedMfaBackupCode[]
+
+  @@index([userId, status])
+  @@index([enabledAt])
+  @@index([lastVerifiedAt])
+}
+
+model PrivilegedMfaBackupCode {
+  id           String    @id @default(cuid())
+  enrollmentId String
+  userId       String
+  codeDigest   String    @unique
+  usedAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  enrollment PrivilegedMfaEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+
+  @@index([enrollmentId, usedAt])
+  @@index([userId, usedAt])
+}
+
+model PrivilegedMfaPreAuthSession {
+  id             String                      @id @default(cuid())
+  userId         String
+  tokenDigest    String                      @unique
+  purpose        PrivilegedMfaPreAuthPurpose
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  failedAttempts Int                         @default(0)
+  lockedAt       DateTime?
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, expiresAt])
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@index([lockedAt])
 }
 
 model KycSubmission {

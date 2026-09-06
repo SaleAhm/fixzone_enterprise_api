@@ -8,13 +8,19 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
-import { AuthService } from './auth.service';
+import type { Request } from 'express';
+import { AuthService, AuthUser } from './auth.service';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { LoginDto } from './dto/login.dto';
 import {
   CompletePasswordResetDto,
   RequestPasswordResetDto,
 } from './dto/password-reset.dto';
+import {
+  CompleteMfaChallengeDto,
+  ConfirmMfaEnrollmentDto,
+  StartMfaEnrollmentDto,
+} from './dto/privileged-mfa.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
@@ -23,6 +29,16 @@ import {
   EnterpriseRateLimit,
   RateLimitTier,
 } from '../security/rate-limit.constants';
+
+type AuthenticatedRequest = Request & { user: AuthUser };
+
+function requestContext(req: Request) {
+  const forwardedFor = req.header('x-forwarded-for');
+  return {
+    ipAddress: req.ip ?? forwardedFor,
+    userAgent: req.header('user-agent'),
+  };
+}
 
 @Controller('auth')
 export class AuthController {
@@ -36,11 +52,8 @@ export class AuthController {
 
   @Post('login')
   @EnterpriseRateLimit(RateLimitTier.Auth)
-  login(@Body() dto: LoginDto, @Req() req: any) {
-    return this.authService.login(dto, {
-      ipAddress: req.ip ?? req.headers?.['x-forwarded-for']?.toString(),
-      userAgent: req.headers?.['user-agent']?.toString(),
-    });
+  login(@Body() dto: LoginDto, @Req() req: Request) {
+    return this.authService.login(dto, requestContext(req));
   }
 
   @Post('firebase-login')
@@ -61,16 +74,55 @@ export class AuthController {
     return this.authService.completePasswordReset(dto);
   }
 
+  @Post('mfa/enrollment/start')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
+  startMfaEnrollment(@Body() dto: StartMfaEnrollmentDto, @Req() req: Request) {
+    return this.authService.startMfaEnrollment(
+      dto.preAuthToken,
+      requestContext(req),
+    );
+  }
+
+  @Post('mfa/enrollment/confirm')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
+  confirmMfaEnrollment(
+    @Body() dto: ConfirmMfaEnrollmentDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.confirmMfaEnrollment(
+      dto.preAuthToken,
+      dto.code,
+      requestContext(req),
+    );
+  }
+
+  @Post('mfa/challenge')
+  @EnterpriseRateLimit(RateLimitTier.Auth)
+  completeMfaChallenge(
+    @Body() dto: CompleteMfaChallengeDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.completeMfaChallenge(
+      dto.preAuthToken,
+      dto.method,
+      dto.code,
+      requestContext(req),
+    );
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@Req() req: { user: any }) {
+  me(@Req() req: AuthenticatedRequest) {
     return req.user;
   }
 
   @UseGuards(JwtAuthGuard)
   @Patch('me')
   @EnterpriseRateLimit(RateLimitTier.AdminMutation)
-  updateMe(@Req() req: { user: any }, @Body() dto: Record<string, unknown>) {
+  updateMe(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: Record<string, unknown>,
+  ) {
     return this.authService.updateMe(req.user, dto);
   }
 
@@ -78,7 +130,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN)
   @Get('admin-only')
-  adminOnly(@Req() req: { user: any }) {
+  adminOnly(@Req() req: AuthenticatedRequest) {
     return {
       message: 'Welcome, admin',
       user: req.user,
@@ -89,7 +141,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.PROVIDER, UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN)
   @Get('provider-or-admin')
-  providerOrAdmin(@Req() req: { user: any }) {
+  providerOrAdmin(@Req() req: AuthenticatedRequest) {
     return {
       message: 'Welcome, provider or admin',
       user: req.user,
