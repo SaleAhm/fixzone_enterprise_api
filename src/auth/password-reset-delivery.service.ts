@@ -151,11 +151,14 @@ export class PasswordResetDeliveryService {
   }
 
   private buildResetLink(token: string, returnTo?: string) {
-    const url = new URL(this.config.resetPath, this.config.resetOrigin);
-    url.searchParams.set('token', token);
+    const resetRoute = new URL(this.config.resetPath, 'https://app.local');
+    resetRoute.searchParams.set('token', token);
     if (returnTo) {
-      url.searchParams.set('returnTo', returnTo);
+      resetRoute.searchParams.set('returnTo', returnTo);
     }
+
+    const url = new URL(this.config.resetOrigin);
+    url.hash = `${resetRoute.pathname}${resetRoute.search}`;
     return url.toString();
   }
 }

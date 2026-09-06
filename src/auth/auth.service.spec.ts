@@ -1245,13 +1245,20 @@ describe('AuthService secure password reset foundation', () => {
     });
     await service.requestPasswordReset({
       email: 'reset@example.test',
+      returnTo: '/admin-login',
+    });
+    await service.requestPasswordReset({
+      email: 'reset@example.test',
       returnTo: 'https://evil.example.test',
     });
 
     expect(deliver.mock.calls[0][0]).toMatchObject({
       returnTo: '/provider-login',
     });
-    expect(deliver.mock.calls[1][0]).not.toHaveProperty('returnTo');
+    expect(deliver.mock.calls[1][0]).toMatchObject({
+      returnTo: '/admin-login',
+    });
+    expect(deliver.mock.calls[2][0]).not.toHaveProperty('returnTo');
   });
 
   it('supersedes created tokens when delivery fails', async () => {

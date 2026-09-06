@@ -50,7 +50,10 @@ describe('PasswordResetDeliveryService', () => {
       sendMail,
     }));
 
-    const result = await service.deliver(request);
+    const result = await service.deliver({
+      ...request,
+      token: 'opaque token+slash/equals=',
+    });
 
     expect(result).toMatchObject({
       delivered: true,
@@ -60,28 +63,48 @@ describe('PasswordResetDeliveryService', () => {
     const [[message]] = sendMail.mock.calls as [
       [{ text: string; html: string }],
     ];
-    expect(message.text).toContain('/reset-password?token=opaque');
-    expect(message.html).toContain('Recover account access');
-    expect(JSON.stringify(result)).not.toContain('opaque');
-    expect(JSON.stringify(result)).not.toContain('/reset-password');
-  });
-
-  it('adds an allow-listed return route when supplied by the auth service', async () => {
-    const sendMail = jest.fn().mockResolvedValue({});
-    const service = new PasswordResetDeliveryService(config, () => ({
-      sendMail,
-    }));
-
-    await service.deliver({ ...request, returnTo: '/provider-login' });
-
-    const [[message]] = sendMail.mock.calls as [
-      [{ text: string; html: string }],
-    ];
-    expect(message.text).toContain(
-      '/reset-password?token=opaque&returnTo=%2Fprovider-login',
+    const resetLink = message.text.match(
+      /https:\/\/app\.example\.test\/#\/reset-password\?token=\S+/,
+    )?.[0];
+    expect(resetLink).toBeDefined();
+    expect(resetLink).toContain(
+      '/#/reset-password?token=opaque+token%2Bslash%2Fequals%3D',
     );
-    expect(message.html).toContain('returnTo=%2Fprovider-login');
+    expect(resetLink).not.toContain('opaque token+slash/equals=');
+    const parsed = new URL(resetLink!);
+    const resetRoute = new URL(parsed.hash.slice(1), 'https://app.local');
+    expect(resetRoute.pathname).toBe('/reset-password');
+    expect(resetRoute.searchParams.get('token')).toBe(
+      'opaque token+slash/equals=',
+    );
+    expect(message.html).toContain('Recover account access');
+    expect(JSON.stringify(result)).not.toContain('opaque token');
+    expect(JSON.stringify(result)).not.toContain('/#/reset-password');
   });
+
+  it.each(['/provider-login', '/admin-login'])(
+    'adds allow-listed %s return route when supplied by the auth service',
+    async (returnTo) => {
+      const sendMail = jest.fn().mockResolvedValue({});
+      const service = new PasswordResetDeliveryService(config, () => ({
+        sendMail,
+      }));
+
+      await service.deliver({ ...request, returnTo });
+
+      const [[message]] = sendMail.mock.calls as [
+        [{ text: string; html: string }],
+      ];
+      expect(message.text).toContain(
+        `/#/reset-password?token=opaque&returnTo=${encodeURIComponent(
+          returnTo,
+        )}`,
+      );
+      expect(message.html).toContain(
+        `returnTo=${encodeURIComponent(returnTo)}`,
+      );
+    },
+  );
 
   it('retries transient pre-acceptance failures and then succeeds', async () => {
     const sendMail = jest
