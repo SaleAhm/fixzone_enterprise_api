@@ -74,6 +74,8 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    // Citizens must enter through Firebase first so the backend never becomes
+    // an independent public authority for citizen email/phone ownership.
     if (dto.role !== undefined) {
       await this.audit(
         'Public Registration Role Selection Rejected',
@@ -96,57 +98,14 @@ export class AuthService {
       );
     }
 
-    if (!dto.email && !dto.phone) {
-      throw new BadRequestException('Email or phone is required');
-    }
-
-    const orFilters = [
-      dto.email ? { email: dto.email.toLowerCase().trim() } : null,
-      dto.phone ? { phone: dto.phone.trim() } : null,
-    ].filter(
-      (value): value is { email: string } | { phone: string } => value !== null,
+    await this.audit('Public Citizen Registration Denied', 'anonymous', {
+      reason: 'firebase_identity_required',
+      hasEmail: Boolean(dto.email),
+      hasPhone: Boolean(dto.phone),
+    });
+    throw new BadRequestException(
+      'Citizen registration requires verified Firebase authentication',
     );
-
-    const existingUser = await this.prisma.user.findFirst({
-      where: {
-        OR: orFilters,
-      },
-    });
-
-    if (existingUser) {
-      throw new BadRequestException('User already exists');
-    }
-
-    const passwordHash = await bcrypt.hash(dto.password, 10);
-
-    let user = await this.prisma.user.create({
-      data: {
-        fullName: dto.fullName.trim(),
-        email: dto.email ? dto.email.toLowerCase().trim() : null,
-        phone: dto.phone ? dto.phone.trim() : null,
-        passwordHash,
-        role: UserRole.CITIZEN,
-        organizationId: null,
-      },
-      select: {
-        id: true,
-        email: true,
-        phone: true,
-        fullName: true,
-        role: true,
-        organizationId: true,
-        providerId: true,
-        accountStatus: true,
-        tokenVersion: true,
-        phoneVerifiedAt: true,
-        emailVerifiedAt: true,
-        secureZoneId: true,
-      },
-    });
-
-    user = { ...user, ...(await this.trustService.ensureIdentity(user.id)) };
-
-    return this.issueTokens(user);
   }
 
   async login(
@@ -784,11 +743,16 @@ export class AuthService {
     if (
       !user ||
       !user.passwordHash ||
-      user.accountStatus !== AccountStatus.ACTIVE
+      user.accountStatus !== AccountStatus.ACTIVE ||
+      this.isFirebaseOwnedCitizen(user)
     ) {
       await this.audit('Password Reset Request', user?.id ?? 'anonymous', {
         outcome: 'accepted_without_delivery',
-        reason: user ? 'ineligible_account' : 'identity_not_found',
+        reason: user
+          ? this.isFirebaseOwnedCitizen(user)
+            ? 'firebase_owned_citizen'
+            : 'ineligible_account'
+          : 'identity_not_found',
         identifierHash: redactedResetIdentifier(dto.email ?? dto.phone),
       });
       return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
@@ -821,7 +785,8 @@ export class AuthService {
       record.usedAt ||
       record.supersededAt ||
       record.expiresAt <= now ||
-      record.user.accountStatus !== AccountStatus.ACTIVE
+      record.user.accountStatus !== AccountStatus.ACTIVE ||
+      this.isFirebaseOwnedCitizen(record.user)
     ) {
       await this.audit(
         'Password Reset Rejected',
@@ -835,7 +800,9 @@ export class AuthService {
                 ? 'token_superseded'
                 : record.expiresAt <= now
                   ? 'token_expired'
-                  : 'ineligible_account',
+                  : this.isFirebaseOwnedCitizen(record.user)
+                    ? 'firebase_owned_citizen'
+                    : 'ineligible_account',
         },
       );
       throw this.genericAuthFailure();
@@ -974,12 +941,15 @@ export class AuthService {
         email: true,
         passwordHash: true,
         accountStatus: true,
+        role: true,
+        firebaseUid: true,
       },
     });
     if (
       !target ||
       !target.passwordHash ||
-      target.accountStatus !== AccountStatus.ACTIVE
+      target.accountStatus !== AccountStatus.ACTIVE ||
+      this.isFirebaseOwnedCitizen(target)
     ) {
       await this.audit(
         'Password Reset Requested',
@@ -988,7 +958,11 @@ export class AuthService {
           targetUserId,
           administrativeActor: actorUserId !== null,
           deliveryStatus: 'DELIVERY_UNAVAILABLE',
-          outcome: target ? 'ineligible_account' : 'identity_not_found',
+          outcome: target
+            ? this.isFirebaseOwnedCitizen(target)
+              ? 'firebase_owned_citizen'
+              : 'ineligible_account'
+            : 'identity_not_found',
         },
       );
       return this.passwordResetRequestResponse('DELIVERY_UNAVAILABLE');
@@ -1157,6 +1131,13 @@ export class AuthService {
       /[A-Z]/.test(password) &&
       /\d/.test(password)
     );
+  }
+
+  private isFirebaseOwnedCitizen(user: {
+    role?: UserRole | null;
+    firebaseUid?: string | null;
+  }) {
+    return user.role === UserRole.CITIZEN && Boolean(user.firebaseUid);
   }
 
   private genericAuthFailure() {

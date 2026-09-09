@@ -19,53 +19,22 @@ export class OnboardingService {
   ) {}
 
   async registerCitizen(dto: CitizenRegisterDto) {
-    if (dto.password !== dto.confirmPassword) {
-      throw new BadRequestException('Passwords do not match');
-    }
-    if (!dto.acceptTerms) {
-      throw new BadRequestException('Terms must be accepted');
-    }
-
-    const existing = await this.prisma.user.findFirst({
-      where: {
-        OR: [
-          { email: dto.email.toLowerCase().trim() },
-          { phone: dto.phone.trim() },
-        ],
-      },
-    });
-    if (existing) throw new BadRequestException('User already exists');
-
-    const organizationId = await this.resolveCitizenOrganization(dto);
-    const passwordHash = await bcrypt.hash(dto.password, 10);
-    const user = await this.prisma.user.create({
+    // Citizen registration is Firebase-first; this legacy public endpoint must
+    // never mint a password-backed ACTIVE citizen or return backend JWTs.
+    await this.prisma.demoAuditLog.create({
       data: {
-        fullName: dto.fullName.trim(),
-        email: dto.email.toLowerCase().trim(),
-        phone: dto.phone.trim(),
-        passwordHash,
-        role: UserRole.CITIZEN,
-        accountStatus: AccountStatus.ACTIVE,
-        organizationId,
-        profileData: {
-          address: dto.address?.trim() ?? null,
-          lga: dto.lga?.trim() ?? null,
-          state: dto.state?.trim() ?? null,
-          preferredLanguage: dto.preferredLanguage?.trim() ?? 'English',
-          notificationPreferences: dto.notificationPreferences ?? {
-            email: true,
-            sms: true,
-            push: true,
-          },
-          gpsPermission: dto.gpsPermission ?? false,
-          emergencyContact: dto.emergencyContact?.trim() ?? null,
-          identityScopes: ['citizen'],
-          onboardingSource: 'PUBLIC_CITIZEN_REGISTRATION',
+        action: 'Public Citizen Registration Denied',
+        actorUserId: 'anonymous',
+        metadata: {
+          reason: 'firebase_identity_required',
+          hasEmail: Boolean(dto.email),
+          hasPhone: Boolean(dto.phone),
         },
       },
     });
-
-    return this.authService.issueTokensForOnboarding(user);
+    throw new BadRequestException(
+      'Citizen registration requires verified Firebase authentication',
+    );
   }
 
   async requestProviderAccess(dto: ProviderAccessRequestDto) {

@@ -46,6 +46,8 @@ describe('Auth API (e2e)', () => {
     'demo-provider-2-auth@test.com',
     'demo-provider-3-auth@test.com',
     'public-role-attack@test.com',
+    'public-citizen-bypass@test.com',
+    'public-onboarding-citizen@test.com',
     'citizen.sync@test.com',
     'citizen.email.bridge@test.com',
     'citizen.email.recovery@test.com',
@@ -56,6 +58,7 @@ describe('Auth API (e2e)', () => {
     '+2348000000001',
     '+2348000000999',
     '+2348000000888',
+    '+2348000000777',
   ];
   const authFixtureProviderIds = [
     'PRV-AUTH-MISMATCH-001',
@@ -304,18 +307,54 @@ describe('Auth API (e2e)', () => {
     expect(res.status).toBe(200);
   });
 
-  it('registers a public citizen when role is omitted', async () => {
+  it('denies unverified public citizen creation through /auth/register when role is omitted', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({
-        fullName: 'Citizen User',
-        email: 'citizen@test.com',
-        password: '123456',
+        fullName: 'Public Citizen Bypass',
+        email: 'public-citizen-bypass@test.com',
+        password: 'Password123!',
       });
 
-    expect(res.status).toBe(201);
-    expect(res.body.user.role).toBe('CITIZEN');
-    expect(res.body.user.organizationId).toBeNull();
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe(
+      'Citizen registration requires verified Firebase authentication',
+    );
+    expect(res.body.accessToken).toBeUndefined();
+    expect(
+      await prisma.user.count({
+        where: { email: 'public-citizen-bypass@test.com' },
+      }),
+    ).toBe(0);
+  });
+
+  it('denies public citizen onboarding without creating an ACTIVE citizen or JWT', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/onboarding/citizen/register')
+      .send({
+        fullName: 'Public Onboarding Citizen',
+        email: 'public-onboarding-citizen@test.com',
+        phone: '+2348000000777',
+        password: 'Password123!',
+        confirmPassword: 'Password123!',
+        acceptTerms: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe(
+      'Citizen registration requires verified Firebase authentication',
+    );
+    expect(res.body.accessToken).toBeUndefined();
+    expect(
+      await prisma.user.count({
+        where: {
+          OR: [
+            { email: 'public-onboarding-citizen@test.com' },
+            { phone: '+2348000000777' },
+          ],
+        },
+      }),
+    ).toBe(0);
   });
 
   it('rejects malformed public registration role payloads', async () => {
@@ -340,6 +379,15 @@ describe('Auth API (e2e)', () => {
   });
 
   it('Login Citizen', async () => {
+    await prisma.user.create({
+      data: {
+        fullName: 'Citizen User',
+        email: 'citizen@test.com',
+        passwordHash: await bcrypt.hash('123456', 10),
+        role: UserRole.CITIZEN,
+      },
+    });
+
     const res = await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({

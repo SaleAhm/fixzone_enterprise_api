@@ -98,21 +98,21 @@ describe('AuthService public registration role boundary', () => {
     return { service, prisma };
   }
 
-  it('assigns the server-authoritative CITIZEN role when role is omitted', async () => {
+  it('rejects omitted-role public citizen registration before user creation', async () => {
     const { service, prisma } = createRegistrationService();
 
-    const result = await service.register({
-      fullName: 'Public Citizen',
-      email: 'public-citizen@test.com',
-      password: 'Password123!',
-    });
+    await expect(
+      service.register({
+        fullName: 'Public Citizen',
+        email: 'public-citizen@test.com',
+        password: 'Password123!',
+      }),
+    ).rejects.toThrow(
+      'Citizen registration requires verified Firebase authentication',
+    );
 
-    expect(result.user.role).toBe(UserRole.CITIZEN);
-    const createArg = firstUserWriteArg(prisma.user.create!);
-    expect(createArg.data).toMatchObject({
-      role: UserRole.CITIZEN,
-      organizationId: null,
-    });
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('rejects direct service-level privileged and workflow role selection before user creation', async () => {
@@ -962,6 +962,7 @@ describe('AuthService secure password reset foundation', () => {
     accountStatus: string;
     tokenVersion: number;
     passwordHash: string;
+    firebaseUid: string | null;
     phoneVerifiedAt: Date | null;
     emailVerifiedAt: Date | null;
   };
@@ -975,6 +976,8 @@ describe('AuthService secure password reset foundation', () => {
     user: {
       id?: string;
       accountStatus: string;
+      role?: UserRole;
+      firebaseUid?: string | null;
     };
   };
 
@@ -1072,6 +1075,7 @@ describe('AuthService secure password reset foundation', () => {
             accountStatus: 'ACTIVE',
             tokenVersion: 2,
             passwordHash: 'hash',
+            firebaseUid: null,
             phoneVerifiedAt: null,
             emailVerifiedAt: null,
           }
@@ -1202,6 +1206,38 @@ describe('AuthService secure password reset foundation', () => {
     expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
   });
 
+  it('does not issue backend reset tokens for Firebase-owned citizens', async () => {
+    const { service, prisma } = createPasswordResetService({
+      user: {
+        id: 'firebase-citizen-1',
+        email: 'reset@example.test',
+        phone: null,
+        fullName: 'Firebase Citizen',
+        role: UserRole.CITIZEN,
+        organizationId: null,
+        providerId: null,
+        accountStatus: 'ACTIVE',
+        tokenVersion: 2,
+        passwordHash: 'legacy-hash',
+        firebaseUid: 'firebase-uid-1',
+        phoneVerifiedAt: null,
+        emailVerifiedAt: new Date('2026-09-09T00:00:00.000Z'),
+      },
+    });
+
+    const response = await service.requestPasswordReset({
+      email: 'reset@example.test',
+    });
+
+    expect(response.message).toContain('If the account is eligible');
+    expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+    expect(deliveredTokens).toHaveLength(0);
+    const auditArg = prisma.demoAuditLog.create.mock.calls[0][0] as {
+      data?: { metadata?: { reason?: string } };
+    };
+    expect(auditArg.data?.metadata?.reason).toBe('firebase_owned_citizen');
+  });
+
   it('does not issue new tokens when cooldown applies', async () => {
     const { service, prisma } = createPasswordResetService();
     prisma.passwordResetToken.count.mockResolvedValueOnce(1);
@@ -1324,6 +1360,36 @@ describe('AuthService secure password reset foundation', () => {
       'passwordHash',
       'tokenVersion',
     ]);
+  });
+
+  it('rejects existing reset tokens for Firebase-owned citizens', async () => {
+    const token = {
+      id: 'reset-token-1',
+      userId: 'user-1',
+      usedAt: null,
+      supersededAt: null,
+      expiresAt: new Date(Date.now() + 60_000),
+      user: {
+        id: 'user-1',
+        accountStatus: 'ACTIVE',
+        role: UserRole.CITIZEN,
+        firebaseUid: 'firebase-uid-1',
+      },
+    };
+    const { service, prisma } = createPasswordResetService({ token });
+    const digest = resetDigest('plain-reset-token');
+    prisma.passwordResetToken.findUnique.mockImplementation(({ where }) =>
+      Promise.resolve(where.tokenDigest === digest ? token : null),
+    );
+
+    await expect(
+      service.completePasswordReset({
+        token: 'plain-reset-token',
+        password: 'NewPassword1',
+      }),
+    ).rejects.toThrow('Authentication failed');
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it.each([

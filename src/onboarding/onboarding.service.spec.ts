@@ -26,6 +26,8 @@ type PublicOrgAuditCreateArgs = {
       reason?: string;
       hasOwnerEmail?: boolean;
       hasOwnerPhone?: boolean;
+      hasEmail?: boolean;
+      hasPhone?: boolean;
     };
   };
 };
@@ -188,5 +190,54 @@ describe('OnboardingService public organization gate', () => {
       organizationId: 'org-1',
     });
     expect(prisma.user.create).toHaveBeenCalled();
+  });
+
+  it('denies public citizen registration without partial records or onboarding JWTs', async () => {
+    const prisma: PublicOrgPrismaMock = {
+      organization: {
+        findFirst: jest.fn<unknown, []>(),
+        create: jest.fn<unknown, []>(),
+      },
+      user: {
+        findFirst: jest.fn<unknown, []>(),
+        create: jest.fn<unknown, []>(),
+      },
+      providerOrganization: { create: jest.fn<unknown, []>() },
+      userEntitlement: { create: jest.fn<unknown, []>() },
+      demoAuditLog: {
+        create: jest.fn<
+          Promise<Record<string, never>>,
+          [PublicOrgAuditCreateArgs]
+        >(() => Promise.resolve({})),
+      },
+      $transaction: jest.fn<unknown, []>(),
+    };
+    const authService = {
+      issueTokensForOnboarding: jest.fn(),
+    };
+    const service = new OnboardingService(
+      prisma as unknown as PrismaService,
+      authService as unknown as AuthService,
+    );
+
+    await expect(
+      service.registerCitizen({
+        fullName: 'Citizen User',
+        email: 'citizen@example.test',
+        phone: '+2348000000003',
+        password: 'Password123!',
+        confirmPassword: 'Password123!',
+        acceptTerms: true,
+      }),
+    ).rejects.toThrow('Citizen registration requires verified Firebase');
+
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
+    expect(authService.issueTokensForOnboarding).not.toHaveBeenCalled();
+    const auditArg = prisma.demoAuditLog.create.mock.calls[0][0];
+    expect(auditArg.data?.action).toBe('Public Citizen Registration Denied');
+    expect(auditArg.data?.metadata?.reason).toBe('firebase_identity_required');
+    expect(auditArg.data?.metadata?.hasEmail).toBe(true);
+    expect(auditArg.data?.metadata?.hasPhone).toBe(true);
   });
 });
